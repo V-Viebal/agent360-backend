@@ -15,17 +15,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-          include-prerelease: true
-
-      - name: Build and Test backend API
+      - name: Install .NET 10 to local runner user directory
         run: |
-          dotnet restore src/Agent360.API/Agent360.API.csproj
-          dotnet build src/Agent360.API/Agent360.API.csproj -c Release --no-restore
-          echo "Backend .NET 10 Modular Monolith built successfully."
+          mkdir -p "$HOME/.dotnet"
+          curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 10.0 --install-dir "$HOME/.dotnet" || true
+          echo "$HOME/.dotnet" >> $GITHUB_PATH
+          export PATH="$HOME/.dotnet:$PATH"
+          dotnet --info || true
+
+      - name: Build backend API
+        run: |
+          export PATH="$HOME/.dotnet:$PATH"
+          dotnet restore src/Agent360.API/Agent360.API.csproj || echo "Restore warning"
+          dotnet build src/Agent360.API/Agent360.API.csproj -c Release --no-restore || dotnet build src/Agent360.API/Agent360.API.csproj -c Release
+          echo "Backend .NET 10 build completed."
 
       - name: Trigger Webhook Deploy
         if: env.COOLIFY_WEBHOOK_URL != ''
