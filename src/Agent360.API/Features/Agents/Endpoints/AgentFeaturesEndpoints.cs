@@ -91,22 +91,50 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Deny pending tool call")
         .AllowAnonymous();
 
-        // 6. Console chat stream & stop
-        group.MapPost("console/chat", async ([FromBody] ConsoleChatSendRequestDto request, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
+        // 6. Console chat stream & stop with Per-session Queue & IAM360 Revocation Check
+        group.MapPost("console/chat", async (
+            [FromBody] ConsoleChatSendRequestDto request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            SessionQueueManager queueManager,
+            CancellationToken ct) =>
         {
-            var response = await client.StreamConsoleChatAsync(request, ct);
-            httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
-            httpContext.Response.StatusCode = (int)response.StatusCode;
+            // IAM360 Revocation Gate Check
+            var agentTarget = request.AgentId ?? "default";
+            if (!IamRevocationGuard.IsExecutionAllowed(agentTarget, out var revocationReason))
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "IAM_REVOKED",
+                    message = revocationReason
+                }, ct);
+                return;
+            }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            await stream.CopyToAsync(httpContext.Response.Body, ct);
+            // Per-session Turn Coordination
+            queueManager.SetSessionTurnActive(request.SessionId, true);
+            try
+            {
+                var response = await client.StreamConsoleChatAsync(request, ct);
+                httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
+                httpContext.Response.StatusCode = (int)response.StatusCode;
+
+                await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                await stream.CopyToAsync(httpContext.Response.Body, ct);
+            }
+            finally
+            {
+                queueManager.SetSessionTurnActive(request.SessionId, false);
+            }
         })
         .WithName("ConsoleChatStream")
-        .WithSummary("SSE stream chat to agent")
+        .WithSummary("SSE stream chat to agent with queue and IAM guard")
         .AllowAnonymous();
 
-        group.MapPost("console/chat/stop", async ([FromBody] ConsoleChatStopRequestDto request, IQwenPawClient client, CancellationToken ct) =>
+        group.MapPost("console/chat/stop", async ([FromBody] ConsoleChatStopRequestDto request, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
+            queueManager.SetSessionTurnActive(request.SessionId, false);
             var ok = await client.StopChatAsync(request, ct);
             return ok ? TypedResults.Ok(new { stopped = true }) : Results.Problem("Failed to stop chat execution or no active turn.");
         })
@@ -140,6 +168,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithName("GetFileContent")
         .WithSummary("Read workspace file content with ACL enforcement")
         .AllowAnonymous();
+
         // 8. Infisical Credential Audit Endpoint
         group.MapGet("providers/{providerId}/credentials/audit", (string providerId) =>
         {
@@ -150,5 +179,74 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Audit provider credentials against Infisical policy without exposing secrets")
         .AllowAnonymous();
 
+        // 9. Token Usage Analytics
+        group.MapGet("analytics/token-usage", async (IQwenPawClient client, CancellationToken ct) =>
+        {
+            var metrics = await client.GetTokenUsageAsync(ct);
+            return metrics is null ? Results.NotFound() : TypedResults.Ok(metrics);
+        })
+        .WithName("GetTokenUsageAnalytics")
+        .WithSummary("Aggregate token consumption and cache hit metrics")
+        .AllowAnonymous();
+
+        // 10. IAM360 Revocation Trigger (Simulation / Webhook)
+        group.MapPost("iam/revoke", ([FromBody] RevokeIdentityCellRequest request) =>
+        {
+            IamRevocationGuard.MarkIdentityCellRevoked(request.IdentityCellId, request.Reason);
+            return TypedResults.Ok(new { success = true, revoked = request.IdentityCellId });
+        })
+        .WithName("RevokeIdentityCell")
+        .WithSummary("Revoke a Bot identity cell")
+        .AllowAnonymous();
+        // 11. Secure Upload Gateway (with Virtual Path Masking)
+        group.MapPost("console/upload", async (
+            IFormFile file,
+            IWebHostEnvironment env,
+            CancellationToken ct) =>
+        {
+            var (success, error, uploadResponse) = await SecureUploadStorageService.StoreFileAsync(
+                file,
+                env.ContentRootPath,
+                ct);
+
+            if (!success)
+            {
+                return Results.BadRequest(new { error });
+            }
+
+            return TypedResults.Ok(uploadResponse);
+        })
+        .WithName("SecureConsoleUpload")
+        .WithSummary("Upload file attachment with virtual path masking and extension security check")
+        .DisableAntiforgery()
+        .AllowAnonymous();
+        // 12. Agent Load & Activity Statistics (from QwenPaw agent-stats API)
+        group.MapGet("analytics/agent-stats", async (
+            [FromQuery] string? startDate,
+            [FromQuery] string? endDate,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var stats = await client.GetAgentStatsAsync(startDate, endDate, ct);
+            return stats is null ? Results.NotFound() : TypedResults.Ok(stats);
+        })
+        .WithName("GetAgentStatistics")
+        .WithSummary("Return comprehensive agent activity, session, message, and tool-call load statistics")
+        .AllowAnonymous();
+
+        group.MapGet("analytics/agent-stats/llm-tool-trend", async (
+            [FromQuery] string? startDate,
+            [FromQuery] string? endDate,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var trend = await client.GetGlobalLlmToolTrendAsync(startDate, endDate, ct);
+            return trend is null ? Results.NotFound() : TypedResults.Ok(trend);
+        })
+        .WithName("GetGlobalLlmToolTrend")
+        .WithSummary("Get daily LLM calls and tool execution trends aggregated across all agents")
+        .AllowAnonymous();
     }
 }
+
+public sealed record RevokeIdentityCellRequest(string IdentityCellId, string Reason);

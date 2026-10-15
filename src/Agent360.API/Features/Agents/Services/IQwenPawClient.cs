@@ -28,4 +28,11 @@ public interface IQwenPawClient
     // Workspace & Files
     Task<IReadOnlyList<WorkspaceTreeNodeDto>?> GetWorkspaceTreeAsync(CancellationToken cancellationToken = default);
     Task<string?> GetFileContentAsync(string path, CancellationToken cancellationToken = default);
+
+    // Agent Statistics & Load Metrics (from QwenPaw agent-stats API)
+    Task<AgentStatsSummaryDto?> GetAgentStatsAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<LlmToolDailyDto>?> GetGlobalLlmToolTrendAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default);
+
+    // Token Usage Analytics
+    Task<TokenUsageResponseDto?> GetTokenUsageAsync(CancellationToken cancellationToken = default);
 }

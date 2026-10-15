@@ -234,4 +234,28 @@ public sealed class QwenPawClient : IQwenPawClient
 
         return list;
     }
+    public async Task<AgentStatsSummaryDto?> GetAgentStatsAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default)
+    {
+        var queryParams = new List<string>();
+        if (!string.IsNullOrWhiteSpace(startDate)) queryParams.Add($"start_date={Uri.EscapeDataString(startDate)}");
+        if (!string.IsNullOrWhiteSpace(endDate)) queryParams.Add($"end_date={Uri.EscapeDataString(endDate)}");
+        
+        var url = "api/agent-stats" + (queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "");
+        return await _httpClient.GetFromJsonAsync<AgentStatsSummaryDto>(url, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<LlmToolDailyDto>?> GetGlobalLlmToolTrendAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default)
+    {
+        var queryParams = new List<string>();
+        if (!string.IsNullOrWhiteSpace(startDate)) queryParams.Add($"start_date={Uri.EscapeDataString(startDate)}");
+        if (!string.IsNullOrWhiteSpace(endDate)) queryParams.Add($"end_date={Uri.EscapeDataString(endDate)}");
+
+        var url = "api/agent-stats/llm-tool-trend" + (queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "");
+        return await _httpClient.GetFromJsonAsync<List<LlmToolDailyDto>>(url, cancellationToken);
+    }
+
+    public async Task<TokenUsageResponseDto?> GetTokenUsageAsync(CancellationToken cancellationToken = default)
+    {
+        return await _httpClient.GetFromJsonAsync<TokenUsageResponseDto>("api/token-usage", cancellationToken);
+    }
 }

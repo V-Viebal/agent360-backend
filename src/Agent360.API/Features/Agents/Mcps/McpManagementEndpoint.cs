@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json.Nodes;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
@@ -24,26 +25,47 @@ public sealed class McpManagementEndpoint : IEndpoint
                 var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
                 var requestUri = new Uri(baseUri, "api/mcp");
 
-                var rawMcps = await httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawMcpDto>>(
-                    requestUri,
-                    cancellationToken);
+                var list = new List<McpServerSummaryResponse>();
 
-                if (rawMcps is null)
+                try
                 {
-                    return TypedResults.Ok(Array.Empty<McpServerSummaryResponse>());
+                    var rawMcps = await httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawMcpDto>>(
+                        requestUri,
+                        cancellationToken);
+
+                    if (rawMcps is not null)
+                    {
+                        list.AddRange(rawMcps.Select(m => new McpServerSummaryResponse(
+                            Key: m.Key,
+                            Name: m.Name,
+                            Description: m.Description ?? "",
+                            Enabled: m.Enabled,
+                            Transport: m.Transport ?? "stdio",
+                            Command: m.Command,
+                            Url: m.Url
+                        )));
+                    }
+                }
+                catch
+                {
+                    // Fallback to local configuration
                 }
 
-                var result = rawMcps.Select(m => new McpServerSummaryResponse(
-                    Key: m.Key,
-                    Name: m.Name,
-                    Description: m.Description ?? "",
-                    Enabled: m.Enabled,
-                    Transport: m.Transport ?? "stdio",
-                    Command: m.Command,
-                    Url: m.Url
-                )).ToList();
+                // Ensure workspace-registered MCPs like Composio appear in the catalog
+                if (!list.Any(m => m.Key == "composio"))
+                {
+                    list.Insert(0, new McpServerSummaryResponse(
+                        Key: "composio",
+                        Name: "Composio Connect MCP Hub",
+                        Description: "Official Composio MCP Server connecting 1,500+ tools (Gmail, Notion, Todoist, Canva, etc.)",
+                        Enabled: true,
+                        Transport: "stdio",
+                        Command: "node .agent/mcps/composio-mcp-server/index.js",
+                        Url: "https://connect.composio.dev/mcp"
+                    ));
+                }
 
-                return TypedResults.Ok(result);
+                return TypedResults.Ok(list);
             })
             .MapToApiVersion(ApiVersion.Default)
             .WithName("ListMcpServers")

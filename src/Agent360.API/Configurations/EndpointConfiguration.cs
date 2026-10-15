@@ -10,6 +10,7 @@ public static class EndpointConfiguration
         public WebApplicationBuilder ConfigureEndpoints()
         {
             webAppBuilder.Services.AddScoped<LogtoWebhookSignatureFilter>();
+            webAppBuilder.Services.AddSingleton<SessionQueueManager>();
             webAppBuilder.Services.AddHttpClient<IQwenPawClient, QwenPawClient>();
             return webAppBuilder;
         }
