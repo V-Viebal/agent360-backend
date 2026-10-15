@@ -1,0 +1,16 @@
+﻿<Project Sdk="Aspire.AppHost.Sdk/13.5.4">
+
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<UserSecretsId>Agent360.AppHost</UserSecretsId>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Agent360.API\Agent360.API.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Aspire.Hosting.PostgreSQL" />
+	</ItemGroup>
+
+</Project>

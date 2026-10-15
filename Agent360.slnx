@@ -1,0 +1,33 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+	<File Path="global.json" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Agent360.API/Agent360.API.csproj" />
+    <Project Path="src/Agent360.AppHost/Agent360.AppHost.csproj" />
+    <Project Path="src/Agent360.ServiceDefaults/Agent360.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/" />
+  <Folder Name="/src/Modules/ReferenceData/">
+    <Project Path="src/Modules/ReferenceData/Agent360.ReferenceData.Domain/Agent360.ReferenceData.Domain.csproj" Id="7e8228ad-c564-420f-8ce6-250dcf1cf364" />
+    <Project Path="src/Modules/ReferenceData/Agent360.ReferenceData.Infrastructure/Agent360.ReferenceData.Infrastructure.csproj" Id="e9f21300-a827-4a5e-9a79-fe679f8b668f" />
+    <Project Path="src/Modules/ReferenceData/Agent360.ReferenceData.UseCase/Agent360.ReferenceData.UseCase.csproj" Id="a902ef98-9b71-4d3a-a603-d7c81725724c" />
+  </Folder>
+  <Folder Name="/src/Modules/UserManagement/">
+    <Project Path="src/Modules/UserManagement/Agent360.UserManagement.Infrastructure/Agent360.UserManagement.Infrastructure.csproj" Id="698d4f53-63a3-4ae0-b3dd-59fef3d00503" />
+    <Project Path="src/Modules/UserManagement/Agent360.UserManagement.UseCase/Agent360.UserManagement.UseCase.csproj" Id="44658607-a334-48e8-bb95-caa60ae1a3c2" />
+    <Project Path="src/Modules/UserManagement/Agent360.UserManagement.Domain/Agent360.UserManagement.Domain.csproj" Id="27d01f2a-5446-4762-9b46-52736a801547" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Agent360.API.ContractTests/Agent360.API.ContractTests.csproj" />
+    <Project Path="tests/Agent360.API.FunctionalTests/Agent360.API.FunctionalTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Modules/" />
+  <Folder Name="/tests/Modules/UserManagement/">
+    <Project Path="tests/Modules/UserManagement/Agent360.UserManagement.Domain.UnitTests/Agent360.UserManagement.Domain.UnitTests.csproj" />
+    <Project Path="tests/Modules/UserManagement/Agent360.UserManagement.UseCase.UnitTests/Agent360.UserManagement.UseCase.UnitTests.csproj" />
+  </Folder>
+</Solution>

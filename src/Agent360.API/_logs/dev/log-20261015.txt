@@ -1,0 +1,2201 @@
+[2026-10-15 16:26:48.323] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Connection]
+An error occurred using the connection to database 'hmz_template' on server 'tcp://127.0.0.1:5432'.
+
+[2026-10-15 16:26:48.455] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+
+[2026-10-15 16:26:48.466] [FTL] [Agent360.API] []
+Application failed to start correctly System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Agent360.ReferenceData.Infrastructure.Persistence.Seeds.LanguageSeeder.SeedAsync(AppDbContext context, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\Seeds\LanguageSeeder.cs:line 18
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 19
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 20
+   at Agent360.API.Configurations.ApplicationBootstrapper.SeedCoreAsync(IServiceProvider sp, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\ApplicationBootstrapper.cs:line 13
+   at Agent360.API.Configurations.DevelopmentExperienceConfiguration.ConfigureDevelopmentExperienceAsync(WebApplication app, CancellationToken cancellationToken, Boolean isTestHost) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\DevelopmentExperienceConfiguration.cs:line 19
+   at Program.<Main>$(String[] args) in D:\VPS\projects\agent360\backend\src\Agent360.API\Program.cs:line 159
+
+[2026-10-15 16:29:03.331] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Failed executing DbCommand (95ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:29:03.370] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+Npgsql.PostgresException (0x80004005): 42P01: relation "reference_data.Languages" does not exist
+
+POSITION: 170
+   at Npgsql.Internal.NpgsqlConnector.ReadMessageLong(Boolean async, DataRowLoadingMode dataRowLoadingMode, Boolean readingNotifications, Boolean isReadingPrependedMessage)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+  Exception data:
+    Severity: ERROR
+    SqlState: 42P01
+    MessageText: relation "reference_data.Languages" does not exist
+    Position: 170
+    File: parse_relation.c
+    Line: 1428
+    Routine: parserOpenTable
+Npgsql.PostgresException (0x80004005): 42P01: relation "reference_data.Languages" does not exist
+
+POSITION: 170
+   at Npgsql.Internal.NpgsqlConnector.ReadMessageLong(Boolean async, DataRowLoadingMode dataRowLoadingMode, Boolean readingNotifications, Boolean isReadingPrependedMessage)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+  Exception data:
+    Severity: ERROR
+    SqlState: 42P01
+    MessageText: relation "reference_data.Languages" does not exist
+    Position: 170
+    File: parse_relation.c
+    Line: 1428
+    Routine: parserOpenTable
+
+[2026-10-15 16:29:03.378] [FTL] [Agent360.API] []
+Application failed to start correctly Npgsql.PostgresException (0x80004005): 42P01: relation "reference_data.Languages" does not exist
+
+POSITION: 170
+   at Npgsql.Internal.NpgsqlConnector.ReadMessageLong(Boolean async, DataRowLoadingMode dataRowLoadingMode, Boolean readingNotifications, Boolean isReadingPrependedMessage)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Agent360.ReferenceData.Infrastructure.Persistence.Seeds.LanguageSeeder.SeedAsync(AppDbContext context, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\Seeds\LanguageSeeder.cs:line 18
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 19
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 20
+   at Agent360.API.Configurations.ApplicationBootstrapper.SeedCoreAsync(IServiceProvider sp, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\ApplicationBootstrapper.cs:line 13
+   at Agent360.API.Configurations.DevelopmentExperienceConfiguration.ConfigureDevelopmentExperienceAsync(WebApplication app, CancellationToken cancellationToken, Boolean isTestHost) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\DevelopmentExperienceConfiguration.cs:line 19
+   at Program.<Main>$(String[] args) in D:\VPS\projects\agent360\backend\src\Agent360.API\Program.cs:line 159
+  Exception data:
+    Severity: ERROR
+    SqlState: 42P01
+    MessageText: relation "reference_data.Languages" does not exist
+    Position: 170
+    File: parse_relation.c
+    Line: 1428
+    Routine: parserOpenTable
+
+[2026-10-15 16:32:24.973] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (97ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:25.133] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:25.262] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (59ms) [Parameters=[@p0='?', @p1='?' (DbType = DateTime), @p2='?' (DbType = Int64), @p3='?' (DbType = DateTime), @p4='?' (DbType = Int64), @p5='?' (DbType = Boolean), @p6='?' (DbType = Int64), @p7='?', @p8='?', @p9='?' (DbType = DateTime), @p10='?' (DbType = Int64), @p11='?' (DbType = DateTime), @p12='?' (DbType = Int64), @p13='?' (DbType = Boolean), @p14='?' (DbType = Int64), @p15='?'], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO reference_data."Languages" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "IsActive", "ModifiedBy", "Name")
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO reference_data."Languages" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "IsActive", "ModifiedBy", "Name")
+VALUES (@p8, @p9, @p10, @p11, @p12, @p13, @p14, @p15)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+
+[2026-10-15 16:32:25.497] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (127ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:25.661] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (149ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:25.805] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (131ms) [Parameters=[@p0='?', @p1='?' (DbType = DateTime), @p2='?' (DbType = Int64), @p3='?' (DbType = Int32), @p4='?' (DbType = DateTime), @p5='?' (DbType = Int64), @p6='?' (DbType = Boolean), @p7='?' (DbType = Int64), @p8='?', @p9='?', @p10='?' (DbType = DateTime), @p11='?' (DbType = Int64), @p12='?' (DbType = Int32), @p13='?' (DbType = DateTime), @p14='?' (DbType = Int64), @p15='?' (DbType = Boolean), @p16='?' (DbType = Int64), @p17='?'], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO reference_data."Currencies" ("Code", "CreatedAt", "CreatedBy", "DecimalDigits", "DeletedAt", "DeletedBy", "IsActive", "ModifiedBy", "Symbol")
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO reference_data."Currencies" ("Code", "CreatedAt", "CreatedBy", "DecimalDigits", "DeletedAt", "DeletedBy", "IsActive", "ModifiedBy", "Symbol")
+VALUES (@p9, @p10, @p11, @p12, @p13, @p14, @p15, @p16, @p17)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+
+[2026-10-15 16:32:26.144] [WRN] [Agent360.API] [Microsoft.EntityFrameworkCore.Model.Validation]
+Entity 'Permission' has a global query filter defined and is the required end of a relationship with the entity 'RolePermission'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+
+[2026-10-15 16:32:26.250] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (57ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:26.324] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:26.374] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:26.425] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:32:26.492] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@p0='?', @p1='?' (DbType = DateTime), @p2='?' (DbType = Int64), @p3='?' (DbType = DateTime), @p4='?' (DbType = Int64), @p5='?' (DbType = Boolean), @p6='?' (DbType = Int64), @p7='?', @p8='?' (DbType = DateTime), @p9='?', @p10='?' (DbType = DateTime), @p11='?' (DbType = Int64), @p12='?' (DbType = DateTime), @p13='?' (DbType = Int64), @p14='?' (DbType = Boolean), @p15='?' (DbType = Int64), @p16='?', @p17='?' (DbType = DateTime), @p18='?', @p19='?' (DbType = DateTime), @p20='?' (DbType = Int64), @p21='?' (DbType = DateTime), @p22='?' (DbType = Int64), @p23='?' (DbType = Boolean), @p24='?' (DbType = Int64), @p25='?', @p26='?' (DbType = DateTime), @p27='?', @p28='?' (DbType = DateTime), @p29='?' (DbType = Int64), @p30='?' (DbType = DateTime), @p31='?' (DbType = Int64), @p32='?' (DbType = Boolean), @p33='?' (DbType = Int64), @p34='?', @p35='?' (DbType = DateTime)], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO user_management."Roles" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "IsSystemRole", "ModifiedBy", "Name", "PermissionStamp")
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO user_management."Roles" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "IsSystemRole", "ModifiedBy", "Name", "PermissionStamp")
+VALUES (@p9, @p10, @p11, @p12, @p13, @p14, @p15, @p16, @p17)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO user_management."Roles" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "IsSystemRole", "ModifiedBy", "Name", "PermissionStamp")
+VALUES (@p18, @p19, @p20, @p21, @p22, @p23, @p24, @p25, @p26)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO user_management."Roles" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "IsSystemRole", "ModifiedBy", "Name", "PermissionStamp")
+VALUES (@p27, @p28, @p29, @p30, @p31, @p32, @p33, @p34, @p35)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+
+[2026-10-15 16:32:26.622] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (57ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:32:26.692] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:32:26.761] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (68ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:32:26.816] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:32:26.866] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:32:26.926] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@p0='?', @p1='?' (DbType = DateTime), @p2='?' (DbType = Int64), @p3='?' (DbType = DateTime), @p4='?' (DbType = Int64), @p5='?', @p6='?' (DbType = Int64), @p7='?', @p8='?', @p9='?' (DbType = DateTime), @p10='?' (DbType = Int64), @p11='?' (DbType = DateTime), @p12='?' (DbType = Int64), @p13='?', @p14='?' (DbType = Int64), @p15='?', @p16='?', @p17='?' (DbType = DateTime), @p18='?' (DbType = Int64), @p19='?' (DbType = DateTime), @p20='?' (DbType = Int64), @p21='?', @p22='?' (DbType = Int64), @p23='?', @p24='?', @p25='?' (DbType = DateTime), @p26='?' (DbType = Int64), @p27='?' (DbType = DateTime), @p28='?' (DbType = Int64), @p29='?', @p30='?' (DbType = Int64), @p31='?', @p32='?', @p33='?' (DbType = DateTime), @p34='?' (DbType = Int64), @p35='?' (DbType = DateTime), @p36='?' (DbType = Int64), @p37='?', @p38='?' (DbType = Int64), @p39='?'], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO user_management."Permissions" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "Description", "ModifiedBy", "Name")
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7)
+RETURNING "Id", "IsDeleted", "ModifiedAt";
+INSERT INTO user_management."Permissions" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "Description", "ModifiedBy", "Name")
+VALUES (@p8, @p9, @p10, @p11, @p12, @p13, @p14, @p15)
+RETURNING "Id", "IsDeleted", "ModifiedAt";
+INSERT INTO user_management."Permissions" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "Description", "ModifiedBy", "Name")
+VALUES (@p16, @p17, @p18, @p19, @p20, @p21, @p22, @p23)
+RETURNING "Id", "IsDeleted", "ModifiedAt";
+INSERT INTO user_management."Permissions" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "Description", "ModifiedBy", "Name")
+VALUES (@p24, @p25, @p26, @p27, @p28, @p29, @p30, @p31)
+RETURNING "Id", "IsDeleted", "ModifiedAt";
+INSERT INTO user_management."Permissions" ("Code", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "Description", "ModifiedBy", "Name")
+VALUES (@p32, @p33, @p34, @p35, @p36, @p37, @p38, @p39)
+RETURNING "Id", "IsDeleted", "ModifiedAt";
+
+[2026-10-15 16:32:27.040] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT p."Id", p."Code", p."CreatedAt", p."CreatedBy", p."DeletedAt", p."DeletedBy", p."Description", p."IsDeleted", p."ModifiedAt", p."ModifiedBy", p."Name"
+FROM user_management."Permissions" AS p
+WHERE NOT (p."IsDeleted")
+
+[2026-10-15 16:32:27.165] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'ADMIN'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:32:27.235] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'SYSTEM'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:32:27.325] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@p0='?' (DbType = Int64), @p1='?' (DbType = Int64), @p2='?' (DbType = DateTime), @p3='?' (DbType = Int64), @p4='?' (DbType = Int64), @p5='?' (DbType = Int64), @p6='?' (DbType = Int64), @p7='?' (DbType = Int64), @p8='?' (DbType = DateTime), @p9='?' (DbType = Int64), @p10='?' (DbType = Int64), @p11='?' (DbType = Int64), @p12='?' (DbType = Int64), @p13='?' (DbType = Int64), @p14='?' (DbType = DateTime), @p15='?' (DbType = Int64), @p16='?' (DbType = Int64), @p17='?' (DbType = Int64), @p18='?' (DbType = Int64), @p19='?' (DbType = Int64), @p20='?' (DbType = DateTime), @p21='?' (DbType = Int64), @p22='?' (DbType = Int64), @p23='?' (DbType = Int64), @p24='?' (DbType = Int64), @p25='?' (DbType = Int64), @p26='?' (DbType = DateTime), @p27='?' (DbType = Int64), @p28='?' (DbType = Int64), @p29='?' (DbType = Int64), @p30='?' (DbType = Int64), @p31='?' (DbType = Int64), @p32='?' (DbType = DateTime), @p33='?' (DbType = Int64), @p34='?' (DbType = Int64), @p35='?' (DbType = Int64), @p36='?' (DbType = Int64), @p37='?' (DbType = Int64), @p38='?' (DbType = DateTime), @p39='?' (DbType = Int64), @p40='?' (DbType = Int64), @p41='?' (DbType = Int64), @p42='?' (DbType = Int64), @p43='?' (DbType = Int64), @p44='?' (DbType = DateTime), @p45='?' (DbType = Int64), @p46='?' (DbType = Int64), @p47='?' (DbType = Int64), @p48='?' (DbType = Int64), @p49='?' (DbType = Int64), @p50='?' (DbType = DateTime), @p51='?' (DbType = Int64), @p52='?' (DbType = Int64), @p53='?' (DbType = Int64), @p56='?' (DbType = Int64), @p54='?' (DbType = DateTime), @p55='?' (DbType = DateTime), @p57='?' (DbType = Object), @p60='?' (DbType = Int64), @p58='?' (DbType = DateTime), @p59='?' (DbType = DateTime), @p61='?' (DbType = Object)], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p6, @p7, @p8, @p9, @p10, @p11)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p12, @p13, @p14, @p15, @p16, @p17)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p18, @p19, @p20, @p21, @p22, @p23)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p24, @p25, @p26, @p27, @p28, @p29)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p30, @p31, @p32, @p33, @p34, @p35)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p36, @p37, @p38, @p39, @p40, @p41)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p42, @p43, @p44, @p45, @p46, @p47)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."RolePermissions" ("PermissionId", "RoleId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p48, @p49, @p50, @p51, @p52, @p53)
+RETURNING "ModifiedAt";
+UPDATE user_management."Roles" SET "ModifiedAt" = @p54, "PermissionStamp" = @p55
+WHERE "Id" = @p56 AND xmin = @p57
+RETURNING xmin;
+UPDATE user_management."Roles" SET "ModifiedAt" = @p58, "PermissionStamp" = @p59
+WHERE "Id" = @p60 AND xmin = @p61
+RETURNING xmin;
+
+[2026-10-15 16:32:27.435] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+
+[2026-10-15 16:32:27.503] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:32:27.595] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:32:27.649] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:32:27.702] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:32:27.780] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@p0='?', @p1='?' (DbType = DateTime), @p2='?' (DbType = Int64), @p3='?' (DbType = DateTime), @p4='?' (DbType = Int64), @p5='?', @p6='?', @p7='?', @p8='?', @p9='?' (DbType = Int64), @p10='?' (DbType = DateTime), @p11='?' (DbType = Int64), @p12='?', @p13='?' (DbType = Int32), @p14='?', @p15='?', @p16='?', @p17='?', @p18='?', @p19='?' (DbType = DateTime), @p20='?' (DbType = Int64), @p21='?' (DbType = DateTime), @p22='?' (DbType = Int64), @p23='?', @p24='?', @p25='?', @p26='?', @p27='?' (DbType = Int64), @p28='?' (DbType = DateTime), @p29='?' (DbType = Int64), @p30='?', @p31='?' (DbType = Int32), @p32='?', @p33='?', @p34='?', @p35='?', @p36='?', @p37='?' (DbType = DateTime), @p38='?' (DbType = Int64), @p39='?' (DbType = DateTime), @p40='?' (DbType = Int64), @p41='?', @p42='?', @p43='?', @p44='?', @p45='?' (DbType = Int64), @p46='?' (DbType = DateTime), @p47='?' (DbType = Int64), @p48='?', @p49='?' (DbType = Int32), @p50='?', @p51='?', @p52='?', @p53='?', @p54='?', @p55='?' (DbType = DateTime), @p56='?' (DbType = Int64), @p57='?' (DbType = DateTime), @p58='?' (DbType = Int64), @p59='?', @p60='?', @p61='?', @p62='?', @p63='?' (DbType = Int64), @p64='?' (DbType = DateTime), @p65='?' (DbType = Int64), @p66='?', @p67='?' (DbType = Int32), @p68='?', @p69='?', @p70='?', @p71='?'], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO user_management."Users" ("AvatarUrl", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "DisplayName", "FirstName", "LastName", "LogtoUserId", "ModifiedBy", "PermissionStamp", "PreferredCurrencyId", "PreferredLanguageCode", "Status", "Email", "PhoneCountryCode", "PhoneExtension", "PhoneNumber")
+VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9, @p10, @p11, @p12, @p13, @p14, @p15, @p16, @p17)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO user_management."Users" ("AvatarUrl", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "DisplayName", "FirstName", "LastName", "LogtoUserId", "ModifiedBy", "PermissionStamp", "PreferredCurrencyId", "PreferredLanguageCode", "Status", "Email", "PhoneCountryCode", "PhoneExtension", "PhoneNumber")
+VALUES (@p18, @p19, @p20, @p21, @p22, @p23, @p24, @p25, @p26, @p27, @p28, @p29, @p30, @p31, @p32, @p33, @p34, @p35)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO user_management."Users" ("AvatarUrl", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "DisplayName", "FirstName", "LastName", "LogtoUserId", "ModifiedBy", "PermissionStamp", "PreferredCurrencyId", "PreferredLanguageCode", "Status", "Email", "PhoneCountryCode", "PhoneExtension", "PhoneNumber")
+VALUES (@p36, @p37, @p38, @p39, @p40, @p41, @p42, @p43, @p44, @p45, @p46, @p47, @p48, @p49, @p50, @p51, @p52, @p53)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+INSERT INTO user_management."Users" ("AvatarUrl", "CreatedAt", "CreatedBy", "DeletedAt", "DeletedBy", "DisplayName", "FirstName", "LastName", "LogtoUserId", "ModifiedBy", "PermissionStamp", "PreferredCurrencyId", "PreferredLanguageCode", "Status", "Email", "PhoneCountryCode", "PhoneExtension", "PhoneNumber")
+VALUES (@p54, @p55, @p56, @p57, @p58, @p59, @p60, @p61, @p62, @p63, @p64, @p65, @p66, @p67, @p68, @p69, @p70, @p71)
+RETURNING "Id", "IsDeleted", "ModifiedAt", xmin;
+
+[2026-10-15 16:32:27.837] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@p72='?' (DbType = Int64), @p73='?' (DbType = Int64), @p74='?' (DbType = DateTime), @p75='?' (DbType = Int64), @p76='?' (DbType = Int64), @p77='?' (DbType = Int64), @p78='?' (DbType = Int64), @p79='?' (DbType = Int64), @p80='?' (DbType = DateTime), @p81='?' (DbType = Int64), @p82='?' (DbType = Int64), @p83='?' (DbType = Int64), @p84='?' (DbType = Int64), @p85='?' (DbType = Int64), @p86='?' (DbType = DateTime), @p87='?' (DbType = Int64), @p88='?' (DbType = Int64), @p89='?' (DbType = Int64), @p90='?' (DbType = Int64), @p91='?' (DbType = Int64), @p92='?' (DbType = DateTime), @p93='?' (DbType = Int64), @p94='?' (DbType = Int64), @p95='?' (DbType = Int64)], CommandType='"Text"', CommandTimeout='30']
+INSERT INTO user_management."UserRoles" ("RoleId", "UserId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p72, @p73, @p74, @p75, @p76, @p77)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."UserRoles" ("RoleId", "UserId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p78, @p79, @p80, @p81, @p82, @p83)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."UserRoles" ("RoleId", "UserId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p84, @p85, @p86, @p87, @p88, @p89)
+RETURNING "ModifiedAt";
+INSERT INTO user_management."UserRoles" ("RoleId", "UserId", "CreatedAt", "CreatedBy", "Id", "ModifiedBy")
+VALUES (@p90, @p91, @p92, @p93, @p94, @p95)
+RETURNING "ModifiedAt";
+
+[2026-10-15 16:32:27.956] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 16:32:28.165] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://127.0.0.1:5290
+
+[2026-10-15 16:32:28.166] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 16:32:28.166] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 16:32:28.166] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 16:32:41.617] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 HEAD http://127.0.0.1:5290/scalar - null null
+
+[2026-10-15 16:32:41.722] [INF] [Agent360.API] [Microsoft.AspNetCore.Authorization.DefaultAuthorizationService]
+Authorization failed. These requirements were not met:
+DenyAnonymousAuthorizationRequirement: Requires an authenticated user.
+
+[2026-10-15 16:32:41.727] [ERR] [Agent360.API] [Hmz.Core.SharedKernel.Http.GlobalExceptionHandler]
+Unhandled exception while processing HEAD /scalar. TraceId: 00-f0055b595aaf911782df3123ecb613ed-15e5c012ecf886e0-01
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:32:41.761] [ERR] [Agent360.API] [Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware]
+An unhandled exception has occurred while executing the request.
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:32:41.762] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 HEAD http://127.0.0.1:5290/scalar - 500 null application/problem+json 146.1434ms
+
+[2026-10-15 16:32:47.510] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/openapi/v1.json - null null
+
+[2026-10-15 16:32:47.515] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /openapi/{documentName}.json'
+
+[2026-10-15 16:32:47.528] [INF] [Agent360.API] [Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider]
+No action descriptors found. This may indicate an incorrectly configured application or missing application parts. To learn more, visit https://aka.ms/aspnet/mvc/app-parts
+
+[2026-10-15 16:32:47.762] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /openapi/{documentName}.json'
+
+[2026-10-15 16:32:47.764] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/openapi/v1.json - 200 null application/json;charset=utf-8 254.6343ms
+
+[2026-10-15 16:32:52.482] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/reference-data/currencies - null null
+
+[2026-10-15 16:32:52.497] [INF] [Agent360.API] [Microsoft.AspNetCore.Authorization.DefaultAuthorizationService]
+Authorization failed. These requirements were not met:
+DenyAnonymousAuthorizationRequirement: Requires an authenticated user.
+
+[2026-10-15 16:32:52.497] [ERR] [Agent360.API] [Hmz.Core.SharedKernel.Http.GlobalExceptionHandler]
+Unhandled exception while processing GET /api/v1/reference-data/currencies. TraceId: 00-cbb46d6f82b904f960e80b1b47bd50b7-c1c7aa0496e835b3-01
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:32:52.498] [ERR] [Agent360.API] [Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware]
+An unhandled exception has occurred while executing the request.
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:32:52.498] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/reference-data/currencies - 500 null application/problem+json 16.3704ms
+
+[2026-10-15 16:33:44.654] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (93ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:44.758] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:44.832] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:44.887] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:45.055] [WRN] [Agent360.API] [Microsoft.EntityFrameworkCore.Model.Validation]
+Entity 'Permission' has a global query filter defined and is the required end of a relationship with the entity 'RolePermission'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+
+[2026-10-15 16:33:45.155] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:45.210] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:45.261] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:45.311] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:33:45.374] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:33:45.429] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:33:45.480] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:33:45.532] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:33:45.615] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (83ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:33:45.691] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (69ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT p."Id", p."Code", p."CreatedAt", p."CreatedBy", p."DeletedAt", p."DeletedBy", p."Description", p."IsDeleted", p."ModifiedAt", p."ModifiedBy", p."Name"
+FROM user_management."Permissions" AS p
+WHERE NOT (p."IsDeleted")
+
+[2026-10-15 16:33:45.816] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'ADMIN'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:33:45.965] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'SYSTEM'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:33:46.049] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+
+[2026-10-15 16:33:46.117] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:33:46.172] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:33:46.225] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:33:46.278] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:33:46.319] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 16:33:46.491] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://127.0.0.1:5290
+
+[2026-10-15 16:33:46.492] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 16:33:46.492] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 16:33:46.492] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 16:33:53.044] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - null null
+
+[2026-10-15 16:33:53.137] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-15 16:33:53.178] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-15 16:33:53.189] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 16:33:53.217] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-15 16:33:53.581] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 362.2893ms - 200
+
+[2026-10-15 16:33:53.590] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 388.6167ms
+
+[2026-10-15 16:33:53.595] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 406.5474ms
+
+[2026-10-15 16:33:53.597] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 418.8426ms - 200
+
+[2026-10-15 16:33:53.614] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 16:33:53.616] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 16:33:53.629] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-15 16:33:53.631] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - 200 null application/json; charset=utf-8 588.3499ms
+
+[2026-10-15 16:33:57.883] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/chats - null null
+
+[2026-10-15 16:33:57.893] [INF] [Agent360.API] [Microsoft.AspNetCore.Authorization.DefaultAuthorizationService]
+Authorization failed. These requirements were not met:
+DenyAnonymousAuthorizationRequirement: Requires an authenticated user.
+
+[2026-10-15 16:33:57.897] [ERR] [Agent360.API] [Hmz.Core.SharedKernel.Http.GlobalExceptionHandler]
+Unhandled exception while processing GET /api/v1/agents/mons/chats. TraceId: 00-8bb3d076bf88c92686ea2f01b7fc949e-7c804ec32baf0bad-01
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:33:57.923] [ERR] [Agent360.API] [Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware]
+An unhandled exception has occurred while executing the request.
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:33:57.924] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/chats - 500 null application/problem+json 40.3955ms
+
+[2026-10-15 16:34:19.472] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/chats - null null
+
+[2026-10-15 16:34:19.478] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/chats'
+
+[2026-10-15 16:34:19.480] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/chats
+
+[2026-10-15 16:34:19.480] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 16:34:19.481] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/chats
+
+[2026-10-15 16:34:20.030] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 548.7648ms - 200
+
+[2026-10-15 16:34:20.030] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 550.1358ms
+
+[2026-10-15 16:34:20.030] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 550.3832ms
+
+[2026-10-15 16:34:20.031] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 550.6483ms - 200
+
+[2026-10-15 16:34:20.094] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 16:34:20.095] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 16:34:20.097] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/chats'
+
+[2026-10-15 16:34:20.097] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/chats - 200 null application/json; charset=utf-8 624.9441ms
+
+[2026-10-15 16:48:37.741] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Connection]
+An error occurred using the connection to database 'hmz_template' on server 'tcp://127.0.0.1:5432'.
+
+[2026-10-15 16:48:37.777] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+
+[2026-10-15 16:48:37.787] [FTL] [Agent360.API] []
+Application failed to start correctly System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Agent360.ReferenceData.Infrastructure.Persistence.Seeds.LanguageSeeder.SeedAsync(AppDbContext context, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\Seeds\LanguageSeeder.cs:line 18
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 19
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 20
+   at Agent360.API.Configurations.ApplicationBootstrapper.SeedCoreAsync(IServiceProvider sp, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\ApplicationBootstrapper.cs:line 13
+   at Agent360.API.Configurations.DevelopmentExperienceConfiguration.ConfigureDevelopmentExperienceAsync(WebApplication app, CancellationToken cancellationToken, Boolean isTestHost) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\DevelopmentExperienceConfiguration.cs:line 19
+   at Program.<Main>$(String[] args) in D:\VPS\projects\agent360\backend\src\Agent360.API\Program.cs:line 159
+
+[2026-10-15 16:50:33.385] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Connection]
+An error occurred using the connection to database 'hmz_template' on server 'tcp://127.0.0.1:5432'.
+
+[2026-10-15 16:50:33.430] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+
+[2026-10-15 16:50:33.442] [WRN] [Agent360.API] [Agent360.API]
+Skipping database seeding because local PostgreSQL is not reachable at 127.0.0.1:5432. Agent360 API endpoints and QwenPaw infra proxies will continue running.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Agent360.ReferenceData.Infrastructure.Persistence.Seeds.LanguageSeeder.SeedAsync(AppDbContext context, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\Seeds\LanguageSeeder.cs:line 18
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 19
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 20
+   at Agent360.API.Configurations.ApplicationBootstrapper.SeedCoreAsync(IServiceProvider sp, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\ApplicationBootstrapper.cs:line 13
+   at Agent360.API.Configurations.DevelopmentExperienceConfiguration.ConfigureDevelopmentExperienceAsync(WebApplication app, CancellationToken cancellationToken, Boolean isTestHost) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\DevelopmentExperienceConfiguration.cs:line 21
+
+[2026-10-15 16:50:33.518] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 16:50:33.771] [WRN] [Agent360.API] [Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServer]
+The ASP.NET Core developer certificate is not trusted. For information about trusting the ASP.NET Core developer certificate, see https://aka.ms/aspnet/https-trust-dev-cert
+
+[2026-10-15 16:50:33.790] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://localhost:5290
+
+[2026-10-15 16:50:33.791] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: https://localhost:5300
+
+[2026-10-15 16:50:33.791] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 16:50:33.792] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 16:50:33.792] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 16:52:28.689] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Connection]
+An error occurred using the connection to database 'hmz_template' on server 'tcp://127.0.0.1:5432'.
+
+[2026-10-15 16:52:28.744] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+
+[2026-10-15 16:52:28.760] [WRN] [Agent360.API] [Agent360.API]
+Skipping database seeding because local PostgreSQL is not reachable at 127.0.0.1:5432. Agent360 API endpoints and QwenPaw infra proxies will continue running.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.ShapedQueryCompilingExpressionVisitor.SingleOrDefaultAsync[TSource](IAsyncEnumerable`1 asyncEnumerable, CancellationToken cancellationToken)
+   at Agent360.ReferenceData.Infrastructure.Persistence.Seeds.LanguageSeeder.SeedAsync(AppDbContext context, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\Seeds\LanguageSeeder.cs:line 18
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 19
+   at Agent360.ReferenceData.Infrastructure.Persistence.DataSeeder.SeedDataAsync(IServiceProvider sp, CancellationToken cancellationToken) in D:\VPS\projects\agent360\backend\src\Modules\ReferenceData\Agent360.ReferenceData.Infrastructure\Persistence\DataSeeder.cs:line 20
+   at Agent360.API.Configurations.ApplicationBootstrapper.SeedCoreAsync(IServiceProvider sp, CancellationToken ct) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\ApplicationBootstrapper.cs:line 13
+   at Agent360.API.Configurations.DevelopmentExperienceConfiguration.ConfigureDevelopmentExperienceAsync(WebApplication app, CancellationToken cancellationToken, Boolean isTestHost) in D:\VPS\projects\agent360\backend\src\Agent360.API\Configurations\DevelopmentExperienceConfiguration.cs:line 21
+
+[2026-10-15 16:52:28.828] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 16:52:29.119] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-15 16:52:29.119] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 16:52:29.119] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 16:52:29.119] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 16:53:17.221] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (108ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:17.357] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:17.450] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (61ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:17.509] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (57ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:17.727] [WRN] [Agent360.API] [Microsoft.EntityFrameworkCore.Model.Validation]
+Entity 'Permission' has a global query filter defined and is the required end of a relationship with the entity 'RolePermission'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+
+[2026-10-15 16:53:17.840] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:17.899] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (58ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:17.952] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:18.003] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:53:18.072] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:53:18.124] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:53:18.178] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:53:18.231] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:53:18.281] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:53:18.343] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT p."Id", p."Code", p."CreatedAt", p."CreatedBy", p."DeletedAt", p."DeletedBy", p."Description", p."IsDeleted", p."ModifiedAt", p."ModifiedBy", p."Name"
+FROM user_management."Permissions" AS p
+WHERE NOT (p."IsDeleted")
+
+[2026-10-15 16:53:18.488] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'ADMIN'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:53:18.666] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'SYSTEM'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:53:18.772] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+
+[2026-10-15 16:53:18.860] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (65ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:53:18.920] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:53:18.969] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (48ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:53:19.019] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:53:19.087] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 16:53:19.361] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://127.0.0.1:5290
+
+[2026-10-15 16:53:19.363] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 16:53:19.364] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 16:53:19.364] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 16:53:30.354] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/browser/pages - null null
+
+[2026-10-15 16:53:30.563] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/{agentId}/browser/pages'
+
+[2026-10-15 16:53:30.654] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET http://100.76.185.111:19223/json/list
+
+[2026-10-15 16:53:30.671] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 16:53:30.715] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET http://100.76.185.111:19223/json/list
+
+[2026-10-15 16:53:30.874] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 156.6057ms - 200
+
+[2026-10-15 16:53:30.888] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 198.016ms
+
+[2026-10-15 16:53:30.896] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 224.6132ms
+
+[2026-10-15 16:53:30.900] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 246.9964ms - 200
+
+[2026-10-15 16:53:30.918] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 16:53:30.920] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 16:53:30.944] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/{agentId}/browser/pages'
+
+[2026-10-15 16:53:30.948] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/browser/pages - 200 null application/json; charset=utf-8 595.149ms
+
+[2026-10-15 16:53:39.293] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/browser/screenshot - null null
+
+[2026-10-15 16:53:39.300] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/{agentId}/browser/screenshot'
+
+[2026-10-15 16:53:39.302] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET http://100.76.185.111:19223/json/list
+
+[2026-10-15 16:53:39.302] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 16:53:39.302] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET http://100.76.185.111:19223/json/list
+
+[2026-10-15 16:53:39.360] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 57.6197ms - 200
+
+[2026-10-15 16:53:39.361] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 58.4083ms
+
+[2026-10-15 16:53:39.361] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 58.9136ms
+
+[2026-10-15 16:53:39.361] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 59.3785ms - 200
+
+[2026-10-15 16:53:40.414] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 16:53:40.418] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'BrowserScreenshotResponse' as Json.
+
+[2026-10-15 16:53:40.433] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/{agentId}/browser/screenshot'
+
+[2026-10-15 16:53:40.433] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/browser/screenshot - 200 null application/json; charset=utf-8 1139.7822ms
+
+[2026-10-15 16:53:48.671] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 HEAD http://127.0.0.1:5290/api/v1/agents/mons/browser/image.jpg - null null
+
+[2026-10-15 16:53:48.680] [INF] [Agent360.API] [Microsoft.AspNetCore.Authorization.DefaultAuthorizationService]
+Authorization failed. These requirements were not met:
+DenyAnonymousAuthorizationRequirement: Requires an authenticated user.
+
+[2026-10-15 16:53:48.685] [ERR] [Agent360.API] [Hmz.Core.SharedKernel.Http.GlobalExceptionHandler]
+Unhandled exception while processing HEAD /api/v1/agents/mons/browser/image.jpg. TraceId: 00-4b3383b46d5f8a4928240b25ec3b0440-d8664207dfd15f78-01
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:53:48.767] [ERR] [Agent360.API] [Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware]
+An unhandled exception has occurred while executing the request.
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:53:48.768] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 HEAD http://127.0.0.1:5290/api/v1/agents/mons/browser/image.jpg - 500 null application/problem+json 96.5274ms
+
+[2026-10-15 16:54:34.042] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (124ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.179] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.264] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.320] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.622] [WRN] [Agent360.API] [Microsoft.EntityFrameworkCore.Model.Validation]
+Entity 'Permission' has a global query filter defined and is the required end of a relationship with the entity 'RolePermission'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+
+[2026-10-15 16:54:34.759] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (58ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.813] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.866] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.917] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 16:54:34.990] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (56ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:54:35.063] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (70ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:54:35.117] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:54:35.183] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (65ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:54:35.235] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 16:54:35.304] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (59ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT p."Id", p."Code", p."CreatedAt", p."CreatedBy", p."DeletedAt", p."DeletedBy", p."Description", p."IsDeleted", p."ModifiedAt", p."ModifiedBy", p."Name"
+FROM user_management."Permissions" AS p
+WHERE NOT (p."IsDeleted")
+
+[2026-10-15 16:54:35.461] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'ADMIN'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:54:35.652] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (58ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'SYSTEM'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 16:54:35.743] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+
+[2026-10-15 16:54:35.820] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:54:35.888] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (59ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:54:35.944] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:54:35.996] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 16:54:36.071] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 16:54:36.342] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://127.0.0.1:5290
+
+[2026-10-15 16:54:36.344] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 16:54:36.344] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 16:54:36.344] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 16:54:42.370] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 HEAD http://127.0.0.1:5290/api/v1/agents/mons/browser/image.jpg - null null
+
+[2026-10-15 16:54:42.512] [INF] [Agent360.API] [Microsoft.AspNetCore.Authorization.DefaultAuthorizationService]
+Authorization failed. These requirements were not met:
+DenyAnonymousAuthorizationRequirement: Requires an authenticated user.
+
+[2026-10-15 16:54:42.518] [ERR] [Agent360.API] [Hmz.Core.SharedKernel.Http.GlobalExceptionHandler]
+Unhandled exception while processing HEAD /api/v1/agents/mons/browser/image.jpg. TraceId: 00-9af5865449b5a42417a338732841feff-b7dd3da49e773afb-01
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:54:42.554] [ERR] [Agent360.API] [Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware]
+An unhandled exception has occurred while executing the request.
+System.InvalidOperationException: No authenticationScheme was specified, and there was no DefaultChallengeScheme found. The default schemes can be set using either AddAuthentication(string defaultScheme) or AddAuthentication(Action<AuthenticationOptions> configureOptions).
+   at Microsoft.AspNetCore.Authentication.AuthenticationService.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authentication.AuthenticationServiceImpl.ChallengeAsync(HttpContext context, String scheme, AuthenticationProperties properties)
+   at Microsoft.AspNetCore.Authorization.Policy.AuthorizationMiddlewareResultHandler.<>c__DisplayClass0_0.<<HandleAsync>g__Handle|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+   at Agent360.API.Middlewares.UserResolutionMiddleware.InvokeAsync(HttpContext context, IUserIdentityService userIdentityService, CurrentUser currentUser, PermissionSnapshotResolver permissionResolver, IPermissionSnapshotAccessor snapshotAccessor) in D:\VPS\projects\agent360\backend\src\Agent360.API\Middlewares\UserResolutionMiddleware.cs:line 24
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+
+[2026-10-15 16:54:42.555] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 HEAD http://127.0.0.1:5290/api/v1/agents/mons/browser/image.jpg - 500 null application/problem+json 186.4376ms
+
+[2026-10-15 16:54:48.814] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/browser/image.jpg - null null
+
+[2026-10-15 16:54:48.826] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/{agentId}/browser/image.jpg'
+
+[2026-10-15 16:54:48.911] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET http://100.76.185.111:19223/json/list
+
+[2026-10-15 16:54:48.924] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 16:54:48.963] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET http://100.76.185.111:19223/json/list
+
+[2026-10-15 16:54:49.121] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 154.8818ms - 200
+
+[2026-10-15 16:54:49.134] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 193.7044ms
+
+[2026-10-15 16:54:49.140] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 216.1979ms
+
+[2026-10-15 16:54:49.142] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 232.0404ms - 200
+
+[2026-10-15 16:54:49.616] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.FileContentResult]
+Sending file with download name ''.
+
+[2026-10-15 16:54:49.627] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/{agentId}/browser/image.jpg'
+
+[2026-10-15 16:54:49.629] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents/mons/browser/image.jpg - 200 30101 image/jpeg 815.1682ms
+
+[2026-10-15 17:03:09.914] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (109ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.031] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (56ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.109] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (56ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.179] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (68ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.367] [WRN] [Agent360.API] [Microsoft.EntityFrameworkCore.Model.Validation]
+Entity 'Permission' has a global query filter defined and is the required end of a relationship with the entity 'RolePermission'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+
+[2026-10-15 17:03:10.475] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (56ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.530] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.585] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.636] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:03:10.702] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:03:10.754] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:03:10.805] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (50ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:03:10.856] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:03:10.910] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:03:10.971] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT p."Id", p."Code", p."CreatedAt", p."CreatedBy", p."DeletedAt", p."DeletedBy", p."Description", p."IsDeleted", p."ModifiedAt", p."ModifiedBy", p."Name"
+FROM user_management."Permissions" AS p
+WHERE NOT (p."IsDeleted")
+
+[2026-10-15 17:03:11.120] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (57ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'ADMIN'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 17:03:11.315] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'SYSTEM'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 17:03:11.518] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+
+[2026-10-15 17:03:11.590] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:03:11.647] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (49ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:03:11.696] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (48ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:03:11.748] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:03:11.864] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 17:03:12.195] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://127.0.0.1:5290
+
+[2026-10-15 17:03:12.196] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 17:03:12.196] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 17:03:12.196] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 17:03:19.790] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/libraries/skills - null null
+
+[2026-10-15 17:03:19.979] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/libraries/skills'
+
+[2026-10-15 17:03:20.027] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/skills
+
+[2026-10-15 17:03:20.040] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 17:03:20.079] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/skills
+
+[2026-10-15 17:03:20.558] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 476.0392ms - 200
+
+[2026-10-15 17:03:20.569] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 512.0796ms
+
+[2026-10-15 17:03:20.576] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 535.74ms
+
+[2026-10-15 17:03:20.578] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 551.8057ms - 200
+
+[2026-10-15 17:03:20.594] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 17:03:20.596] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 17:03:20.613] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/libraries/skills'
+
+[2026-10-15 17:03:20.616] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/libraries/skills - 200 null application/json; charset=utf-8 827.0053ms
+
+[2026-10-15 17:03:26.769] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 POST http://127.0.0.1:5290/api/v1/media/upload - multipart/form-data; boundary=------------------------EdWEplVMhynXt34I5m30UY 221
+
+[2026-10-15 17:03:26.777] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: POST /api/v{version:apiVersion}/media/upload'
+
+[2026-10-15 17:03:26.813] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 17:03:26.817] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'MediaUploadResponse' as Json.
+
+[2026-10-15 17:03:26.821] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: POST /api/v{version:apiVersion}/media/upload'
+
+[2026-10-15 17:03:26.822] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 POST http://127.0.0.1:5290/api/v1/media/upload - 200 null application/json; charset=utf-8 53.2176ms
+
+[2026-10-15 17:03:32.407] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/media/files/c06b2a7a444d4f39a08bee84db8970b8.txt - null null
+
+[2026-10-15 17:03:32.413] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/media/files/{fileName}'
+
+[2026-10-15 17:03:32.414] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.PhysicalFileResult]
+Sending file with download name ''.
+
+[2026-10-15 17:03:32.422] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/media/files/{fileName}'
+
+[2026-10-15 17:03:32.422] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/media/files/c06b2a7a444d4f39a08bee84db8970b8.txt - 200 16 application/octet-stream 15.6523ms
+
+[2026-10-15 17:03:38.854] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 POST http://127.0.0.1:5290/api/v1/agents/mons/media/send - application/json 109
+
+[2026-10-15 17:03:38.854] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: POST /api/v{version:apiVersion}/agents/{agentId}/media/send'
+
+[2026-10-15 17:03:38.866] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 17:03:38.866] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'SendMediaMessageResponse' as Json.
+
+[2026-10-15 17:03:38.867] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: POST /api/v{version:apiVersion}/agents/{agentId}/media/send'
+
+[2026-10-15 17:03:38.868] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 POST http://127.0.0.1:5290/api/v1/agents/mons/media/send - 200 null application/json; charset=utf-8 14.0928ms
+
+[2026-10-15 17:11:25.692] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (95ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:25.798] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT l."Id", l."Code", l."CreatedAt", l."CreatedBy", l."DeletedAt", l."DeletedBy", l."IsActive", l."IsDeleted", l."ModifiedAt", l."ModifiedBy", l."Name", l.xmin
+FROM reference_data."Languages" AS l
+WHERE NOT (l."IsDeleted") AND l."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:25.872] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:25.937] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (63ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT c."Id", c."Code", c."CreatedAt", c."CreatedBy", c."DecimalDigits", c."DeletedAt", c."DeletedBy", c."IsActive", c."IsDeleted", c."ModifiedAt", c."ModifiedBy", c.xmin, c."Symbol"
+FROM reference_data."Currencies" AS c
+WHERE NOT (c."IsDeleted") AND c."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:26.109] [WRN] [Agent360.API] [Microsoft.EntityFrameworkCore.Model.Validation]
+Entity 'Permission' has a global query filter defined and is the required end of a relationship with the entity 'RolePermission'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+
+[2026-10-15 17:11:26.207] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:26.263] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:26.315] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:26.370] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@code='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+WHERE NOT (r."IsDeleted") AND r."Code" = @code
+LIMIT 1
+
+[2026-10-15 17:11:26.439] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:11:26.492] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:11:26.544] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:11:26.602] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (58ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:11:26.658] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@item_Item1='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT EXISTS (
+    SELECT 1
+    FROM user_management."Permissions" AS p
+    WHERE NOT (p."IsDeleted") AND p."Code" = @item_Item1)
+
+[2026-10-15 17:11:27.083] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (418ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT p."Id", p."Code", p."CreatedAt", p."CreatedBy", p."DeletedAt", p."DeletedBy", p."Description", p."IsDeleted", p."ModifiedAt", p."ModifiedBy", p."Name"
+FROM user_management."Permissions" AS p
+WHERE NOT (p."IsDeleted")
+
+[2026-10-15 17:11:27.232] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (72ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'ADMIN'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 17:11:27.387] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (53ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r1."Id", r1."Code", r1."CreatedAt", r1."CreatedBy", r1."DeletedAt", r1."DeletedBy", r1."IsDeleted", r1."IsSystemRole", r1."ModifiedAt", r1."ModifiedBy", r1."Name", r1."PermissionStamp", r1.xmin, r0."RoleId", r0."PermissionId", r0."CreatedAt", r0."CreatedBy", r0."Id", r0."ModifiedAt", r0."ModifiedBy"
+FROM (
+    SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+    FROM user_management."Roles" AS r
+    WHERE NOT (r."IsDeleted") AND r."Code" = 'SYSTEM'
+    LIMIT 2
+) AS r1
+LEFT JOIN user_management."RolePermissions" AS r0 ON r1."Id" = r0."RoleId"
+ORDER BY r1."Id", r0."RoleId"
+
+[2026-10-15 17:11:27.478] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (56ms) [Parameters=[], CommandType='"Text"', CommandTimeout='30']
+SELECT r."Id", r."Code", r."CreatedAt", r."CreatedBy", r."DeletedAt", r."DeletedBy", r."IsDeleted", r."IsSystemRole", r."ModifiedAt", r."ModifiedBy", r."Name", r."PermissionStamp", r.xmin
+FROM user_management."Roles" AS r
+
+[2026-10-15 17:11:27.550] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (55ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:11:27.606] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (51ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:11:27.661] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (54ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:11:27.713] [INF] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Command]
+Executed DbCommand (52ms) [Parameters=[@externalUserId='?', @email='?'], CommandType='"Text"', CommandTimeout='30']
+SELECT u."Id", u."AvatarUrl", u."CreatedAt", u."CreatedBy", u."DeletedAt", u."DeletedBy", u."DisplayName", u."FirstName", u."IsDeleted", u."LastName", u."LogtoUserId", u."ModifiedAt", u."ModifiedBy", u."PermissionStamp", u."PreferredCurrencyId", u."PreferredLanguageCode", u.xmin, u."Status", u."Email", u."PhoneCountryCode", u."PhoneExtension", u."PhoneNumber"
+FROM user_management."Users" AS u
+WHERE NOT (u."IsDeleted") AND (u."LogtoUserId" = @externalUserId OR u."Email" = @email)
+LIMIT 1
+
+[2026-10-15 17:11:27.769] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 17:11:27.992] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://127.0.0.1:5290
+
+[2026-10-15 17:11:27.993] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 17:11:27.993] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 17:11:27.993] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 17:11:34.467] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/schedules - null null
+
+[2026-10-15 17:11:34.651] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/schedules'
+
+[2026-10-15 17:11:34.696] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/cron/jobs
+
+[2026-10-15 17:11:34.707] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 17:11:34.738] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/cron/jobs
+
+[2026-10-15 17:11:35.116] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 376.3427ms - 200
+
+[2026-10-15 17:11:35.126] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 405.2389ms
+
+[2026-10-15 17:11:35.132] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 425.3225ms
+
+[2026-10-15 17:11:35.134] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 439.3431ms - 200
+
+[2026-10-15 17:11:35.149] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 17:11:35.151] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 17:11:35.164] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/schedules'
+
+[2026-10-15 17:11:35.166] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/schedules - 200 null application/json; charset=utf-8 701.3916ms
+
+[2026-10-15 17:11:41.282] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/mcps - null null
+
+[2026-10-15 17:11:41.288] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/mcps'
+
+[2026-10-15 17:11:41.289] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/mcp
+
+[2026-10-15 17:11:41.290] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 17:11:41.290] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/mcp
+
+[2026-10-15 17:11:46.592] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 5301.6923ms - 200
+
+[2026-10-15 17:11:46.592] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 5302.5721ms
+
+[2026-10-15 17:11:46.593] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 5302.9881ms
+
+[2026-10-15 17:11:46.593] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 5303.5085ms - 200
+
+[2026-10-15 17:11:46.597] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 17:11:46.598] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 17:11:46.601] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/mcps'
+
+[2026-10-15 17:11:46.601] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/mcps - 200 null application/json; charset=utf-8 5318.8587ms
+
+[2026-10-15 17:11:51.971] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/tools - null null
+
+[2026-10-15 17:11:51.976] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/tools'
+
+[2026-10-15 17:11:51.978] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/tools
+
+[2026-10-15 17:11:51.978] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 17:11:51.978] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/tools
+
+[2026-10-15 17:11:52.222] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 244.454ms - 200
+
+[2026-10-15 17:11:52.223] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 244.902ms
+
+[2026-10-15 17:11:52.223] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 245.0509ms
+
+[2026-10-15 17:11:52.223] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 245.2783ms - 200
+
+[2026-10-15 17:11:52.225] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 17:11:52.226] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 17:11:52.227] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/tools'
+
+[2026-10-15 17:11:52.227] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/tools - 200 null application/json; charset=utf-8 256.5377ms
+
+[2026-10-15 17:11:58.972] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/openapi/v1.json - null null
+
+[2026-10-15 17:11:58.973] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /openapi/{documentName}.json'
+
+[2026-10-15 17:11:58.991] [INF] [Agent360.API] [Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider]
+No action descriptors found. This may indicate an incorrectly configured application or missing application parts. To learn more, visit https://aka.ms/aspnet/mvc/app-parts
+
+[2026-10-15 17:11:59.300] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /openapi/{documentName}.json'
+
+[2026-10-15 17:11:59.301] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/openapi/v1.json - 200 null application/json;charset=utf-8 328.2931ms
+

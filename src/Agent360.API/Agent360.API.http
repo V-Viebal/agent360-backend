@@ -1,0 +1,90 @@
+@Agent360.API_HostAddress = http://localhost:5290
+@AccessToken = paste-access-token-here
+
+### Create role and require that the code does not already exist
+# @name createRole
+POST {{Agent360.API_HostAddress}}/api/v1/roles
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+Accept: application/json
+If-None-Match: *
+
+{
+  "name": "HTTP ETag Demo",
+  "code": "HTTP_ETAG_DEMO"
+}
+
+### Get the created role and capture its current ETag for later requests
+# @name getRole
+GET {{Agent360.API_HostAddress}}/api/v1/roles/{{createRole.response.body.$.id}}
+Authorization: Bearer {{AccessToken}}
+Accept: application/json
+
+### Conditional GET: returns 304 Not Modified while the ETag is current
+GET {{Agent360.API_HostAddress}}/api/v1/roles/{{createRole.response.body.$.id}}
+Authorization: Bearer {{AccessToken}}
+Accept: application/json
+If-None-Match: {{getRole.response.headers.ETag}}
+
+### Update using the strong ETag returned by GET; the response returns a new ETag
+# @name updateRole
+PUT {{Agent360.API_HostAddress}}/api/v1/roles/{{createRole.response.body.$.id}}
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+Accept: application/json
+If-Match: {{getRole.response.headers.ETag}}
+
+{
+  "name": "HTTP ETag Demo Updated",
+  "code": "HTTP_ETAG_DEMO"
+}
+
+### Optional stale-write check: returns 412 because GET's ETag was replaced by UPDATE
+PUT {{Agent360.API_HostAddress}}/api/v1/roles/{{createRole.response.body.$.id}}
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+Accept: application/json
+If-Match: {{getRole.response.headers.ETag}}
+
+{
+  "name": "This stale update must fail",
+  "code": "HTTP_ETAG_DEMO"
+}
+
+### Delete using the new ETag returned by UPDATE
+DELETE {{Agent360.API_HostAddress}}/api/v1/roles/{{createRole.response.body.$.id}}
+Authorization: Bearer {{AccessToken}}
+Accept: application/json
+If-Match: {{updateRole.response.headers.ETag}}
+
+### Advanced role search: global search + filter + multi-key sort + pagination
+POST {{Agent360.API_HostAddress}}/api/v1/roles/search
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "search": [
+    {
+      "searchFields": ["Id", "Name", "Code"],
+      "searchValue": "admin",
+      "operator": "CT"
+    }
+  ],
+  "filter": {
+    "logic": "AND",
+    "filters": [
+      {
+        "searchField": "IsSystemRole",
+        "searchValues": ["false"],
+        "operator": "EQ"
+      }
+    ]
+  },
+  "orderBy": [
+    { "field": "Name", "direction": "Desc" },
+    { "field": "Id", "direction": "Asc" }
+  ],
+  "page": 1,
+  "limit": 20
+}

@@ -1,0 +1,11 @@
+* text=auto
+
+# Bash and workflow files must remain LF so they execute on Linux runners and
+# from Git Bash/WSL on Windows developer machines.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+# The repository's .editorconfig intentionally keeps C# in CRLF format.
+*.cs text eol=crlf
