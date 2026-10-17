@@ -205,3 +205,64 @@ public sealed class DelegationLifecycleTests : IDisposable
         (await _store.GetTaskAsync("dlg_0104")).Should().BeNull();
     }
 }
+
+public sealed class RuntimeUnavailableExceptionHandlerTests
+{
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private static (Microsoft.AspNetCore.Http.DefaultHttpContext Http, MemoryStream Body) Ctx()
+    {
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        var body = new MemoryStream();
+        http.Response.Body = body;
+        http.Request.Path = "/api/v1/agents/mons/chats";
+        return (http, body);
+    }
+
+    [Fact]
+    public async Task RuntimeUnreachable_Maps503WithRetryAfter()
+    {
+        var (http, body) = Ctx();
+        var h = new Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler(NullLogger<Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler>.Instance);
+        (await h.TryHandleAsync(http, new HttpRequestException("QwenPaw instance 'core' is unreachable", new TaskCanceledException()), Ct)).Should().BeTrue();
+        http.Response.StatusCode.Should().Be(503);
+        http.Response.Headers.RetryAfter.ToString().Should().Be("5");
+        System.Text.Encoding.UTF8.GetString(body.ToArray()).Should().Contain("\"retryable\":true");
+    }
+
+    [Fact]
+    public async Task OtherExceptions_AreLeftToGlobalHandler()
+    {
+        var (http, _) = Ctx();
+        var h = new Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler(NullLogger<Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler>.Instance);
+        (await h.TryHandleAsync(http, new InvalidOperationException("bug"), Ct)).Should().BeFalse();
+        (await h.TryHandleAsync(http, new NullReferenceException(), Ct)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ClientAbort_IsSwallowed()
+    {
+        var (http, _) = Ctx();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        http.RequestAborted = cts.Token;
+        var h = new Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler(NullLogger<Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler>.Instance);
+        (await h.TryHandleAsync(http, new OperationCanceledException(), Ct)).Should().BeTrue();
+        http.Response.StatusCode.Should().Be(499);
+    }
+}
+
+public sealed class RuntimeProxyOperatorGuardTests
+{
+    [Fact]
+    public void ProxyGuard_RequiresTokenOnlyForWritesWhenEnabled()
+    {
+        var env = new TestEnv("/") { EnvironmentName = "Production" };
+        var opt = new Agent360SecurityOptions { OperatorToken = "s3cret", ProtectRuntimeProxyWrites = true };
+        var post = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        post.Request.Method = "POST";
+        OperatorAuthFilter.IsAuthorized(post, opt, env).Should().BeFalse();
+        post.Request.Headers[OperatorAuthFilter.HeaderName] = "s3cret";
+        OperatorAuthFilter.IsAuthorized(post, opt, env).Should().BeTrue();
+    }
+}

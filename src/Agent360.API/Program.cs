@@ -97,6 +97,8 @@ try
     //    options.AddBasePolicy(policy => policy.Expire(TimeSpan.FromMinutes(10)));
     //});
 
+    // Must be registered before the shared handler: IExceptionHandlers run in registration order.
+    builder.Services.AddExceptionHandler<Agent360.API.Features.Agents.Services.RuntimeUnavailableExceptionHandler>();
     builder.Services.AddHmzProblemDetails();
     builder.Services.AddValidation();
 
