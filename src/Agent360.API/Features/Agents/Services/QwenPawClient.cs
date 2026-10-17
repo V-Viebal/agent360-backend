@@ -281,7 +281,24 @@ public sealed class QwenPawClient : IQwenPawClient
             Tools: DefaultTools);
     }
 
+    private const string GuardianLastGoodKey = "agent360:guardian:last-good";
+
+    // Guardian is the only source for non-QwenPaw agents; reuse its last good list when it blips so
+    // the fleet snapshot never shrinks to runtime-only agents.
     private async Task<IReadOnlyList<AgentSummaryResponse>> LoadAgentsFromGuardianAsync(CancellationToken cancellationToken)
+    {
+        var agents = await FetchGuardianAgentsAsync(cancellationToken);
+        if (agents.Count > 0)
+        {
+            _cache.Set(GuardianLastGoodKey, agents, TimeSpan.FromHours(6));
+            return agents;
+        }
+        return _cache.TryGetValue(GuardianLastGoodKey, out IReadOnlyList<AgentSummaryResponse>? lastGood) && lastGood is not null
+            ? lastGood
+            : agents;
+    }
+
+    private async Task<IReadOnlyList<AgentSummaryResponse>> FetchGuardianAgentsAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -290,7 +307,7 @@ public sealed class QwenPawClient : IQwenPawClient
             request.Headers.Add("Accept", "application/json");
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            cts.CancelAfter(TimeSpan.FromSeconds(8));
 
             using var response = await _httpClient.SendAsync(request, cts.Token);
             if (!response.IsSuccessStatusCode)
