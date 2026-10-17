@@ -6,6 +6,7 @@ using Agent360.API.Constants;
 using Agent360.API.Features.Agents.Security;
 using Agent360.API.Features.Agents.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Agent360.API.Features.Agents.Integrations;
 
@@ -23,6 +24,8 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                 [FromQuery] string? agentIdQuery,
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
+                IMemoryCache cache,
+                HttpContext http,
                 CancellationToken ct) =>
             {
                 var targetAgent = !string.IsNullOrWhiteSpace(agentIdHeader) 
@@ -34,19 +37,44 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                     targetAgent = targetAgent.Split(':').Last();
                 }
                 var target = routing.ResolveTarget(targetAgent);
-                var requestUri = AgentUri(target, "mcp");
-
-                using var req = new HttpRequestMessage(HttpMethod.Get, requestUri);
-                req.Headers.Add("X-Agent-Id", targetAgent);
-
-                using var resp = await SendRoutedAsync(httpClient, routing, targetAgent, req, ct);
-                if (!resp.IsSuccessStatusCode)
+                if (target.Instance is null)
                 {
-                    return Results.StatusCode((int)resp.StatusCode);
+                    // Non-QwenPaw runtimes (Agent Guardian / LLM360 edges) have no MCP client registry.
+                    return Results.Ok(new JsonArray());
                 }
 
-                var json = await resp.Content.ReadFromJsonAsync<JsonNode>(ct);
-                return Results.Ok(json);
+                // Same cache the background warmer and the agent proxy use: answer instantly when warm,
+                // fall back to the last good copy when the runtime is slow or down.
+                var key = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(targetAgent, "mcp");
+                if (cache.TryGetValue(key, out Agent360.API.Features.Agents.Endpoints.CachedResponse? fresh) && fresh is not null)
+                {
+                    http.Response.Headers["X-Agent360-Cache"] = "HIT";
+                    return Results.Bytes(fresh.Body, fresh.ContentType);
+                }
+
+                try
+                {
+                    var requestUri = AgentUri(target, "mcp");
+                    using var req = new HttpRequestMessage(HttpMethod.Get, requestUri);
+                    req.Headers.Add("X-Agent-Id", targetAgent);
+
+                    using var resp = await SendRoutedAsync(httpClient, routing, targetAgent, req, ct);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        return StaleOr(cache, key, http) ?? Results.StatusCode((int)resp.StatusCode);
+                    }
+
+                    var payload = await resp.Content.ReadAsByteArrayAsync(ct);
+                    var type = resp.Content.Headers.ContentType?.ToString() ?? "application/json";
+                    cache.Set(key, new Agent360.API.Features.Agents.Endpoints.CachedResponse(payload, type), TimeSpan.FromSeconds(30));
+                    cache.Set(key + ":last-good", new Agent360.API.Features.Agents.Endpoints.CachedResponse(payload, type), TimeSpan.FromMinutes(30));
+                    http.Response.Headers["X-Agent360-Cache"] = "MISS";
+                    return Results.Bytes(payload, type);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException)
+                {
+                    return StaleOr(cache, key, http) ?? throw new HttpRequestException($"MCP list for '{targetAgent}' unavailable", ex);
+                }
             })
             .MapToApiVersion(ApiVersion.Default)
             .WithName("GetAgentMcpClients")
@@ -351,6 +379,16 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             .AllowAnonymous();
     }
 
+
+    private static IResult? StaleOr(IMemoryCache cache, string key, HttpContext http)
+    {
+        if (!cache.TryGetValue(key + ":last-good", out Agent360.API.Features.Agents.Endpoints.CachedResponse? stale) || stale is null)
+        {
+            return null;
+        }
+        http.Response.Headers["X-Agent360-Cache"] = "STALE";
+        return Results.Bytes(stale.Body, stale.ContentType);
+    }
 
     private static Uri AgentUri(ResolvedInstanceTarget target, string relative) =>
         new($"{target.BaseUrl.TrimEnd('/')}/api/agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/{relative.TrimStart('/')}");
