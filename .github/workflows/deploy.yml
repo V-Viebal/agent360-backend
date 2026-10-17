@@ -42,7 +42,9 @@ jobs:
       - name: Deploy (keep previous build for rollback)
         run: |
           rm -rf "${APP_ROOT}.prev" && cp -a "$APP_ROOT" "${APP_ROOT}.prev"
-          cp -a "$RUNNER_TEMP/publish/." "$APP_ROOT/"
+          # The running apphost is busy: unlink-then-copy (--remove-destination) keeps the old inode
+          # alive for the current process and installs the new file for the restart.
+          cp -a --remove-destination "$RUNNER_TEMP/publish/." "$APP_ROOT/"
           sudo -n /usr/local/sbin/agent360-restart backend
 
       - name: Verify live API (rollback on failure)
@@ -53,7 +55,7 @@ jobs:
             sleep 5
           done
           echo "api not healthy ($code), rolling back" >&2
-          cp -a "${APP_ROOT}.prev/." "$APP_ROOT/"
+          cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/"
           sudo -n /usr/local/sbin/agent360-restart backend
           exit 1
 
