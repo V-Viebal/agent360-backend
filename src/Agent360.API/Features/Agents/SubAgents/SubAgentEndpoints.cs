@@ -143,6 +143,10 @@ public sealed class SubAgentEndpoints : IEndpoint
         {
             return Results.Problem(detail: ex.Message, statusCode: 502, title: "QwenPaw runtime request failed");
         }
+        catch (OperationCanceledException) when (!ctx.HttpContext.RequestAborted.IsCancellationRequested)
+        {
+            return Results.Problem(detail: "QwenPaw runtime did not respond in time; retry or use ?wait=false and poll subagents/skill-status.", statusCode: 504, title: "QwenPaw runtime timed out");
+        }
     }
 
     private static IResult Problem(PolicyDecision d) =>

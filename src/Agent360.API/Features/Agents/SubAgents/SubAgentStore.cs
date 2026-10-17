@@ -16,6 +16,9 @@ public sealed class SubAgentStore
     private List<SubAgentBinding> _bindings;
     private List<DelegationTask> _tasks;
 
+    /// <summary>In-process record of the last skill content fingerprint pushed per parent agent.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<string, string> SyncedSkillFingerprints { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public SubAgentStore(IOptions<SubAgentOptions> options, IHostEnvironment env)
     {
         var dir = Path.IsPathRooted(options.Value.StoragePath)

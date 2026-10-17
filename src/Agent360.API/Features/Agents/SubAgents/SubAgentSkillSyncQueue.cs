@@ -65,7 +65,7 @@ public sealed class SubAgentSkillSyncQueue(
                 {
                     using var scope = scopes.CreateScope();
                     var svc = scope.ServiceProvider.GetRequiredService<SubAgentService>();
-                    var (ok, _) = await svc.SyncSkillAsync(parent, stoppingToken);
+                    var (ok, _) = await svc.SyncSkillAsync(parent, force: attempt > 1, stoppingToken);
                     if (ok) { error = null; break; }
                     error = "QwenPaw runtime rejected the skill upsert";
                 }

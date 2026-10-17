@@ -115,4 +115,17 @@ public sealed class SubAgentSkillSyncQueueTests : IAsyncLifetime
         cache.TryGetValue("agent360:proxy:mons:skills", out _).Should().BeFalse();
         cache.TryGetValue("agent360:skills:mons", out _).Should().BeFalse();
     }
+
+    [Fact]
+    public async Task UnchangedBindings_SkipRedundantRuntimeWrite()
+    {
+        _queue.Enqueue("mons");
+        (await WaitFor("mons", "synced", "failed")).State.Should().Be("synced");
+        var before = _fake.Calls.Count(c => c.Path == "/api/skills");
+        await Task.Delay(1100, Ct); // timestamp changes; fingerprint must ignore it
+        _queue.Enqueue("mons");
+        await Task.Delay(50, Ct);
+        (await WaitFor("mons", "synced", "failed")).State.Should().Be("synced");
+        _fake.Calls.Count(c => c.Path == "/api/skills").Should().Be(before);
+    }
 }

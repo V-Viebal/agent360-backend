@@ -70,12 +70,25 @@ public sealed class SubAgentService(
         else await SyncSkillAsync(parent, ct);
     }
 
-    public async Task<(bool Synced, string Content)> SyncSkillAsync(string parent, CancellationToken ct)
+    public async Task<(bool Synced, string Content)> SyncSkillAsync(string parent, CancellationToken ct) =>
+        await SyncSkillAsync(parent, force: true, ct);
+
+    public async Task<(bool Synced, string Content)> SyncSkillAsync(string parent, bool force, CancellationToken ct)
     {
         parent = NormalizeAgentId(parent);
         var content = SubAgentSkillGenerator.Generate(parent, await store.GetBindingsAsync(parent));
+        var fingerprint = SubAgentSkillGenerator.Fingerprint(content);
+        if (!force && store.SyncedSkillFingerprints.TryGetValue(parent, out var last) && last == fingerprint)
+        {
+            return (true, content);
+        }
         var ok = await native.UpsertSkillAsync(parent, SubAgentSkillGenerator.SkillName, content, ct);
-        if (!ok) logger.LogWarning("Failed to sync {Skill} into agent {Agent}", SubAgentSkillGenerator.SkillName, parent);
+        if (ok) store.SyncedSkillFingerprints[parent] = fingerprint;
+        else
+        {
+            store.SyncedSkillFingerprints.TryRemove(parent, out _);
+            logger.LogWarning("Failed to sync {Skill} into agent {Agent}", SubAgentSkillGenerator.SkillName, parent);
+        }
         return (ok, content);
     }
 
