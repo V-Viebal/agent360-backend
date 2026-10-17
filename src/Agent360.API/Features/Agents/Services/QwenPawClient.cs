@@ -221,7 +221,22 @@ public sealed class QwenPawClient : IQwenPawClient
         }
     };
 
+    // A runtime that blips must not drop its agents (or their enabled=false flag) from the fleet snapshot.
     private async Task<IReadOnlyList<QwenPawAgentDto>> LoadRuntimeAgentsAsync(QwenPawInstance instance, CancellationToken ct)
+    {
+        var key = $"agent360:runtime-agents:{instance.Key}:last-good";
+        var agents = await FetchRuntimeAgentsAsync(instance, ct);
+        if (agents is not null)
+        {
+            _cache.Set(key, agents, TimeSpan.FromHours(6));
+            return agents;
+        }
+        return _cache.TryGetValue(key, out IReadOnlyList<QwenPawAgentDto>? lastGood) && lastGood is not null
+            ? lastGood
+            : Array.Empty<QwenPawAgentDto>();
+    }
+
+    private async Task<IReadOnlyList<QwenPawAgentDto>?> FetchRuntimeAgentsAsync(QwenPawInstance instance, CancellationToken ct)
     {
         try
         {
@@ -229,15 +244,15 @@ public sealed class QwenPawClient : IQwenPawClient
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Runtime {Instance} returned {Status} listing agents", instance.Key, response.StatusCode);
-                return Array.Empty<QwenPawAgentDto>();
+                return null;
             }
             var list = await response.Content.ReadFromJsonAsync<QwenPawAgentListResponse>(ct);
-            return list?.Agents ?? (IReadOnlyList<QwenPawAgentDto>)Array.Empty<QwenPawAgentDto>();
+            return list?.Agents;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             _logger.LogWarning(ex, "Runtime {Instance} unavailable while listing agents", instance.Key);
-            return Array.Empty<QwenPawAgentDto>();
+            return null;
         }
     }
 
