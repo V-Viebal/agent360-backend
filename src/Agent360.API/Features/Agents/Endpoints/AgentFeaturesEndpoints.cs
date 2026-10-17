@@ -72,6 +72,26 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("List available LLM providers and models from infra")
         .AllowAnonymous();
 
+        
+        // 2c. Get all chat sessions for specific agent from QwenPaw API
+        group.MapGet("{agentId}/chats", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            try
+            {
+                var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
+                return Results.Content(chatsJson, "application/json");
+            }
+            catch (Exception)
+            {
+                // Fallback to global chats if agent-specific endpoint is unavailable
+                var allChats = await client.GetChatsAsync(ct);
+                return TypedResults.Ok(allChats);
+            }
+        })
+        .WithName("GetAgentChats")
+        .WithSummary("List all chat sessions for a specific agent")
+        .AllowAnonymous();
+
         // 3. Chat History
         group.MapGet("chats/{chatId}", async (string chatId, IQwenPawClient client, CancellationToken ct) =>
         {

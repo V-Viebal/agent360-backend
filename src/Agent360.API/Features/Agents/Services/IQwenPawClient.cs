@@ -12,6 +12,7 @@ public interface IQwenPawClient
 
     // Chats & History
     Task<IReadOnlyList<AgentSessionResponse>> GetChatsAsync(CancellationToken cancellationToken = default);
+    Task<string> GetAgentChatsRawAsync(string agentId, CancellationToken cancellationToken = default);
     Task<ChatHistoryResponseDto?> GetChatHistoryAsync(string chatId, CancellationToken cancellationToken = default);
     Task<string> GetChatHistoryRawAsync(string chatId, CancellationToken cancellationToken = default);
 

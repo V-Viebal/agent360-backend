@@ -120,6 +120,14 @@ public sealed class QwenPawClient : IQwenPawClient
         return await response.Content.ReadFromJsonAsync<SetActiveModelResponseDto>(cancellationToken: cancellationToken);
     }
 
+    
+    public async Task<string> GetAgentChatsRawAsync(string agentId, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync($"api/agents/{agentId}/chats", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<AgentSessionResponse>> GetChatsAsync(CancellationToken cancellationToken = default)
     {
         var chats = await _httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(
