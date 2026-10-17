@@ -54,11 +54,21 @@ public sealed record ChatHistoryResponseDto(
     [property: JsonPropertyName("messages")] IReadOnlyList<ChatHistoryMessageDto>? Messages);
 
 // --- Console Chat Send/Stop ---
+public sealed record ConsoleChatContentItem(
+    [property: JsonPropertyName("type")] string? Type,
+    [property: JsonPropertyName("text")] string? Text);
+
+public sealed record ConsoleChatInputItem(
+    [property: JsonPropertyName("role")] string? Role,
+    [property: JsonPropertyName("type")] string? Type,
+    [property: JsonPropertyName("content")] IReadOnlyList<ConsoleChatContentItem>? Content);
+
 public sealed record ConsoleChatSendRequestDto(
-    [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("message")] string? Message,
     [property: JsonPropertyName("agent_id")] string? AgentId,
-    [property: JsonPropertyName("model_slot_override")] string? ModelSlotOverride);
+    [property: JsonPropertyName("model_slot_override")] string? ModelSlotOverride,
+    [property: JsonPropertyName("input")] IReadOnlyList<ConsoleChatInputItem>? Input);
 
 public sealed record ConsoleChatStopRequestDto(
     [property: JsonPropertyName("session_id")] string SessionId);

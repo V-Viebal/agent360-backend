@@ -25,7 +25,7 @@ public sealed class QwenPawClient : IQwenPawClient
         {
             _httpClient.BaseAddress = new Uri(_options.BaseUrl.TrimEnd('/') + "/");
         }
-        _httpClient.Timeout = TimeSpan.FromSeconds(_options.TimeoutSeconds);
+        _httpClient.Timeout = Timeout.InfiniteTimeSpan;
     }
 
     public async Task<IReadOnlyList<AgentSummaryResponse>> GetAgentsAsync(CancellationToken cancellationToken = default)
@@ -205,10 +205,40 @@ public sealed class QwenPawClient : IQwenPawClient
 
     public async Task<HttpResponseMessage> StreamConsoleChatAsync(ConsoleChatSendRequestDto request, CancellationToken cancellationToken = default)
     {
+        var agentCleanId = (request.AgentId ?? "mons").Replace("bot:agent360:", "").ToLowerInvariant();
+        var textContent = request.Message;
+        if (string.IsNullOrWhiteSpace(textContent) && request.Input is { Count: > 0 })
+        {
+            textContent = request.Input[0].Content?.FirstOrDefault()?.Text ?? "";
+        }
+
+        var payload = new
+        {
+            user_id = "default",
+            session_id = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+            channel = "console",
+            input = new[]
+            {
+                new
+                {
+                    role = "user",
+                    type = "message",
+                    content = new[]
+                    {
+                        new { type = "text", text = textContent ?? "" }
+                    }
+                }
+            }
+        };
+
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
         {
-            Content = JsonContent.Create(request)
+            Content = JsonContent.Create(payload)
         };
+        httpRequest.Headers.TryAddWithoutValidation("X-Agent-Id", agentCleanId);
+
+        // Use a dedicated long-lived timeout CTS for live LLM streaming turns
+        // Stream response requires infinite client timeout or long token timeout
         return await _httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
     }
 

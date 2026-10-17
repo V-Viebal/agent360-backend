@@ -153,8 +153,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             HttpContext httpContext,
             IQwenPawClient client,
             SessionQueueManager queueManager,
+            ILogger<AgentFeaturesEndpoints> logger,
             CancellationToken ct) =>
         {
+            logger.LogInformation("Received console chat request for agent '{AgentId}', session '{SessionId}', message length: {Len}", request.AgentId, request.SessionId, request.Message?.Length ?? 0);
             // IAM360 Revocation Gate Check
             var agentTarget = request.AgentId ?? "default";
             if (!IamRevocationGuard.IsExecutionAllowed(agentTarget, out var revocationReason))
@@ -168,8 +170,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 return;
             }
 
+            var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             // Per-session Turn Coordination
-            queueManager.SetSessionTurnActive(request.SessionId, true);
+            queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
             {
                 var response = await client.StreamConsoleChatAsync(request, ct);
@@ -181,7 +184,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             finally
             {
-                queueManager.SetSessionTurnActive(request.SessionId, false);
+                queueManager.SetSessionTurnActive(effectiveSessionId, false);
             }
         })
         .WithName("ConsoleChatStream")
