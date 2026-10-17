@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Agent360.API.Options;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.SubAgents;
@@ -26,11 +27,14 @@ public interface IQwenPawA2AClient
 public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
 {
     private const string AgentHeader = "X-Agent-Id";
+    private const string AgentsCacheKey = "agent360:a2a:native-agents";
     private readonly HttpClient _http;
+    private readonly IMemoryCache? _cache;
 
-    public QwenPawA2AClient(HttpClient http, IOptions<QwenPawOptions> options)
+    public QwenPawA2AClient(HttpClient http, IOptions<QwenPawOptions> options, IMemoryCache? cache = null)
     {
         _http = http;
+        _cache = cache;
         // Native inter-agent tools execute inside the Core runtime; use its internal endpoint.
         options.Value.Instances.TryGetValue("core", out var core);
         var baseUrl = !string.IsNullOrWhiteSpace(core?.InternalUrl) ? core.InternalUrl : "http://100.76.185.111:33148";
@@ -65,6 +69,30 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         };
 
     public async Task<IReadOnlyList<NativeAgentInfo>> ListAgentsAsync(CancellationToken ct)
+    {
+        // Agent inventory changes rarely; a short fresh cache keeps bind/health off the runtime's hot path,
+        // and a last-good copy covers moments when the runtime is overloaded.
+        if (_cache is not null && _cache.TryGetValue(AgentsCacheKey, out IReadOnlyList<NativeAgentInfo>? fresh) && fresh is { Count: > 0 })
+        {
+            return fresh;
+        }
+        try
+        {
+            var list = await LoadAgentsAsync(ct);
+            if (_cache is not null && list.Count > 0)
+            {
+                _cache.Set(AgentsCacheKey, list, TimeSpan.FromSeconds(20));
+                _cache.Set(AgentsCacheKey + ":last-good", list, TimeSpan.FromMinutes(10));
+            }
+            return list;
+        }
+        catch (QwenPawUnavailableException) when (_cache is not null && _cache.TryGetValue(AgentsCacheKey + ":last-good", out IReadOnlyList<NativeAgentInfo>? stale) && stale is { Count: > 0 })
+        {
+            return stale;
+        }
+    }
+
+    private async Task<IReadOnlyList<NativeAgentInfo>> LoadAgentsAsync(CancellationToken ct)
     {
         string body;
         try
@@ -111,7 +139,23 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         req.Headers.Add(AgentHeader, toAgent);
         try
         {
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            HttpResponseMessage first;
+            try
+            {
+                first = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            }
+            catch (HttpRequestException ex) when (!ct.IsCancellationRequested && IsConnectFailure(ex))
+            {
+                // Connection refused/reset before the turn started: the chat never reached the target agent.
+                await Task.Delay(TransientRetryDelay, ct);
+                using var again = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
+                {
+                    Content = JsonContent.Create(BuildPayload(fromAgent, sessionId, text, null))
+                };
+                again.Headers.Add(AgentHeader, toAgent);
+                first = await _http.SendAsync(again, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            }
+            using var resp = first;
             if (!resp.IsSuccessStatusCode)
             {
                 return new NativeChatResult(false, sessionId, null, await ReadDetail(resp, cts.Token), (int)resp.StatusCode);
@@ -149,7 +193,23 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             Content = JsonContent.Create(BuildPayload(fromAgent, sessionId, text, timeoutSeconds))
         };
         req.Headers.Add(AgentHeader, toAgent);
-        using var resp = await _http.SendAsync(req, cts.Token);
+        HttpResponseMessage resp;
+        try
+        {
+            resp = await _http.SendAsync(req, cts.Token);
+        }
+        catch (HttpRequestException ex) when (!ct.IsCancellationRequested && IsConnectFailure(ex))
+        {
+            // The request never reached QwenPaw, so resubmitting cannot create a duplicate task.
+            await Task.Delay(TransientRetryDelay, ct);
+            using var again = new HttpRequestMessage(HttpMethod.Post, "api/console/chat/task")
+            {
+                Content = JsonContent.Create(BuildPayload(fromAgent, sessionId, text, timeoutSeconds))
+            };
+            again.Headers.Add(AgentHeader, toAgent);
+            resp = await _http.SendAsync(again, cts.Token);
+        }
+        using var _resp = resp;
         if (!resp.IsSuccessStatusCode)
         {
             return new NativeSubmitResult(false, sessionId, null, null, await ReadDetail(resp, cts.Token), (int)resp.StatusCode);
@@ -164,6 +224,20 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
     }
 
     public async Task<NativeTaskStatus> GetTaskAsync(string nativeTaskId, string? toAgent, CancellationToken ct)
+    {
+        try
+        {
+            return await GetTaskOnceAsync(nativeTaskId, toAgent, ct);
+        }
+        catch (HttpRequestException) when (!ct.IsCancellationRequested)
+        {
+            // Read-only status poll: one retry when the runtime drops the connection under load.
+            await Task.Delay(TransientRetryDelay, ct);
+            return await GetTaskOnceAsync(nativeTaskId, toAgent, ct);
+        }
+    }
+
+    private async Task<NativeTaskStatus> GetTaskOnceAsync(string nativeTaskId, string? toAgent, CancellationToken ct)
     {
         using var cts = Linked(ct, 30);
         using var req = new HttpRequestMessage(HttpMethod.Get, $"api/console/chat/task/{Uri.EscapeDataString(nativeTaskId)}");
@@ -419,6 +493,11 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             return body.Length > 300 ? body[..300] : body;
         }
     }
+
+    internal static TimeSpan TransientRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    private static bool IsConnectFailure(HttpRequestException ex) =>
+        ex.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError or HttpRequestError.SecureConnectionError;
 
     private static CancellationTokenSource Linked(CancellationToken ct, int seconds)
     {
