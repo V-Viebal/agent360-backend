@@ -27,6 +27,9 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         "memory",
     ];
 
+    // Read-heavy capability lists: short fresh cache plus a last-good copy served when the runtime is slow or down.
+    private static readonly HashSet<string> CachedRoutes = new(StringComparer.OrdinalIgnoreCase) { "mcp", "skills", "tools" };
+
     private static readonly HashSet<string> ForwardedResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Content-Type", "Cache-Control", "ETag", "Last-Modified"
@@ -80,8 +83,10 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     return Results.Empty;
                 }
 
-                var cacheable = HttpMethods.IsGet(context.Request.Method) && clean.Equals("mcp", StringComparison.OrdinalIgnoreCase);
-                var cacheKey = $"agent360:proxy:{FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant()}:{clean.ToLowerInvariant()}{context.Request.QueryString}";
+                var cacheable = HttpMethods.IsGet(context.Request.Method) && CachedRoutes.Contains(clean);
+                var agentKey = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                var cacheKey = $"agent360:proxy:{agentKey}:{clean.ToLowerInvariant()}{context.Request.QueryString}";
+                var lastGoodKey = cacheKey + ":last-good";
                 if (cacheable && cache.TryGetValue(cacheKey, out CachedResponse? cached) && cached is not null)
                 {
                     context.Response.Headers["X-Agent360-Cache"] = "HIT";
@@ -89,7 +94,18 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 }
                 if (!HttpMethods.IsGet(context.Request.Method))
                 {
-                    cache.Remove($"agent360:proxy:{FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant()}:mcp");
+                    // Writes invalidate the fresh caches of the touched capability family.
+                    foreach (var route in CachedRoutes)
+                    {
+                        if (clean.StartsWith(route, StringComparison.OrdinalIgnoreCase))
+                        {
+                            cache.Remove($"agent360:proxy:{agentKey}:{route}");
+                        }
+                    }
+                    if (clean.StartsWith("skills", StringComparison.OrdinalIgnoreCase))
+                    {
+                        cache.Remove($"agent360:skills:{agentKey}");
+                    }
                 }
 
                 byte[]? body = null;
@@ -125,8 +141,15 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                         var payload = await response.Content.ReadAsByteArrayAsync(ct);
                         var type = response.Content.Headers.ContentType?.ToString() ?? "application/json";
                         cache.Set(cacheKey, new CachedResponse(payload, type), TimeSpan.FromSeconds(30));
+                        cache.Set(lastGoodKey, new CachedResponse(payload, type), TimeSpan.FromMinutes(30));
                         context.Response.Headers["X-Agent360-Cache"] = "MISS";
                         return Results.Bytes(payload, type);
+                    }
+
+                    if (cacheable && (int)response.StatusCode >= 500 && cache.TryGetValue(lastGoodKey, out CachedResponse? staleOnError) && staleOnError is not null)
+                    {
+                        context.Response.Headers["X-Agent360-Cache"] = "STALE";
+                        return Results.Bytes(staleOnError.Body, staleOnError.ContentType);
                     }
 
                     context.Response.StatusCode = (int)response.StatusCode;
@@ -140,8 +163,13 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     await response.Content.CopyToAsync(context.Response.Body, ct);
                     return Results.Empty;
                 }
-                catch (HttpRequestException ex)
+                catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested)
                 {
+                    if (cacheable && cache.TryGetValue(lastGoodKey, out CachedResponse? stale) && stale is not null)
+                    {
+                        context.Response.Headers["X-Agent360-Cache"] = "STALE";
+                        return Results.Bytes(stale.Body, stale.ContentType);
+                    }
                     return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway, title: "Agent runtime unavailable");
                 }
             })

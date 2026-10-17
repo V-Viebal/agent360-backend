@@ -40,14 +40,19 @@ public sealed class SubAgentEndpoints : IEndpoint
             })
             .WithName("DeleteSubAgent");
 
-        agents.MapPost("subagents/sync-skill", async (string agentId, SubAgentService svc, CancellationToken ct) =>
+        agents.MapPost("subagents/sync-skill", async (string agentId, [FromQuery] bool? wait, SubAgentService svc, ISubAgentSkillSyncQueue queue, CancellationToken ct) =>
             {
+                if (wait == false) return Results.Accepted(value: queue.Enqueue(agentId));
                 var (synced, content) = await svc.SyncSkillAsync(agentId, ct);
                 return synced
                     ? Results.Ok(new { synced, skill = SubAgentSkillGenerator.SkillName, content })
                     : Results.Problem("Failed to sync skill to QwenPaw runtime", statusCode: 502);
             })
             .WithName("SyncSubAgentSkill");
+
+        agents.MapGet("subagents/skill-status", (string agentId, ISubAgentSkillSyncQueue queue) =>
+            Results.Ok(queue.GetStatus(agentId)))
+            .WithName("SubAgentSkillSyncStatus");
 
         agents.MapGet("subagents/health", async (string agentId, SubAgentService svc, CancellationToken ct) =>
             Results.Ok(await svc.HealthAsync(agentId, ct)))

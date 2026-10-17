@@ -13,7 +13,8 @@ public sealed class SubAgentService(
     SubAgentStore store,
     IQwenPawA2AClient native,
     IOptions<SubAgentOptions> options,
-    ILogger<SubAgentService> logger)
+    ILogger<SubAgentService> logger,
+    ISubAgentSkillSyncQueue? skillSyncQueue = null)
 {
     private readonly SubAgentOptions _opt = options.Value;
 
@@ -50,7 +51,7 @@ public sealed class SubAgentService(
             existing?.CreatedAt ?? now,
             now);
         await store.UpsertBindingAsync(binding);
-        await SyncSkillAsync(parent, ct);
+        await RequestSkillSyncAsync(parent, ct);
         return ServiceResult<SubAgentBinding>.Ok(binding);
     }
 
@@ -58,8 +59,15 @@ public sealed class SubAgentService(
     {
         parent = NormalizeAgentId(parent);
         var removed = await store.DeleteBindingAsync(parent, NormalizeAgentId(child));
-        if (removed) await SyncSkillAsync(parent, ct);
+        if (removed) await RequestSkillSyncAsync(parent, ct);
         return removed;
+    }
+
+    /// <summary>Queue the skill push off the request path when a background queue is registered; otherwise sync inline.</summary>
+    private async Task RequestSkillSyncAsync(string parent, CancellationToken ct)
+    {
+        if (skillSyncQueue is not null) skillSyncQueue.Enqueue(parent);
+        else await SyncSkillAsync(parent, ct);
     }
 
     public async Task<(bool Synced, string Content)> SyncSkillAsync(string parent, CancellationToken ct)

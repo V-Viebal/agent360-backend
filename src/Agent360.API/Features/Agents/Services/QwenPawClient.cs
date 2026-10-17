@@ -85,9 +85,9 @@ public sealed class QwenPawClient : IQwenPawClient
         return await response.Content.ReadAsStringAsync(ct);
     }
 
-    private async Task<T?> GetJsonAsync<T>(string? agentId, string relative, bool global = false, CancellationToken ct = default)
+    private async Task<T?> GetJsonAsync<T>(string? agentId, string relative, bool global = false, TimeSpan? timeout = null, CancellationToken ct = default)
     {
-        using var response = await SendAsync(Resolve(agentId), HttpMethod.Get, relative, global: global, ct: ct);
+        using var response = await SendAsync(Resolve(agentId), HttpMethod.Get, relative, global: global, timeout: timeout, ct: ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<T>(ct);
     }
@@ -407,8 +407,22 @@ public sealed class QwenPawClient : IQwenPawClient
     public async Task<IReadOnlyList<QwenPawSkillDto>> GetSkillsAsync(string? agentId = null, CancellationToken cancellationToken = default)
     {
         var key = FleetInstanceRoutingService.NormalizeAgentId(agentId);
-        return await CachedAsync($"agent360:skills:{key}", TimeSpan.FromSeconds(30), async () =>
-            await GetJsonAsync<IReadOnlyList<QwenPawSkillDto>>(key, "skills", ct: cancellationToken) ?? Array.Empty<QwenPawSkillDto>());
+        var lastGoodKey = $"agent360:skills:{key}:last-good";
+        try
+        {
+            return await CachedAsync($"agent360:skills:{key}", TimeSpan.FromSeconds(30), async () =>
+            {
+                var skills = await GetJsonAsync<IReadOnlyList<QwenPawSkillDto>>(key, "skills", timeout: SlowReadTimeout, ct: cancellationToken) ?? Array.Empty<QwenPawSkillDto>();
+                _cache.Set(lastGoodKey, skills, TimeSpan.FromMinutes(30));
+                return skills;
+            });
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException
+            && _cache.TryGetValue(lastGoodKey, out IReadOnlyList<QwenPawSkillDto>? _))
+        {
+            _logger.LogWarning(ex, "Serving last-good skills for {Agent}; runtime read failed", key);
+            return _cache.Get<IReadOnlyList<QwenPawSkillDto>>(lastGoodKey)!;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -687,14 +701,14 @@ public sealed class QwenPawClient : IQwenPawClient
     // ------------------------------------------------------------------
 
     public Task<AgentStatsSummaryDto?> GetAgentStatsAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default) =>
-        GetJsonAsync<AgentStatsSummaryDto>("mons", "agent-stats" + Query(startDate, endDate), global: true, cancellationToken);
+        GetJsonAsync<AgentStatsSummaryDto>("mons", "agent-stats" + Query(startDate, endDate), global: true, ct: cancellationToken);
 
     public Task<IReadOnlyList<LlmToolDailyDto>?> GetGlobalLlmToolTrendAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default) =>
-        GetJsonAsync<IReadOnlyList<LlmToolDailyDto>>("mons", "agent-stats/llm-tool-trend" + Query(startDate, endDate), global: true, cancellationToken);
+        GetJsonAsync<IReadOnlyList<LlmToolDailyDto>>("mons", "agent-stats/llm-tool-trend" + Query(startDate, endDate), global: true, ct: cancellationToken);
 
     public async Task<TokenUsageResponseDto?> GetTokenUsageAsync(CancellationToken cancellationToken = default) =>
         await CachedAsync("agent360:token-usage", TimeSpan.FromSeconds(30),
-            () => GetJsonAsync<TokenUsageResponseDto>("mons", "token-usage", global: true, cancellationToken));
+            () => GetJsonAsync<TokenUsageResponseDto>("mons", "token-usage", global: true, ct: cancellationToken));
 
     private static string Query(string? startDate, string? endDate)
     {
