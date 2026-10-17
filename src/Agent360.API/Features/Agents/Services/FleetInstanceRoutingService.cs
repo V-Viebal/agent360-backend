@@ -295,7 +295,12 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             {
                 return true;
             }
-            if (e is System.Net.Sockets.SocketException)
+            // Only connect-phase socket errors; a read cancelled mid-response (SocketError.OperationAborted) means
+            // the runtime already has the request and is merely slow.
+            if (e is System.Net.Sockets.SocketException se && se.SocketErrorCode is
+                System.Net.Sockets.SocketError.ConnectionRefused or System.Net.Sockets.SocketError.HostUnreachable or
+                System.Net.Sockets.SocketError.NetworkUnreachable or System.Net.Sockets.SocketError.HostNotFound or
+                System.Net.Sockets.SocketError.TimedOut or System.Net.Sockets.SocketError.HostDown)
             {
                 return true;
             }

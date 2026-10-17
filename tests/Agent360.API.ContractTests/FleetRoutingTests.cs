@@ -170,6 +170,9 @@ public sealed class FleetRoutingTests
         FleetInstanceRoutingService.IsConnectFailure(new TaskCanceledException("t", new TimeoutException("A connection could not be established within the configured ConnectTimeout."))).Should().BeTrue();
         FleetInstanceRoutingService.IsConnectFailure(new TaskCanceledException("request timeout")).Should().BeFalse();
         FleetInstanceRoutingService.IsConnectFailure(new HttpRequestException(HttpRequestError.ResponseEnded, "x")).Should().BeFalse();
+        // Seen live: a slow read cancelled by our timeout surfaces as SocketException(125 OperationAborted).
+        FleetInstanceRoutingService.IsConnectFailure(new TaskCanceledException("c", new IOException("read", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.OperationAborted)))).Should().BeFalse();
+        FleetInstanceRoutingService.IsConnectFailure(new HttpRequestException("x", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused))).Should().BeTrue();
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
