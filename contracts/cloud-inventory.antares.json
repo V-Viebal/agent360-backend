@@ -31,11 +31,6 @@
   },
   "repositories": [
     {
-      "name": "agent360",
-      "url": "https://github.com/V-Viebal/agent360",
-      "role": "Root Workspace Container & Contracts"
-    },
-    {
       "name": "agent360-frontend",
       "url": "https://github.com/V-Viebal/agent360-frontend",
       "role": "Isolated Standalone Frontend Service",
@@ -44,7 +39,7 @@
     {
       "name": "agent360-backend",
       "url": "https://github.com/V-Viebal/agent360-backend",
-      "role": "Isolated Standalone Backend Service",
+      "role": "Isolated Standalone Backend Service; also owns contracts, adapters, deploy stack, A2A control plane (former umbrella repo)",
       "ci_status": "passing"
     }
   ],
