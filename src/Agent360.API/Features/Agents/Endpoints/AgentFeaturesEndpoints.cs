@@ -149,9 +149,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
             {
-                var response = await client.StreamConsoleChatAsync(request, ct);
+                using var response = await client.StreamConsoleChatAsync(request, ct);
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
-                await response.Content.CopyToAsync(httpContext.Response.Body, ct);
+                httpContext.Response.StatusCode = (int)response.StatusCode;
+                await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
             }
             finally
             {
@@ -186,12 +188,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
             {
-                var response = await client.StreamConsoleChatAsync(request, ct);
+                using var response = await client.StreamConsoleChatAsync(request, ct);
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
                 httpContext.Response.StatusCode = (int)response.StatusCode;
 
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await stream.CopyToAsync(httpContext.Response.Body, ct);
+                await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
             }
             finally
             {
