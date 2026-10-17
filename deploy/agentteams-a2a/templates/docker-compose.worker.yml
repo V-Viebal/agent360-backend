@@ -1,0 +1,28 @@
+# Child-side worker adapter. One per external agent, on the SAME node + docker network as its QwenPaw.
+# Replace: <instance>, <agent>, <localpart>, <qwenpaw_container>, <qwenpaw_network>.
+services:
+  agent360-a2a-worker-<localpart>:
+    image: python:3.12-alpine
+    container_name: agent360-a2a-worker-<localpart>
+    restart: unless-stopped
+    working_dir: /app
+    command: ["python", "-u", "worker_adapter.py"]
+    environment:
+      A2A_MATRIX_CRED: /secrets/<localpart>.matrix.json          # from provision-edge-identity.sh
+      A2A_AGENT_REF: agent://<instance>/<agent>
+      A2A_QWENPAW_URL: http://<qwenpaw_container>:8088
+      A2A_QWENPAW_AGENT: <agent>
+      A2A_QWENPAW_AUTH_FILE: /secrets/qwenpaw-<instance>.auth.json  # only if QWENPAW_AUTH_ENABLED=true
+      A2A_ALLOWED_SENDERS: "@agent360-a2a:agentteams-gateway.hmz.one"
+      A2A_STATE_DIR: /state
+      A2A_MAX_CONCURRENCY: "2"
+      A2A_HEARTBEAT_SECONDS: "60"
+    volumes:
+      - /opt/agent360-a2a/app:/app:ro          # adapter/*.py
+      - /opt/agent360-a2a/secrets:/secrets:ro  # 0700 dir, 0600 files
+      - /opt/agent360-a2a/state:/state
+    networks: [qwenpaw]
+networks:
+  qwenpaw:
+    external: true
+    name: <qwenpaw_network>

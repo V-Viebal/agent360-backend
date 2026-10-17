@@ -1,0 +1,29 @@
+# Agent360 A2A control plane. Same docker network as agent360-frontend (nginx proxies /api/a2a/*).
+services:
+  agent360-a2a:
+    image: python:3.12-alpine
+    container_name: agent360-a2a
+    restart: unless-stopped
+    working_dir: /app
+    command: ["python", "-u", "control_plane.py"]
+    env_file: [/opt/agent360-a2a/secrets/cp.env]   # A2A_SERVICE_TOKEN, A2A_CALLBACK_SECRET (random, 0600)
+    environment:
+      PORT: "8095"
+      AGENT360_EXTERNAL_A2A_ENABLED: "true"        # rollback flag
+      A2A_DB: /state/agent360-a2a.db
+      A2A_MATRIX_CRED: /secrets/agent360-a2a.matrix.json
+      A2A_MATRIX_DOMAIN: agentteams-gateway.hmz.one
+      A2A_DEFAULT_INSTANCE: core
+      A2A_REGISTRY_FILE: /state/registry.json
+      A2A_OFFLINE_AFTER_SECONDS: "180"   # 3 missed worker heartbeats -> offline
+      A2A_SYNC_STALE_SECONDS: "120"      # AgentTeams/Matrix sync older than this -> health degraded      # copied from AgentTeams node (export_registry.sh)
+      # Cloudflare blocks server-to-server calls (error 1010): reach Traefik over Tailscale with Host header.
+      A2A_QWENPAW_INSTANCES: '{"core":{"url":"https://100.76.185.111","host":"ai.hmz.one"},"gm":{"url":"http://100.81.66.42:26888"}}'
+    volumes:
+      - /opt/agent360-a2a/app:/app:ro
+      - /opt/agent360-a2a/secrets:/secrets:ro
+      - /opt/agent360-a2a/state:/state
+    networks: [coolify]
+networks:
+  coolify:
+    external: true

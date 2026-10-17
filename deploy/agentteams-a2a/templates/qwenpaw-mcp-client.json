@@ -1,0 +1,12 @@
+{
+  "client_key": "agent360-a2a",
+  "client": {
+    "name": "agent360-a2a",
+    "description": "Agent360 external A2A: delegate tasks to external sub-agents on other QwenPaw instances via AgentTeams (Matrix).",
+    "enabled": true,
+    "transport": "stdio",
+    "command": "python3",
+    "args": ["/app/working.secret/.agent/mcps/agent360-a2a-mcp-server/server.py"],
+    "env": {"A2A_API_URL": "https://agent360.antares.vn/api", "A2A_PARENT_AGENT": "<parent_agent_id>", "A2A_SERVICE_TOKEN": "<from core/prod:/agent360-a2a/app/runtime>"}
+  }
+}

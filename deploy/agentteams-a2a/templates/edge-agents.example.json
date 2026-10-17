@@ -1,0 +1,6 @@
+[
+  {"agent_ref": "agent://gm/default", "id": "ext_gm_default", "display_name": "GM Operations Agent",
+   "runtime": "qwenpaw", "instance_id": "qwenpaw-gm-6th", "node": "6th",
+   "agentteams_worker_id": "gm-default", "endpoint_ref": "qwenpaw://gm/default",
+   "capabilities": ["worktime", "deck", "nextcloud", "hr-ops"]}
+]
