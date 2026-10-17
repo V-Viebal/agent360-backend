@@ -44,8 +44,8 @@ jobs:
 
           if [ "$TARGET" = "staging" ]; then
             echo "app_root=/opt/agent360-staging/backend" >> $GITHUB_OUTPUT
-            echo "public_url=http://172.20.2.2:8080" >> $GITHUB_OUTPUT
-            echo "container_name=agent360-staging-agent360-backend-staging-1" >> $GITHUB_OUTPUT
+            echo "public_url=https://api-staging-agent360.antares.vn" >> $GITHUB_OUTPUT
+            echo "container_name=agent360-backend-staging" >> $GITHUB_OUTPUT
           else
             echo "app_root=/opt/agent360/backend" >> $GITHUB_OUTPUT
             echo "public_url=https://api-agent360.antares.vn" >> $GITHUB_OUTPUT
@@ -76,9 +76,9 @@ jobs:
           cp -a --remove-destination "$RUNNER_TEMP/publish/." "$APP_ROOT/"
           
           if [ "${{ steps.env-target.outputs.target_env }}" = "production" ]; then
-            sudo -n /usr/local/sbin/agent360-restart backend || docker restart ${{ steps.env-target.outputs.container_name }}
+            sudo -n /usr/local/sbin/agent360-restart backend
           else
-            docker restart ${{ steps.env-target.outputs.container_name }} || true
+            sudo -n /usr/local/sbin/agent360-restart backend-staging
           fi
 
       - name: Verify live API (rollback on failure)
@@ -95,5 +95,9 @@ jobs:
           done
           echo "::error::API health probe returned $code, restoring previous artifact"
           cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/" || true
-          docker restart ${{ steps.env-target.outputs.container_name }} || true
+          if [ "${{ steps.env-target.outputs.target_env }}" = "production" ]; then
+            sudo -n /usr/local/sbin/agent360-restart backend || true
+          else
+            sudo -n /usr/local/sbin/agent360-restart backend-staging || true
+          fi
           exit 1
