@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent360.antares.vn/contracts/tool-call-receipt/v1",
+  "title": "Agent360 Tool Call Receipt",
+  "type": "object",
+  "required": ["schema", "tool_call_id", "bot_id", "run_id", "capability_id", "authorization_decision_id", "policy_hash", "status"],
+  "properties": {
+    "schema": {"const": "agent360/tool-call-receipt/v1"},
+    "tool_call_id": {"type": "string"},
+    "bot_id": {"type": "string"},
+    "bot_binding_id": {"type": "string"},
+    "deployment_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "capability_id": {"type": "string"},
+    "input_hash": {"type": "string"},
+    "authorization_decision_id": {"type": "string"},
+    "policy_hash": {"type": "string"},
+    "status": {"enum": ["proposed", "denied", "awaiting_approval", "running", "succeeded", "failed", "cancelled"]},
+    "output_hash": {"type": "string"},
+    "error": {"type": "string"}
+  },
+  "additionalProperties": false
+}

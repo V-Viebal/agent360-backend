@@ -1,0 +1,71 @@
+{
+  "$schema": "./bot-deployment.v1.json",
+  "project": "agent360",
+  "organization": "V-Viebal",
+  "network": {
+    "zone": "antares.vn",
+    "edge_proxy": "Cloudflare",
+    "dns_records": [
+      {
+        "type": "CNAME",
+        "name": "agent360.antares.vn",
+        "target": "2nd.antares.vn",
+        "proxied": true,
+        "purpose": "Agent360 React/Vite Control Plane & Marketplace"
+      },
+      {
+        "type": "CNAME",
+        "name": "api-agent360.antares.vn",
+        "target": "2nd.antares.vn",
+        "proxied": true,
+        "purpose": "Agent360 .NET 10 Modular Monolith REST API"
+      },
+      {
+        "type": "CNAME",
+        "name": "community-agent360.antares.vn",
+        "target": "2nd.antares.vn",
+        "proxied": true,
+        "purpose": "Agent360 Discourse Forum Community Platform"
+      }
+    ]
+  },
+  "repositories": [
+    {
+      "name": "agent360",
+      "url": "https://github.com/V-Viebal/agent360",
+      "role": "Root Workspace Container & Contracts"
+    },
+    {
+      "name": "agent360-frontend",
+      "url": "https://github.com/V-Viebal/agent360-frontend",
+      "role": "Isolated Standalone Frontend Service",
+      "ci_status": "passing"
+    },
+    {
+      "name": "agent360-backend",
+      "url": "https://github.com/V-Viebal/agent360-backend",
+      "role": "Isolated Standalone Backend Service",
+      "ci_status": "passing"
+    }
+  ],
+  "coolify_integration": {
+    "target_server": "2nd server",
+    "services": [
+      {
+        "name": "agent360-frontend",
+        "domain": "agent360.antares.vn",
+        "internal_port": 80
+      },
+      {
+        "name": "agent360-backend",
+        "domain": "api-agent360.antares.vn",
+        "internal_port": 8080
+      },
+      {
+        "name": "community-agent360",
+        "domain": "community-agent360.antares.vn",
+        "internal_port": 80
+      }
+    ]
+  }
+}

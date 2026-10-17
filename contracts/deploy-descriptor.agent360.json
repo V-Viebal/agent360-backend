@@ -1,0 +1,32 @@
+{
+  "$schema": "./bot-deployment.v1.json",
+  "project": "agent360",
+  "version": "1.0.0",
+  "target_node": "2nd",
+  "surfaces": [
+    {
+      "name": "frontend",
+      "type": "spa",
+      "domain": "agent360.antares.vn",
+      "port": 80,
+      "image": "ghcr.io/v-viebal/agent360-frontend:latest",
+      "health_check": "http://localhost:80"
+    },
+    {
+      "name": "backend",
+      "type": "api",
+      "domain": "api-agent360.antares.vn",
+      "port": 8080,
+      "image": "ghcr.io/v-viebal/agent360-backend:latest",
+      "health_check": "http://localhost:8080/health"
+    },
+    {
+      "name": "community",
+      "type": "discourse_forum",
+      "domain": "community-agent360.antares.vn",
+      "port": 80,
+      "image": "discourse/discourse:stable",
+      "health_check": "http://localhost:80/srv/status"
+    }
+  ]
+}

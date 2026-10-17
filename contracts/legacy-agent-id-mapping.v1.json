@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent360.antares.vn/contracts/legacy-agent-id-mapping/v1",
+  "title": "Agent360 Legacy Agent ID Mapping",
+  "type": "object",
+  "required": ["schema", "agent_id", "bot_id", "mode"],
+  "properties": {
+    "schema": {"const": "agent360/legacy-agent-id-mapping/v1"},
+    "agent_id": {"type": "string", "minLength": 1},
+    "bot_id": {"type": "string", "pattern": "^bot:"},
+    "mode": {"const": "legacy_alias"},
+    "source": {"enum": ["qwenpaw", "iam360", "migration"]},
+    "expires_at": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

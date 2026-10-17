@@ -4,3 +4,9 @@ obj/
 *.suo
 .vs/
 appsettings.Development.json
+deploy/backend.env
+.tmp/build-check/
+.tmp/publish/
+.tmp/publish-linux/
+src/Agent360.API/_logs/
+__pycache__/

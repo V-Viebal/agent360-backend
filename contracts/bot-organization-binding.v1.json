@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent360.antares.vn/contracts/bot-organization-binding/v1",
+  "title": "Agent360 Bot Organization Binding",
+  "type": "object",
+  "required": ["schema", "binding_id", "bot_id", "organization_cell_id", "identity_cell_id", "status"],
+  "properties": {
+    "schema": {"const": "agent360/bot-organization-binding/v1"},
+    "binding_id": {"type": "string"},
+    "bot_id": {"type": "string"},
+    "organization_id": {"type": "string"},
+    "organization_cell_id": {"type": "string"},
+    "identity_cell_id": {"type": "string"},
+    "status": {"enum": ["pending", "active", "suspended", "retired"]},
+    "mandate_overlay_refs": {"type": "array", "items": {"type": "string"}},
+    "deployment_refs": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

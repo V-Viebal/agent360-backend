@@ -1,0 +1,6 @@
+Agent360
+Copyright 2026 Viebal / AntaresOS contributors.
+
+Agent360 does not contain the QwenPaw implementation source. QwenPaw is an
+external runtime dependency maintained at https://github.com/agentscope-ai/QwenPaw
+and retains its own license and notices when consumed by a derived project.

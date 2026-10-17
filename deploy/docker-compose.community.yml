@@ -1,0 +1,83 @@
+# App360 / Coolify Stack for Agent360 Community Forum (Discourse Template)
+# Target Surface: 2nd server (Antares VPS Fleet)
+# Domain: https://community-agent360.antares.vn
+# Mail: Resend SMTP Integrated (Verified Host: smtp.resend.com, Port: 465)
+
+services:
+  discourse:
+    image: discourse/discourse:stable
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DISCOURSE_HOSTNAME: community-agent360.antares.vn
+      DISCOURSE_DEVELOPER_EMAILS: ${DISCOURSE_ADMIN_EMAIL:-admin@antares.vn}
+      DISCOURSE_DB_HOST: postgres
+      DISCOURSE_DB_NAME: discourse_prod
+      DISCOURSE_DB_USERNAME: discourse
+      DISCOURSE_DB_PASSWORD: ${DISCOURSE_DB_PASSWORD:-agent360_discourse_secure_pg}
+      DISCOURSE_REDIS_HOST: redis
+      DISCOURSE_REDIS_PASSWORD: ${DISCOURSE_REDIS_PASSWORD:-agent360_redis_secure_auth}
+      DISCOURSE_SMTP_ADDRESS: ${SMTP_HOST:-smtp.resend.com}
+      DISCOURSE_SMTP_PORT: ${SMTP_PORT:-465}
+      DISCOURSE_SMTP_USER_NAME: ${SMTP_USER:-resend}
+      DISCOURSE_SMTP_PASSWORD: ${SMTP_PASSWORD:?set SMTP_PASSWORD from Infisical}
+      DISCOURSE_SMTP_SSL: "true"
+      DISCOURSE_SMTP_ENABLE_START_TLS: "false"
+      DISCOURSE_NOTIFICATION_EMAIL: ${NOTIFICATION_EMAIL:-community@antares.vn}
+    volumes:
+      - discourse_data:/shared
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.agent360-community.rule=Host(`community-agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-community.entrypoints=websecure"
+      - "traefik.http.routers.agent360-community.tls=true"
+      - "traefik.http.routers.agent360-community.tls.certresolver=letsencrypt"
+      - "traefik.http.services.agent360-community.loadbalancer.server.port=443"
+      - "traefik.http.services.agent360-community.loadbalancer.server.scheme=https"
+      - "traefik.http.services.agent360-community.loadbalancer.serversTransport=discourse-insecure@file"
+    networks:
+      - agent360_network
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: discourse_prod
+      POSTGRES_USER: discourse
+      POSTGRES_PASSWORD: ${DISCOURSE_DB_PASSWORD:-agent360_discourse_secure_pg}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U discourse -d discourse_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent360_network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${DISCOURSE_REDIS_PASSWORD:-agent360_redis_secure_auth}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${DISCOURSE_REDIS_PASSWORD:-agent360_redis_secure_auth}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent360_network
+
+volumes:
+  discourse_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  agent360_network:
+    driver: bridge

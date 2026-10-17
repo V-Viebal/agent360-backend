@@ -1,0 +1,55 @@
+{
+  "schema": "agent360/project-contract/v1",
+  "project": "agent360",
+  "product": "multi-bot control-plane and reusable deployment pattern",
+  "plan": {
+    "source": "/mnt/d/VPS/.tmp/agent360-plan.md",
+    "phase": 0,
+    "canonical_resource": "bot",
+    "canonical_id": "bot_id",
+    "legacy_aliases": ["agent_id"]
+  },
+  "boundaries": {
+    "agent360_owns": [
+      "bot_definition",
+      "organization_binding_reference",
+      "constitution",
+      "mandate",
+      "capability_reference",
+      "runtime_profile",
+      "deployment_descriptor",
+      "task",
+      "run",
+      "memory_namespace_reference",
+      "work_product_lineage",
+      "evaluation_reference"
+    ],
+    "iam360_owns": [
+      "organization_cell",
+      "identity_cell",
+      "authority",
+      "policy_decision",
+      "approval",
+      "revocation",
+      "authorization_audit"
+    ],
+    "qwenpaw_owns": [
+      "runtime_implementation",
+      "qwenpaw_runtime_configuration",
+      "qwenpaw_upstream_release"
+    ],
+    "agent360_does_not_vendor_qwenpaw_source": true,
+    "runtime_state_is_not_source": true,
+    "secrets_are_not_committed": true
+  },
+  "qwenpaw_dependency": {
+    "repository": "https://github.com/agentscope-ai/QwenPaw.git",
+    "local_checkout": "../qwenpaw",
+    "ref_policy": "explicit immutable tag or commit",
+    "runtime_mapping_is_not_bot_identity": true
+  },
+  "derived_project": {
+    "example": "agent360-gm",
+    "must_isolate": ["image", "service", "domain", "volumes", "secrets", "bot_data"]
+  }
+}

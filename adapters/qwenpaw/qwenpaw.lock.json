@@ -1,0 +1,18 @@
+{
+  "schema": "agent360/qwenpaw-dependency-lock/v1",
+  "repository": "https://github.com/agentscope-ai/QwenPaw.git",
+  "checkout": "../qwenpaw",
+  "ref": "refs/tags/v2.2.1",
+  "commit": "cae5773707b26ab2fd00903f84b712387894b256",
+  "version": "2.2.1",
+  "image": {
+    "repository": "agentscope/qwenpaw",
+    "tag": "v2.2.1",
+    "digest": null
+  },
+  "source_policy": {
+    "vendored": false,
+    "runtime_state_imported": false,
+    "credentials_imported": false
+  }
+}

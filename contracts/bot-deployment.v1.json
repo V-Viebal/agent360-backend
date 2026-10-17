@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent360.antares.vn/contracts/bot-deployment/v1",
+  "title": "Agent360 Bot Deployment",
+  "type": "object",
+  "required": ["schema", "deployment_id", "bot_id", "organization_binding_id", "environment", "runtime_type", "runtime_id", "kernel_version", "status"],
+  "properties": {
+    "schema": {"const": "agent360/bot-deployment/v1"},
+    "deployment_id": {"type": "string"},
+    "bot_id": {"type": "string"},
+    "organization_binding_id": {"type": "string"},
+    "environment": {"enum": ["development", "staging", "production"]},
+    "cluster_id": {"type": "string"},
+    "runtime_type": {"enum": ["qwenpaw", "worker", "job"]},
+    "runtime_id": {"type": "string"},
+    "kernel_version": {"type": "string"},
+    "bot_version": {"type": "string"},
+    "machine_identity_refs": {"type": "array", "items": {"type": "string"}},
+    "policy_hash": {"type": "string"},
+    "status": {"enum": ["planned", "provisioning", "ready", "degraded", "suspended", "retired"]},
+    "rollback_ref": {"type": "string"}
+  },
+  "additionalProperties": false
+}

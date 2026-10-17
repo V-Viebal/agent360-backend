@@ -1,0 +1,63 @@
+# Official Production Discourse Launcher Template
+# Project: agent360 (Community Forum)
+# Domain: community-agent360.antares.vn
+# Target: 2nd server
+
+templates:
+  - "templates/postgres.template.yml"
+  - "templates/redis.template.yml"
+  - "templates/web.template.yml"
+  - "templates/web.ratelimited.template.yml"
+
+expose:
+  - "80:80"
+
+params:
+  db_default_text_search_config: "pg_catalog.english"
+
+env:
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+  LANGUAGE: en_US.UTF-8
+
+  DISCOURSE_HOSTNAME: 'community-agent360.antares.vn'
+  DISCOURSE_TITLE: 'Agent360 Community'
+  DISCOURSE_SITE_DESCRIPTION: 'Official Community for Autonomous AI Teammates & Enterprise Multi-Agent Crews'
+  DISCOURSE_DEVELOPER_EMAILS: 'admin@antares.vn'
+
+  ## SMTP Settings
+  DISCOURSE_SMTP_ADDRESS: mail.antares.vn
+  DISCOURSE_SMTP_PORT: 587
+  DISCOURSE_SMTP_USER_NAME: community@antares.vn
+  DISCOURSE_SMTP_PASSWORD: "change_in_production"
+  DISCOURSE_SMTP_ENABLE_START_TLS: true
+  DISCOURSE_SMTP_DOMAIN: antares.vn
+  DISCOURSE_NOTIFICATION_EMAIL: noreply@antares.vn
+
+  ## PostgreSQL & Redis internal configuration
+  DISCOURSE_DB_SOCKET: ""
+  DISCOURSE_DB_HOST: "postgres"
+  DISCOURSE_DB_PORT: 5432
+
+  ## Default Theme & Color Scheme customization (Dark/Horizon matching Agent360 & CrewAI)
+  DISCOURSE_DEFAULT_LOCALE: 'en'
+  DISCOURSE_ALLOW_USER_LOCALE: true
+
+volumes:
+  - volume:
+      host: /var/discourse/shared/standalone
+      guest: /shared
+  - volume:
+      host: /var/discourse/shared/standalone/log/var-log
+      guest: /var/log
+
+hooks:
+  after_code:
+    - exec:
+        cd: $home/plugins
+        cmd:
+          # Install official Discourse plugins matching community.crewai.com capabilities
+          - git clone --depth 1 https://github.com/discourse/discourse-solved.git
+          - git clone --depth 1 https://github.com/discourse/discourse-reactions.git
+          - git clone --depth 1 https://github.com/discourse/discourse-checklist.git
+          - git clone --depth 1 https://github.com/discourse/discourse-gamification.git

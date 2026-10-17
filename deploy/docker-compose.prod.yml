@@ -1,0 +1,46 @@
+services:
+  agent360-frontend:
+    image: nginx:alpine
+    container_name: agent360-frontend
+    restart: unless-stopped
+    volumes:
+      - /opt/agent360/frontend-dist:/usr/share/nginx/html:ro
+      - /opt/agent360/nginx-conf/default.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.agent360-frontend.rule=Host(`agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-frontend.entrypoints=https"
+      - "traefik.http.routers.agent360-frontend.tls=true"
+      - "traefik.http.routers.agent360-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.agent360-frontend.loadbalancer.server.port=80"
+    networks:
+      - coolify
+
+  agent360-backend:
+    image: ghcr.io/v-viebal/agent360-backend:latest
+    container_name: agent360-backend
+    restart: unless-stopped
+    env_file: [/opt/agent360/deploy/backend.env]   # rendered from Infisical (render_secrets.py backend)
+    volumes:
+      - /opt/agent360/backend:/app
+      - /opt/agent360/data:/data
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      QwenPaw__BaseUrl: https://ai.hmz.one
+      Agent360__SubAgents__StoragePath: /data/subagents
+      Cors__AllowedOrigins: "https://agent360.antares.vn;https://community-agent360.antares.vn;http://localhost:5173"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.agent360-backend.rule=Host(`api-agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-backend.entrypoints=https"
+      - "traefik.http.routers.agent360-backend.tls=true"
+      - "traefik.http.routers.agent360-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.agent360-backend.loadbalancer.server.port=8080"
+    networks:
+      - coolify
+
+networks:
+  coolify:
+    external: true

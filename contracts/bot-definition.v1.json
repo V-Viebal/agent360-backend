@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent360 Bot Definition",
+  "type": "object",
+  "required": [
+    "schema",
+    "bot_id",
+    "slug",
+    "version",
+    "status",
+    "mission",
+    "constitution_ref",
+    "memory_namespace_ref"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "agent360/bot-definition/v1"
+    },
+    "bot_id": {
+      "type": "string",
+      "pattern": "^bot:[a-z0-9_-]+:[a-z0-9_-]+$"
+    },
+    "slug": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "validated", "identity_bound", "runtime_verified", "tested", "approved", "active", "degraded", "suspended", "retired"]
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "identity_cell_refs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "owner_subject_id": { "type": "string" },
+        "controller_subject_id": { "type": "string" }
+      }
+    },
+    "mission": {
+      "type": "object",
+      "required": ["title", "description"],
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "specializations": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "constitution_ref": { "type": "string" },
+    "mandate_refs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "capability_refs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "memory_namespace_ref": { "type": "string" }
+  }
+}
