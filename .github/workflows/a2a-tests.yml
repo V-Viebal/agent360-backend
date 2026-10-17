@@ -1,0 +1,20 @@
+name: A2A adapter tests
+
+on:
+  push:
+    branches: [main]
+    paths: ['deploy/agentteams-a2a/**', '.github/workflows/a2a-tests.yml']
+  pull_request:
+    paths: ['deploy/agentteams-a2a/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, 2nd]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit + contract + e2e (fake Matrix/QwenPaw)
+        run: cd deploy/agentteams-a2a/adapter && python3 -m unittest tests.test_a2a -v

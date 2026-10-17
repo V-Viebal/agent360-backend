@@ -55,6 +55,8 @@ CFG = {
     "operator_token": os.environ.get("A2A_OPERATOR_TOKEN", ""),
     "offline_after": int(os.environ.get("A2A_OFFLINE_AFTER_SECONDS", "300")),
     "sync_stale_after": int(os.environ.get("A2A_SYNC_STALE_SECONDS", "120")),
+    # registry.json is re-exported by a cron on the AgentTeams node; older than this -> degraded
+    "registry_stale_after": int(os.environ.get("A2A_REGISTRY_STALE_SECONDS", "1200")),
     "qwenpaw": json.loads(os.environ.get("A2A_QWENPAW_INSTANCES", "{}")),  # {"core":"https://ai.hmz.one"}
     "static_agents": json.loads(os.environ.get("A2A_STATIC_AGENTS", "[]")),
     "registry_file": os.environ.get("A2A_REGISTRY_FILE", ""),  # exported by export_registry.sh
@@ -494,7 +496,28 @@ def metrics(window_hours=24):
         "agents": [{"agent_ref": a["agent_ref"], "health": a["health"], "last_seen_at": a["last_seen_at"]} for a in L.agents()],
         "matrix_last_sync_age_seconds": int(time.time()) - last_ok if last_ok else None,
         "counters": dict(COUNTERS),
+        "agentteams_registry": registry_status(),
     }
+
+
+def registry_status():
+    """AgentTeams drift detector: the exported registry must be fresh and every worker/edge identity
+    must still carry a Matrix user (an empty matrixUserID means the AppService registration broke)."""
+    path = CFG["registry_file"]
+    out = {"file": path, "age_seconds": None, "stale": False, "missing_matrix_identity": []}
+    if not path or not os.path.exists(path):
+        return out
+    out["age_seconds"] = int(time.time() - os.path.getmtime(path))
+    out["stale"] = out["age_seconds"] > CFG["registry_stale_after"]
+    try:
+        reg = json.load(open(path))
+        out["missing_matrix_identity"] = sorted(a["agent_ref"] for a in reg if not a.get("matrix_user_id"))
+        for a in reg:  # keep directory identities in sync with the latest export
+            if a.get("matrix_user_id"):
+                L.upsert_agent(a)
+    except Exception as e:  # noqa: BLE001
+        out["error"] = str(e)[:200]
+    return out
 
 
 def health():
@@ -513,6 +536,11 @@ def health():
         reasons.append(f"timeout_rate_high:{m['timeout_rate']}")
     if m["counters"].get("callback_bad_signature", 0) >= 5:
         reasons.append("callback_signature_failures")
+    reg = registry_status()
+    if reg["stale"]:
+        reasons.append(f"agentteams_registry_stale:{reg['age_seconds']}")
+    for ref in reg["missing_matrix_identity"]:
+        reasons.append(f"agentteams_identity_missing:{ref}")
     return {"status": "ok" if not reasons else "degraded", "reasons": reasons, "enabled": CFG["enabled"],
             "matrix_user": MX.user_id, "agents": len(m["agents"]), "bound_children": sorted(bound)}
 

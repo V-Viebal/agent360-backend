@@ -354,6 +354,18 @@ class Contract(unittest.TestCase):
         self.assertTrue(any(r.startswith("agentteams_matrix_sync_stale") for r in h["reasons"]))
 
 
+class RegistryDrift(unittest.TestCase):
+    def test_missing_identity_and_stale_registry(self):
+        d = tempfile.mkdtemp(); reg = os.path.join(d, "registry.json")
+        json.dump([{"agent_ref": CH, "matrix_user_id": "@gm-default:hs"}, {"agent_ref": "agent://core/ken", "matrix_user_id": None}], open(reg, "w"))
+        CP = _cp(d, A2A_REGISTRY_FILE=reg, A2A_REGISTRY_STALE_SECONDS="60")
+        r = CP.registry_status()
+        self.assertEqual((r["stale"], r["missing_matrix_identity"]), (False, ["agent://core/ken"]))
+        self.assertIn("agentteams_identity_missing:agent://core/ken", CP.health()["reasons"])
+        os.utime(reg, (time.time() - 3600, time.time() - 3600))
+        self.assertTrue(any(x.startswith("agentteams_registry_stale") for x in CP.health()["reasons"]))
+
+
 class BindingMerge(unittest.TestCase):
     def test_partial_put_keeps_fields(self):
         L = ledger()

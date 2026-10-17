@@ -16,9 +16,12 @@ services:
       A2A_DEFAULT_INSTANCE: core
       A2A_REGISTRY_FILE: /state/registry.json
       A2A_OFFLINE_AFTER_SECONDS: "180"   # 3 missed worker heartbeats -> offline
-      A2A_SYNC_STALE_SECONDS: "120"      # AgentTeams/Matrix sync older than this -> health degraded      # copied from AgentTeams node (export_registry.sh)
+      A2A_SYNC_STALE_SECONDS: "120"
+      A2A_REGISTRY_STALE_SECONDS: "1200"  # registry-sync.sh cron on the AgentTeams node runs every 5 min      # AgentTeams/Matrix sync older than this -> health degraded      # copied from AgentTeams node (export_registry.sh)
       # Cloudflare blocks server-to-server calls (error 1010): reach Traefik over Tailscale with Host header.
-      A2A_QWENPAW_INSTANCES: '{"core":{"url":"https://100.76.185.111","host":"ai.hmz.one"},"gm":{"url":"http://100.81.66.42:26888"}}'
+      # Public QwenPaw URLs with TLS verification. Every caller sends a non-default User-Agent:
+      # Cloudflare Browser Integrity Check (error 1010) blocks only the default "Python-urllib/x" UA.
+      A2A_QWENPAW_INSTANCES: "{\"core\":\"https://ai.hmz.one\",\"gm\":\"https://ai-gm.antares.vn\"}"
     volumes:
       - /opt/agent360-a2a/app:/app:ro
       - /opt/agent360-a2a/secrets:/secrets:ro

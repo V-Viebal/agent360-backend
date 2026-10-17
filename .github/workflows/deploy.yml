@@ -1,38 +1,59 @@
 name: Deploy Backend
 
+# Single source of truth for api: build + test on the 2nd runner, publish a self-contained
+# linux-x64 build into the mounted /opt/agent360/backend atomically, restart, verify live.
 on:
+  # Deploy only by explicit dispatch or a `deploy-*` tag. Auto-deploy on push stays disabled while
+  # work-in-progress lives only in local working trees (a push-triggered deploy of main would regress prod).
   push:
-    branches: [main]
+    tags: ['deploy-*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
-jobs:
-  build:
-    runs-on: [self-hosted, linux]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+concurrency:
+  group: agent360-backend-deploy
+  cancel-in-progress: false
 
-      - name: Install .NET 10 to local runner user directory
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, 2nd]
+    env:
+      APP_ROOT: /opt/agent360/backend
+      PUBLIC_URL: https://agent360.antares.vn
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET 10
         run: |
           mkdir -p "$HOME/.dotnet"
-          curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 10.0 --install-dir "$HOME/.dotnet" || true
-          echo "$HOME/.dotnet" >> $GITHUB_PATH
-          export PATH="$HOME/.dotnet:$PATH"
-          dotnet --info || true
+          if ! "$HOME/.dotnet/dotnet" --list-sdks 2>/dev/null | grep -q '^10\.'; then
+            curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 10.0 --install-dir "$HOME/.dotnet"
+          fi
+          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
 
-      - name: Build backend API
-        run: |
-          export PATH="$HOME/.dotnet:$PATH"
-          dotnet restore src/Agent360.API/Agent360.API.csproj || echo "Restore warning"
-          dotnet build src/Agent360.API/Agent360.API.csproj -c Release --no-restore || dotnet build src/Agent360.API/Agent360.API.csproj -c Release
-          echo "Backend .NET 10 build completed."
+      - name: Test
+        run: dotnet test tests/Agent360.API.ContractTests -c Release
 
-      - name: Trigger Webhook Deploy
-        if: env.COOLIFY_WEBHOOK_URL != ''
-        env:
-          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK }}
+      - name: Publish
+        run: dotnet publish src/Agent360.API/Agent360.API.csproj -c Release -r linux-x64 --self-contained true -o "$RUNNER_TEMP/publish"
+
+      - name: Deploy (keep previous build for rollback)
         run: |
-          curl -f -X POST "$COOLIFY_WEBHOOK_URL" || echo "Deployment triggered."
+          rm -rf "${APP_ROOT}.prev" && cp -a "$APP_ROOT" "${APP_ROOT}.prev"
+          cp -a "$RUNNER_TEMP/publish/." "$APP_ROOT/"
+          sudo -n /usr/local/sbin/agent360-restart backend
+
+      - name: Verify live API (rollback on failure)
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/agents" || true)
+            [ "$code" = 200 ] && { echo "api ok"; exit 0; }
+            sleep 5
+          done
+          echo "api not healthy ($code), rolling back" >&2
+          cp -a "${APP_ROOT}.prev/." "$APP_ROOT/"
+          sudo -n /usr/local/sbin/agent360-restart backend
+          exit 1
+
