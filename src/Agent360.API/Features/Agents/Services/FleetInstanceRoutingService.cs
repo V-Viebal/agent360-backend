@@ -268,23 +268,16 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                         _logger.LogWarning("Internal endpoint {Url} for {Instance} unreachable ({Error}); failing over to {Public}", baseUrl, instance.Key, ex.Message, instance.PublicUrl);
                         break;
                     }
-                    // The request may already be executing on the runtime (slow turn, dropped response).
-                    // Replaying it elsewhere would duplicate chat turns and writes, so only safe reads may try the other route.
-                    if (!IsIdempotent(method))
-                    {
-                        throw new HttpRequestException($"QwenPaw instance '{instance.Key}' did not answer in time", ex, HttpStatusCode.GatewayTimeout);
-                    }
-                    _logger.LogWarning("Runtime {Instance} slow/failed on {Url} ({Error}); retrying read on next route", instance.Key, baseUrl, ex.Message);
-                    break;
+                    // The runtime received the request and is slow (or dropped the response). Both routes end at the
+                    // same runtime, so replaying would duplicate chat turns/writes and double the load on a busy node.
+                    _logger.LogWarning("Runtime {Instance} did not answer {Method} {Path} via {Url} in time ({Error})", instance.Key, method.Method, path, baseUrl, ex.Message);
+                    throw new HttpRequestException($"QwenPaw instance '{instance.Key}' did not answer in time", ex, HttpStatusCode.GatewayTimeout);
                 }
             }
         }
 
         throw new HttpRequestException($"QwenPaw instance '{instance.Key}' is unreachable", lastError, HttpStatusCode.BadGateway);
     }
-
-    private static bool IsIdempotent(HttpMethod method) =>
-        method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Options;
 
     // True only when the TCP/TLS connection was never established, i.e. the runtime never saw the request.
     internal static bool IsConnectFailure(Exception ex)

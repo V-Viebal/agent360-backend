@@ -53,7 +53,7 @@ public sealed class FleetRoutingTests
         var routing = Create(req =>
         {
             hosts.Add(req.RequestUri!.Host);
-            if (req.RequestUri.Host.StartsWith("100.")) throw new HttpRequestException("connection refused");
+            if (req.RequestUri.Host.StartsWith("100.")) throw new HttpRequestException(HttpRequestError.ConnectionError, "connection refused");
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
         var core = routing.Instances.Single(i => i.Key == "core");
@@ -104,6 +104,23 @@ public sealed class FleetRoutingTests
         var core = routing.Instances.Single(i => i.Key == "core");
 
         var act = () => routing.SendAsync(core, HttpMethod.Post, "console/chat", () => JsonContent.Create(new { q = 1 }), timeout: TimeSpan.FromSeconds(1), ct: TestContext.Current.CancellationToken);
+
+        (await act.Should().ThrowAsync<HttpRequestException>()).Which.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
+        hosts.Should().Equal("100.76.185.111");
+    }
+
+    [Fact]
+    public async Task SendAsync_DoesNotRetrySlowReadOnPublicRoute_SameRuntimeWouldBeHitTwice()
+    {
+        var hosts = new List<string>();
+        var routing = Create(req =>
+        {
+            hosts.Add(req.RequestUri!.Host);
+            throw new TaskCanceledException("slow");
+        });
+        var core = routing.Instances.Single(i => i.Key == "core");
+
+        var act = () => routing.SendAsync(core, HttpMethod.Get, "agents/mons/chats", timeout: TimeSpan.FromSeconds(1), ct: TestContext.Current.CancellationToken);
 
         (await act.Should().ThrowAsync<HttpRequestException>()).Which.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
         hosts.Should().Equal("100.76.185.111");
