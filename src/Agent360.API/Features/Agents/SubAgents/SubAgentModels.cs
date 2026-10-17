@@ -34,6 +34,12 @@ public sealed class SubAgentOptions
 
     /// <summary>Hard cap on in-ledger tasks; oldest terminal tasks are archived beyond it.</summary>
     public int MaxLedgerTasks { get; set; } = 2000;
+
+    /// <summary>
+    /// Longest time a create/retry request waits for a sync turn before answering 202 and finishing in the
+    /// background (keeps responses under edge proxy limits such as Cloudflare's 100s).
+    /// </summary>
+    public int SyncWaitSeconds { get; set; } = 85;
 }
 
 public static class DelegationModes

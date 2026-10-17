@@ -18,6 +18,8 @@ public sealed class SubAgentService(
 {
     private readonly SubAgentOptions _opt = options.Value;
 
+    public static string NewTaskId() => $"dlg_{Guid.NewGuid():N}"[..16];
+
     public static string NormalizeAgentId(string id) => id.Contains(':') ? id.Split(':').Last() : id.Trim();
 
     public async Task<ServiceResult<SubAgentBinding>> UpsertBindingAsync(string parent, string child, UpsertSubAgentBindingRequest req, CancellationToken ct)
@@ -120,7 +122,10 @@ public sealed class SubAgentService(
         return await native.ChatAsync(parent, child, prompt ?? "Reply with exactly: AGENT360_PROBE_OK", Math.Min(binding.TimeoutSeconds, 90), ct);
     }
 
-    public async Task<ServiceResult<DelegationTask>> CreateAsync(CreateDelegationRequest req, CancellationToken ct)
+    public Task<ServiceResult<DelegationTask>> CreateAsync(CreateDelegationRequest req, CancellationToken ct) =>
+        CreateAsync(req, null, ct);
+
+    public async Task<ServiceResult<DelegationTask>> CreateAsync(CreateDelegationRequest req, string? taskId, CancellationToken ct)
     {
         req = req with
         {
@@ -141,7 +146,7 @@ public sealed class SubAgentService(
         var runId = req.ParentRunId ?? $"run_{Guid.NewGuid():N}"[..16];
         var criteria = req.AcceptanceCriteria ?? [];
         var task = new DelegationTask(
-            $"dlg_{Guid.NewGuid():N}"[..16], runId, req.RootRunId ?? runId, req.ParentTaskId, depth, [.. chain, req.ChildAgentId],
+            taskId ?? NewTaskId(), runId, req.RootRunId ?? runId, req.ParentTaskId, depth, [.. chain, req.ChildAgentId],
             req.ParentAgentId, req.ChildAgentId, req.Mode, "agent360", null, "", req.Objective,
             Summarize(req.Context), criteria, DelegationStatuses.Queued, 1, _opt.MaxAttempts, null, null, [], null, [], now, now, null);
         await store.SaveTaskAsync(task);

@@ -75,6 +75,15 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     return Results.Problem("Operator token required for this action.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
                 }
                 var clean = (path ?? "").Trim('/');
+                // Disallow reserved static segment collisions (e.g. agents/console/chat must pass to dedicated handler)
+                if (agentId.Equals("console", StringComparison.OrdinalIgnoreCase) ||
+                    agentId.Equals("models", StringComparison.OrdinalIgnoreCase) ||
+                    agentId.Equals("skills", StringComparison.OrdinalIgnoreCase) ||
+                    agentId.Equals("chats", StringComparison.OrdinalIgnoreCase) ||
+                    agentId.Equals("approvals", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.NotFound(new { message = $"Literal route '{agentId}' is handled by dedicated endpoints" });
+                }
                 if (!AllowedPrefixes.Any(p => clean.Equals(p, StringComparison.OrdinalIgnoreCase) || clean.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase)))
                 {
                     return Results.NotFound(new { message = $"Route '{clean}' is not exposed for agents" });

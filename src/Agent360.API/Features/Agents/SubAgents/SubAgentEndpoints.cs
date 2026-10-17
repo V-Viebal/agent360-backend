@@ -91,12 +91,15 @@ public sealed class SubAgentEndpoints : IEndpoint
             .AddEndpointFilter<OperatorAuthFilter>()
             .AllowAnonymous();
 
-        dlg.MapPost("", async ([FromBody] CreateDelegationRequest? body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
+        dlg.MapPost("", async ([FromBody] CreateDelegationRequest? body, IServiceScopeFactory scopes, SubAgentStore store, IOptions<SubAgentOptions> opt,
+                ILogger<SubAgentEndpoints> logger) =>
             {
                 if (!opt.Value.Enabled) return Disabled();
                 if (SubAgentPolicy.ValidateCreateShape(body) is { Allowed: false } shape) return Problem(shape);
-                var r = await svc.CreateAsync(body!, ct);
-                return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
+                var id = SubAgentService.NewTaskId();
+                // The native turn must not be cancelled when the client/edge gives up; it runs to completion
+                // and the ledger records the outcome either way.
+                return await AwaitOrDetach(InOwnScope(scopes, svc => svc.CreateAsync(body!, id, CancellationToken.None)), id, store, opt.Value, logger);
             })
             .WithName("CreateDelegation");
 
@@ -124,12 +127,12 @@ public sealed class SubAgentEndpoints : IEndpoint
             })
             .WithName("ReviewDelegation");
 
-        dlg.MapPost("{taskId}/retry", async (string taskId, [FromBody] RetryDelegationRequest? body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
+        dlg.MapPost("{taskId}/retry", async (string taskId, [FromBody] RetryDelegationRequest? body, IServiceScopeFactory scopes, SubAgentStore store,
+                IOptions<SubAgentOptions> opt, ILogger<SubAgentEndpoints> logger) =>
             {
                 if (!opt.Value.Enabled) return Disabled();
                 if (body is null) return Problem(PolicyDecision.Deny("request body is required"));
-                var r = await svc.RetryAsync(taskId, body, ct);
-                return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
+                return await AwaitOrDetach(InOwnScope(scopes, svc => svc.RetryAsync(taskId, body, CancellationToken.None)), taskId, store, opt.Value, logger);
             })
             .WithName("RetryDelegation");
     }
@@ -156,6 +159,35 @@ public sealed class SubAgentEndpoints : IEndpoint
         {
             return Results.Problem(detail: "QwenPaw runtime did not respond in time; retry or use ?wait=false and poll subagents/skill-status.", statusCode: 504, title: "QwenPaw runtime timed out");
         }
+    }
+
+    /// <summary>Run work in a dedicated DI scope that lives until the work finishes, independent of the HTTP request.</summary>
+    private static async Task<ServiceResult<DelegationTask>> InOwnScope(IServiceScopeFactory scopes, Func<SubAgentService, Task<ServiceResult<DelegationTask>>> work)
+    {
+        await Task.Yield();
+        await using var scope = scopes.CreateAsyncScope();
+        return await work(scope.ServiceProvider.GetRequiredService<SubAgentService>());
+    }
+
+    /// <summary>
+    /// Wait up to SyncWaitSeconds for the dispatch; if it is still running, answer 202 with the current ledger
+    /// record and let the turn finish in the background (poll GET /delegations/{id}).
+    /// </summary>
+    private static async Task<IResult> AwaitOrDetach(Task<ServiceResult<DelegationTask>> work, string taskId, SubAgentStore store,
+        SubAgentOptions opt, ILogger logger)
+    {
+        var wait = Task.Delay(TimeSpan.FromSeconds(Math.Max(1, opt.SyncWaitSeconds)));
+        if (await Task.WhenAny(work, wait) == work)
+        {
+            var r = await work;
+            return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
+        }
+        _ = work.ContinueWith(t => logger.LogWarning(t.Exception, "Detached delegation {Task} failed", taskId),
+            TaskContinuationOptions.OnlyOnFaulted);
+        var current = await store.GetTaskAsync(taskId);
+        return current is null
+            ? Results.Accepted($"/api/v1/delegations/{taskId}", new { id = taskId, status = DelegationStatuses.Queued })
+            : Results.Accepted($"/api/v1/delegations/{taskId}", current);
     }
 
     private static IResult Problem(PolicyDecision d) =>

@@ -135,7 +135,32 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Get chat session messages")
         .AllowAnonymous();
 
-        // 1f. Console Chat Stream & Stop
+        // 1f. Console Chat Stream & Stop (mapped to both /agents/console/chat and root /console/chat for resilience)
+        routeBuilder.MapPost("console/chat", async (
+            [FromBody] ConsoleChatSendRequestDto request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            SessionQueueManager queueManager,
+            ILogger<AgentFeaturesEndpoints> logger,
+            CancellationToken ct) =>
+        {
+            logger.LogInformation("Root console chat request for agent '{AgentId}', session '{SessionId}'", request.AgentId, request.SessionId);
+            var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            queueManager.SetSessionTurnActive(effectiveSessionId, true);
+            try
+            {
+                var response = await client.StreamConsoleChatAsync(request, ct);
+                httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
+                await response.Content.CopyToAsync(httpContext.Response.Body, ct);
+            }
+            finally
+            {
+                queueManager.SetSessionTurnActive(effectiveSessionId, false);
+            }
+        })
+        .MapToApiVersion(ApiVersion.Default)
+        .AllowAnonymous();
+
         group.MapPost("console/chat", async (
             [FromBody] ConsoleChatSendRequestDto request,
             HttpContext httpContext,
