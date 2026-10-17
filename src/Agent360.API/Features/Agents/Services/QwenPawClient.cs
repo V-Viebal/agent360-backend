@@ -71,7 +71,7 @@ public sealed class QwenPawClient : IQwenPawClient
                     Name: string.IsNullOrWhiteSpace(a.Name) ? a.Id : a.Name,
                     Slug: a.Id,
                     RoleTag: roleTag,
-                    Node: "3rd (ai.hmz.one)",
+                    Node: DetermineAgentNode(a.Id, a.WorkspaceDir), // Dynamic infra instance placement
                     Status: status,
                     Model: activeModelStr,
                     RuntimeVersion: "qwenpaw-adapter v2.2.1",
@@ -270,6 +270,29 @@ public sealed class QwenPawClient : IQwenPawClient
         var url = $"api/workspace/file-content?path={Uri.EscapeDataString(path)}";
         var result = await _httpClient.GetFromJsonAsync<WorkspaceFileContentDto>(url, cancellationToken);
         return result?.Content;
+    }
+
+    
+    private static string DetermineAgentNode(string id, string? workspaceDir)
+    {
+        var lowerId = id.ToLowerInvariant();
+        if (lowerId.Contains("mons") || lowerId.Contains("swe") || lowerId.Contains("gm") || lowerId.Contains("vision"))
+        {
+            return "Node 6th (Dedicated) - ai-gm.antares.vn";
+        }
+        if (lowerId.Contains("ken") || lowerId.Contains("sre") || lowerId.Contains("control"))
+        {
+            return "Node 7th (Control) - control.hmz.one";
+        }
+        if (lowerId.Contains("mkai") || lowerId.Contains("browser"))
+        {
+            return "Node 4th (Browser) - browser.hmz.one";
+        }
+        if (lowerId.Contains("zen") || lowerId.Contains("llm") || lowerId.Contains("gateway"))
+        {
+            return "Node 2nd (LLM360) - api-agent360.antares.vn";
+        }
+        return "Node 3rd (Core) - ai.hmz.one";
     }
 
     private static string DetermineRoleTag(string id, string name, string? desc)
