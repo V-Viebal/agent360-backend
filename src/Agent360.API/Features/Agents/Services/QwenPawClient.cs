@@ -44,6 +44,11 @@ public sealed class QwenPawClient : IQwenPawClient
             var results = new List<AgentSummaryResponse>(response.Agents.Count);
             foreach (var a in response.Agents)
             {
+                // Only load enabled agents as requested
+                if (!a.Enabled)
+                {
+                    continue;
+                }
                 var roleTag = DetermineRoleTag(a.Id, a.Name, a.Description);
                 var activeModelStr = a.ActiveModel?.Model ?? a.BackendModel ?? "grok-4.7";
                 if (!string.IsNullOrWhiteSpace(a.ActiveModel?.ProviderId))
@@ -87,6 +92,14 @@ public sealed class QwenPawClient : IQwenPawClient
         }
     }
 
+    
+    public async Task<string> GetModelsAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync("api/models", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
     public async Task<string> GetAgentProfileRawAsync(string agentId, CancellationToken cancellationToken = default)
     {
         var response = await _httpClient.GetAsync($"api/agents/{agentId}", cancellationToken);
@@ -119,7 +132,7 @@ public sealed class QwenPawClient : IQwenPawClient
         }
 
         return chats.Select(c => new AgentSessionResponse(
-            Id: c.SessionId ?? c.Id,
+            Id: !string.IsNullOrWhiteSpace(c.Id) ? c.Id : (c.SessionId ?? ""),
             Title: string.IsNullOrWhiteSpace(c.Name) ? "Session" : c.Name,
             UpdatedAt: c.UpdatedAt,
             MessageCount: 1,
@@ -128,11 +141,26 @@ public sealed class QwenPawClient : IQwenPawClient
         )).ToList();
     }
 
+    public async Task<string> GetChatHistoryRawAsync(string chatId, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync($"api/chats/{chatId}", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
     public async Task<ChatHistoryResponseDto?> GetChatHistoryAsync(string chatId, CancellationToken cancellationToken = default)
     {
-        return await _httpClient.GetFromJsonAsync<ChatHistoryResponseDto>(
-            $"api/chats/{chatId}",
-            cancellationToken);
+        try
+        {
+            return await _httpClient.GetFromJsonAsync<ChatHistoryResponseDto>(
+                $"api/chats/{chatId}",
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Deserializing ChatHistoryResponseDto directly failed for chat {ChatId}. Falling back to raw JSON parsing.", chatId);
+            return null;
+        }
     }
 
     public async Task<IReadOnlyList<QwenPawSkillDto>> GetSkillsAsync(CancellationToken cancellationToken = default)
@@ -184,9 +212,19 @@ public sealed class QwenPawClient : IQwenPawClient
 
     public async Task<IReadOnlyList<WorkspaceTreeNodeDto>?> GetWorkspaceTreeAsync(CancellationToken cancellationToken = default)
     {
-        return await _httpClient.GetFromJsonAsync<IReadOnlyList<WorkspaceTreeNodeDto>>(
+        var rawResponse = await _httpClient.GetFromJsonAsync<QwenPawWorkspaceTreeResponse>(
             "api/workspace/tree",
             cancellationToken);
+
+        if (rawResponse?.Entries is null) return [];
+
+        return rawResponse.Entries.Select(e => new WorkspaceTreeNodeDto(
+            e.Name,
+            e.Path,
+            e.Kind,
+            e.Size,
+            null
+        )).ToList();
     }
 
     public async Task<string?> GetFileContentAsync(string path, CancellationToken cancellationToken = default)

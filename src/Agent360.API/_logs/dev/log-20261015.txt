@@ -2791,3 +2791,567 @@ Hosting environment: Development
 [2026-10-15 21:58:00.952] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
 Content root path: D:\vps\projects\agent360\backend\src\Agent360.API
 
+[2026-10-15 21:59:27.176] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Connection]
+An error occurred using the connection to database 'hmz_template' on server 'tcp://127.0.0.1:5432'.
+
+[2026-10-15 21:59:27.218] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+
+[2026-10-15 21:59:27.293] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 21:59:27.593] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-15 21:59:27.597] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 21:59:27.597] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 21:59:27.597] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\vps\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 21:59:45.059] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Database.Connection]
+An error occurred using the connection to database 'hmz_template' on server 'tcp://127.0.0.1:5432'.
+
+[2026-10-15 21:59:45.103] [ERR] [Agent360.API] [Microsoft.EntityFrameworkCore.Query]
+An exception occurred while iterating over the results of a query for context type 'Agent360.ReferenceData.Infrastructure.Persistence.AppDbContext'.
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+System.InvalidOperationException: An exception has been raised that is likely due to a transient failure.
+ ---> Npgsql.NpgsqlException (0x80004005): Failed to connect to 127.0.0.1:5432
+ ---> System.Net.Sockets.SocketException (10061): No connection could be made because the target machine actively refused it.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.ConnectAsync(NpgsqlTimeout timeout, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.RawOpen(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.<Open>g__OpenCore|209_0(NpgsqlConnector conn, String username, SslMode sslMode, GssEncryptionMode gssEncMode, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.Internal.NpgsqlConnector.Open(NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.OpenNewConnector(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.PoolingDataSource.<Get>g__RentAsync|33_0(NpgsqlConnection conn, NpgsqlTimeout timeout, Boolean async, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlConnection.<Open>g__OpenAsync|42_0(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenInternalAsync(Boolean errorsExpected, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalConnection.OpenAsync(CancellationToken cancellationToken, Boolean errorsExpected)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteReaderAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.InitializeReaderAsync(AsyncEnumerator enumerator, CancellationToken cancellationToken)
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Npgsql.EntityFrameworkCore.PostgreSQL.Storage.Internal.NpgsqlExecutionStrategy.ExecuteAsync[TState,TResult](TState state, Func`4 operation, Func`4 verifySucceeded, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Query.Internal.SingleQueryingEnumerable`1.AsyncEnumerator.MoveNextAsync()
+
+[2026-10-15 22:06:13.233] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 22:06:13.774] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-15 22:06:13.776] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 22:06:13.776] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 22:06:13.776] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\vps\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 22:06:34.749] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 22:06:35.220] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-15 22:06:35.222] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 22:06:35.222] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 22:06:35.222] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\vps\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 22:07:34.394] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 22:07:34.826] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-15 22:07:34.828] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 22:07:34.828] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 22:07:34.828] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\vps\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 22:07:35.166] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents - null null
+
+[2026-10-15 22:07:35.435] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-15 22:07:35.531] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-15 22:07:36.071] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 22:07:36.106] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-15 22:07:37.385] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 1275.6556ms - 200
+
+[2026-10-15 22:07:37.398] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 1309.2049ms
+
+[2026-10-15 22:07:37.405] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 1333.6357ms
+
+[2026-10-15 22:07:37.408] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 1879.6884ms - 200
+
+[2026-10-15 22:07:37.431] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:07:37.434] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 22:07:37.457] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-15 22:07:37.460] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents - 200 null application/json; charset=utf-8 2296.2539ms
+
+[2026-10-15 22:07:50.087] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 22:07:50.497] [ERR] [Agent360.API] [Microsoft.Extensions.Hosting.Internal.Host]
+Hosting failed to start
+System.IO.IOException: Failed to bind to address http://0.0.0.0:5290: address already in use.
+ ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+ ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+   at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+   at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+   at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__14_1(IHostedService service, CancellationToken token)
+   at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+
+[2026-10-15 22:07:50.516] [FTL] [Agent360.API] []
+Application failed to start correctly System.IO.IOException: Failed to bind to address http://0.0.0.0:5290: address already in use.
+ ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+ ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+   at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+   at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+   at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__14_1(IHostedService service, CancellationToken token)
+   at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+   at Microsoft.Extensions.Hosting.Internal.Host.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(IHost host, CancellationToken token)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(IHost host, CancellationToken token)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.Run(IHost host)
+   at Program.<Main>$(String[] args) in D:\vps\projects\agent360\backend\src\Agent360.API\Program.cs:line 200
+
+[2026-10-15 22:08:03.324] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 22:08:03.706] [ERR] [Agent360.API] [Microsoft.Extensions.Hosting.Internal.Host]
+Hosting failed to start
+System.IO.IOException: Failed to bind to address http://0.0.0.0:5290: address already in use.
+ ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+ ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+   at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+   at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+   at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__14_1(IHostedService service, CancellationToken token)
+   at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+
+[2026-10-15 22:08:03.720] [FTL] [Agent360.API] []
+Application failed to start correctly System.IO.IOException: Failed to bind to address http://0.0.0.0:5290: address already in use.
+ ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+ ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+   at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+   at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+   at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__14_1(IHostedService service, CancellationToken token)
+   at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+   at Microsoft.Extensions.Hosting.Internal.Host.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(IHost host, CancellationToken token)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(IHost host, CancellationToken token)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.Run(IHost host)
+   at Program.<Main>$(String[] args) in D:\vps\projects\agent360\backend\src\Agent360.API\Program.cs:line 200
+
+[2026-10-15 22:08:20.211] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-15 22:08:20.526] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-15 22:08:20.528] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-15 22:08:20.528] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-15 22:08:20.528] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\vps\projects\agent360\backend\src\Agent360.API
+
+[2026-10-15 22:08:20.814] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents - null null
+
+[2026-10-15 22:08:20.982] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-15 22:08:21.021] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-15 22:08:21.032] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 22:08:21.063] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-15 22:08:24.320] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 3254.038ms - 200
+
+[2026-10-15 22:08:24.333] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 3286.5216ms
+
+[2026-10-15 22:08:24.339] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 3307.018ms
+
+[2026-10-15 22:08:24.342] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 3322.2523ms - 200
+
+[2026-10-15 22:08:24.364] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:08:24.366] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 22:08:24.386] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-15 22:08:24.389] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents - 200 null application/json; charset=utf-8 3576.7705ms
+
+[2026-10-15 22:08:24.686] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/chats - null null
+
+[2026-10-15 22:08:24.694] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/chats'
+
+[2026-10-15 22:08:24.700] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/chats
+
+[2026-10-15 22:08:24.700] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 22:08:24.701] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/chats
+
+[2026-10-15 22:08:24.921] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.ClientHandler]
+Received HTTP response headers after 219.5854ms - 200
+
+[2026-10-15 22:08:24.921] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 220.7116ms
+
+[2026-10-15 22:08:24.921] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 221.129ms
+
+[2026-10-15 22:08:24.921] [INF] [Agent360.API] [System.Net.Http.HttpClient.Default.LogicalHandler]
+End processing HTTP request after 221.4398ms - 200
+
+[2026-10-15 22:08:24.958] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:08:24.958] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 22:08:24.962] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/chats'
+
+[2026-10-15 22:08:24.962] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/chats - 200 null application/json; charset=utf-8 277.1572ms
+
+[2026-10-15 22:08:25.246] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents/skills - null null
+
+[2026-10-15 22:08:25.254] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/skills'
+
+[2026-10-15 22:08:25.256] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/skills
+
+[2026-10-15 22:08:25.256] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 22:08:25.256] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/skills
+
+[2026-10-15 22:08:25.439] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 182.5201ms - 200
+
+[2026-10-15 22:08:25.439] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 182.9822ms
+
+[2026-10-15 22:08:25.439] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 183.2192ms
+
+[2026-10-15 22:08:25.439] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 183.5119ms - 200
+
+[2026-10-15 22:08:25.445] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:08:25.445] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 22:08:25.447] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/skills'
+
+[2026-10-15 22:08:25.447] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents/skills - 200 null application/json; charset=utf-8 200.6356ms
+
+[2026-10-15 22:08:25.743] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents/approvals - null null
+
+[2026-10-15 22:08:25.745] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/approvals'
+
+[2026-10-15 22:08:25.748] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/approval/list
+
+[2026-10-15 22:08:25.748] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 22:08:25.748] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/approval/list
+
+[2026-10-15 22:08:25.867] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 118.8036ms - 200
+
+[2026-10-15 22:08:25.867] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 119.0966ms
+
+[2026-10-15 22:08:25.868] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 119.3732ms
+
+[2026-10-15 22:08:25.868] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 119.6947ms - 200
+
+[2026-10-15 22:08:25.872] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:08:25.873] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'ApprovalListResponseDto' as Json.
+
+[2026-10-15 22:08:25.874] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/approvals'
+
+[2026-10-15 22:08:25.874] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents/approvals - 200 null application/json; charset=utf-8 131.0513ms
+
+[2026-10-15 22:08:26.177] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents/analytics/token-usage - null null
+
+[2026-10-15 22:08:26.178] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/analytics/token-usage'
+
+[2026-10-15 22:08:26.180] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/token-usage
+
+[2026-10-15 22:08:26.180] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-15 22:08:26.180] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/token-usage
+
+[2026-10-15 22:08:26.356] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 176.0738ms - 200
+
+[2026-10-15 22:08:26.356] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 176.376ms
+
+[2026-10-15 22:08:26.357] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 176.5455ms
+
+[2026-10-15 22:08:26.357] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 176.7071ms - 200
+
+[2026-10-15 22:08:26.362] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:08:26.363] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'TokenUsageResponseDto' as Json.
+
+[2026-10-15 22:08:26.366] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/analytics/token-usage'
+
+[2026-10-15 22:08:26.366] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents/analytics/token-usage - 200 null application/json; charset=utf-8 188.8131ms
+
+[2026-10-15 22:08:26.663] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents/providers/llm360/credentials/audit - null null
+
+[2026-10-15 22:08:26.664] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/providers/{providerId}/credentials/audit'
+
+[2026-10-15 22:08:26.665] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-15 22:08:26.666] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-15 22:08:26.668] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/providers/{providerId}/credentials/audit'
+
+[2026-10-15 22:08:26.668] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents/providers/llm360/credentials/audit - 200 null application/json; charset=utf-8 5.3359ms
+
+[2026-10-15 22:08:26.958] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://localhost:5290/api/v1/agents/workspace/file-content?path=.env - null null
+
+[2026-10-15 22:08:26.962] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/workspace/file-content'
+
+[2026-10-15 22:08:26.965] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.HttpResults.ProblemHttpResult]
+Setting HTTP status code 403.
+
+[2026-10-15 22:08:26.977] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents/workspace/file-content'
+
+[2026-10-15 22:08:26.977] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://localhost:5290/api/v1/agents/workspace/file-content?path=.env - 403 null application/problem+json 19.2343ms
+

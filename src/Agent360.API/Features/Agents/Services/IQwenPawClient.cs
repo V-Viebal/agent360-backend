@@ -8,10 +8,12 @@ public interface IQwenPawClient
     Task<IReadOnlyList<AgentSummaryResponse>> GetAgentsAsync(CancellationToken cancellationToken = default);
     Task<string> GetAgentProfileRawAsync(string agentId, CancellationToken cancellationToken = default);
     Task<SetActiveModelResponseDto?> SetAgentActiveModelAsync(string agentId, string providerId, string model, CancellationToken cancellationToken = default);
+    Task<string> GetModelsAsync(CancellationToken cancellationToken = default);
 
     // Chats & History
     Task<IReadOnlyList<AgentSessionResponse>> GetChatsAsync(CancellationToken cancellationToken = default);
     Task<ChatHistoryResponseDto?> GetChatHistoryAsync(string chatId, CancellationToken cancellationToken = default);
+    Task<string> GetChatHistoryRawAsync(string chatId, CancellationToken cancellationToken = default);
 
     // Skills
     Task<IReadOnlyList<QwenPawSkillDto>> GetSkillsAsync(CancellationToken cancellationToken = default);

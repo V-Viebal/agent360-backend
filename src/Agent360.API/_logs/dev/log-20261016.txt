@@ -1,0 +1,331 @@
+[2026-10-16 13:59:17.718] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-16 13:59:18.875] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-16 13:59:18.877] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-16 13:59:18.878] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-16 13:59:19.043] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-16 14:01:30.646] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-16 14:01:31.170] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-16 14:01:31.172] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-16 14:01:31.172] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-16 14:01:31.172] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-16 14:01:52.544] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/scalar/v1 - null null
+
+[2026-10-16 14:01:52.924] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /scalar/{documentName?}'
+
+[2026-10-16 14:01:54.607] [INF] [Agent360.API] [Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider]
+No action descriptors found. This may indicate an incorrectly configured application or missing application parts. To learn more, visit https://aka.ms/aspnet/mvc/app-parts
+
+[2026-10-16 14:01:57.683] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.ContentResult]
+Write content with HTTP Response ContentType of text/html
+
+[2026-10-16 14:01:57.689] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /scalar/{documentName?}'
+
+[2026-10-16 14:01:57.692] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/scalar/v1 - 200 1041 text/html 5149.4969ms
+
+[2026-10-16 14:02:06.342] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - null null
+
+[2026-10-16 14:02:06.362] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 14:02:07.172] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 14:02:10.410] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-16 14:02:10.455] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 14:02:11.327] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 869.163ms - 200
+
+[2026-10-16 14:02:11.339] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 910.4069ms
+
+[2026-10-16 14:02:11.348] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 939.624ms
+
+[2026-10-16 14:02:11.350] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 4181.3447ms - 200
+
+[2026-10-16 14:02:11.372] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-16 14:02:11.374] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-16 14:02:11.387] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 14:02:11.390] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - 200 null application/json; charset=utf-8 5049.0953ms
+
+[2026-10-16 14:03:30.719] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-16 14:03:31.201] [ERR] [Agent360.API] [Microsoft.Extensions.Hosting.Internal.Host]
+Hosting failed to start
+System.IO.IOException: Failed to bind to address http://0.0.0.0:5290: address already in use.
+ ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+ ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+   at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+   at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+   at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__14_1(IHostedService service, CancellationToken token)
+   at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+
+[2026-10-16 14:03:31.223] [FTL] [Agent360.API] []
+Application failed to start correctly System.IO.IOException: Failed to bind to address http://0.0.0.0:5290: address already in use.
+ ---> Microsoft.AspNetCore.Connections.AddressInUseException: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+ ---> System.Net.Sockets.SocketException (10048): Only one usage of each socket address (protocol/network address/port) is normally permitted.
+   at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, Boolean disconnectOnFailure, String callerName)
+   at System.Net.Sockets.Socket.DoBind(EndPoint endPointSnapshot, SocketAddress socketAddress)
+   at System.Net.Sockets.Socket.Bind(EndPoint localEP)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(EndPoint endpoint)
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketConnectionListener.Bind()
+   at Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportFactory.BindAsync(EndPoint endpoint, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure.TransportManager.BindAsync(EndPoint endPoint, ConnectionDelegate connectionDelegate, EndpointConfig endpointConfig, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.<>c__DisplayClass28_0`1.<<StartAsync>g__OnBind|0>d.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.BindEndpointAsync(ListenOptions endpoint, AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.Internal.AddressBinder.AddressesStrategy.BindAsync(AddressBindContext context, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.BindAsync(CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerImpl.StartAsync[TContext](IHttpApplication`1 application, CancellationToken cancellationToken)
+   at Microsoft.AspNetCore.Hosting.GenericWebHostService.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.Internal.Host.<StartAsync>b__14_1(IHostedService service, CancellationToken token)
+   at Microsoft.Extensions.Hosting.Internal.Host.ForeachService[T](IEnumerable`1 services, CancellationToken token, Boolean concurrent, Boolean abortOnFirstException, List`1 exceptions, Func`3 operation)
+   at Microsoft.Extensions.Hosting.Internal.Host.StartAsync(CancellationToken cancellationToken)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(IHost host, CancellationToken token)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.RunAsync(IHost host, CancellationToken token)
+   at Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.Run(IHost host)
+   at Program.<Main>$(String[] args) in D:\vps\projects\agent360\backend\src\Agent360.API\Program.cs:line 200
+
+[2026-10-16 14:04:12.378] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-16 14:04:12.789] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-16 14:04:12.791] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-16 14:04:12.792] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-16 14:04:12.792] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-16 14:09:01.546] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - null null
+
+[2026-10-16 14:09:01.765] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 14:09:01.805] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 14:09:01.816] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-16 14:09:01.844] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 14:09:03.457] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 1609.4317ms - 200
+
+[2026-10-16 14:09:03.474] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 1643.3458ms
+
+[2026-10-16 14:09:03.482] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 1665.2457ms
+
+[2026-10-16 14:09:03.486] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 1682.4534ms - 200
+
+[2026-10-16 14:09:03.515] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-16 14:09:03.518] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-16 14:09:03.543] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 14:09:03.547] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - 200 null application/json; charset=utf-8 2002.9214ms
+
+[2026-10-16 14:09:15.733] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/scalar/v1 - null null
+
+[2026-10-16 14:09:15.748] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /scalar/{documentName?}'
+
+[2026-10-16 14:09:15.794] [INF] [Agent360.API] [Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider]
+No action descriptors found. This may indicate an incorrectly configured application or missing application parts. To learn more, visit https://aka.ms/aspnet/mvc/app-parts
+
+[2026-10-16 14:09:16.172] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.ContentResult]
+Write content with HTTP Response ContentType of text/html
+
+[2026-10-16 14:09:16.173] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /scalar/{documentName?}'
+
+[2026-10-16 14:09:16.174] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/scalar/v1 - 200 1041 text/html 441.6016ms
+
+[2026-10-16 15:11:25.717] [INF] [Agent360.API] [Microsoft.AspNetCore.DataProtection.KeyManagement.XmlKeyManager]
+User profile is available. Using 'C:\Users\dangm\AppData\Local\ASP.NET\DataProtection-Keys' as key repository and Windows DPAPI to encrypt keys at rest.
+
+[2026-10-16 15:11:26.227] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Now listening on: http://0.0.0.0:5290
+
+[2026-10-16 15:11:26.230] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Application started. Press Ctrl+C to shut down.
+
+[2026-10-16 15:11:26.231] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Hosting environment: Development
+
+[2026-10-16 15:11:26.231] [INF] [Agent360.API] [Microsoft.Hosting.Lifetime]
+Content root path: D:\VPS\projects\agent360\backend\src\Agent360.API
+
+[2026-10-16 15:11:42.864] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - null null
+
+[2026-10-16 15:11:43.120] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 15:11:43.173] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 15:11:43.187] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-16 15:11:43.224] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 15:11:43.928] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 700.0913ms - 200
+
+[2026-10-16 15:11:43.942] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 738.3552ms
+
+[2026-10-16 15:11:43.951] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 763.0174ms
+
+[2026-10-16 15:11:43.955] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 784.8366ms - 200
+
+[2026-10-16 15:11:43.981] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-16 15:11:43.984] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-16 15:11:44.012] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 15:11:44.016] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - 200 null application/json; charset=utf-8 1153.7619ms
+
+[2026-10-16 15:11:44.135] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/scalar/v1 - null null
+
+[2026-10-16 15:11:44.149] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /scalar/{documentName?}'
+
+[2026-10-16 15:11:44.194] [INF] [Agent360.API] [Microsoft.AspNetCore.Mvc.Infrastructure.DefaultActionDescriptorCollectionProvider]
+No action descriptors found. This may indicate an incorrectly configured application or missing application parts. To learn more, visit https://aka.ms/aspnet/mvc/app-parts
+
+[2026-10-16 15:11:44.523] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.ContentResult]
+Write content with HTTP Response ContentType of text/html
+
+[2026-10-16 15:11:44.524] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /scalar/{documentName?}'
+
+[2026-10-16 15:11:44.525] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/scalar/v1 - 200 1041 text/html 390.5898ms
+
+[2026-10-16 15:16:06.108] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request starting HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - null null
+
+[2026-10-16 15:16:06.121] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executing endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 15:16:06.123] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+Start processing HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 15:16:06.123] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executing. Source: '-standard/', Operation Key: 'null'
+
+[2026-10-16 15:16:06.125] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Sending HTTP request GET https://ai.hmz.one/api/agents
+
+[2026-10-16 15:16:07.285] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.ClientHandler]
+Received HTTP response headers after 1159.4717ms - 200
+
+[2026-10-16 15:16:07.286] [INF] [Agent360.API] [Polly]
+Execution attempt. Source: '-standard//Standard-Retry', Operation Key: 'null', Result: '200', Handled: 'false', Attempt: '0', Execution Time: 1162.2062ms
+
+[2026-10-16 15:16:07.287] [DBG] [Agent360.API] [Polly]
+Resilience pipeline executed. Source: '-standard/', Operation Key: 'null', Result: '200', Execution Time: 1163.8544ms
+
+[2026-10-16 15:16:07.288] [INF] [Agent360.API] [System.Net.Http.HttpClient.IQwenPawClient.LogicalHandler]
+End processing HTTP request after 1165.4431ms - 200
+
+[2026-10-16 15:16:07.290] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Setting HTTP status code 200.
+
+[2026-10-16 15:16:07.291] [INF] [Agent360.API] [Microsoft.AspNetCore.Http.Result.OkObjectResult]
+Writing value of type 'List`1' as Json.
+
+[2026-10-16 15:16:07.294] [INF] [Agent360.API] [Microsoft.AspNetCore.Routing.EndpointMiddleware]
+Executed endpoint 'HTTP: GET /api/v{version:apiVersion}/agents'
+
+[2026-10-16 15:16:07.295] [INF] [Agent360.API] [Microsoft.AspNetCore.Hosting.Diagnostics]
+Request finished HTTP/1.1 GET http://127.0.0.1:5290/api/v1/agents - 200 null application/json; charset=utf-8 1187.4313ms
+

@@ -55,7 +55,7 @@ public sealed class ListChatsEndpoint : IEndpoint
                 }
 
                 var result = chats.Select(c => new AgentSessionResponse(
-                    Id: c.SessionId ?? c.Id,
+                    Id: !string.IsNullOrWhiteSpace(c.Id) ? c.Id : (c.SessionId ?? ""),
                     Title: string.IsNullOrWhiteSpace(c.Name) ? "Session" : c.Name,
                     UpdatedAt: c.UpdatedAt,
                     MessageCount: 1,

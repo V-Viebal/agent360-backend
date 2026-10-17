@@ -14,21 +14,25 @@ public static class DevelopmentExperienceConfiguration
         {
             if (app.Environment.IsDevelopment())
             {
-                try
+                // Run seeding in background task to avoid blocking Kestrel HTTP startup
+                _ = Task.Run(async () =>
                 {
-                    // Local Development seeds core data after an explicit per-module
-                    // migration operation. A test host suppresses only demo data.
-                    await ApplicationBootstrapper.SeedCoreAsync(app.Services, cancellationToken);
-
-                    if (!isTestHost)
+                    try
                     {
-                        await ApplicationBootstrapper.SeedDevelopmentAsync(app.Services, cancellationToken);
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                        await ApplicationBootstrapper.SeedCoreAsync(app.Services, linkedCts.Token);
+
+                        if (!isTestHost)
+                        {
+                            await ApplicationBootstrapper.SeedDevelopmentAsync(app.Services, linkedCts.Token);
+                        }
                     }
-                }
-                catch (Exception ex)
-                {
-                    app.Logger.LogWarning(ex, "Skipping database seeding because local PostgreSQL is not reachable at 127.0.0.1:5432. Agent360 API endpoints and QwenPaw infra proxies will continue running.");
-                }
+                    catch (Exception)
+                    {
+                        app.Logger.LogInformation("Local PostgreSQL 127.0.0.1:5432 not reachable. Agent360 API endpoints continue in direct QwenPaw infra mode.");
+                    }
+                });
             }
 
             if (!SupportsInteractiveApiDocumentation(app.Environment))
