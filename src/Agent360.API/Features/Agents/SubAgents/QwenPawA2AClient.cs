@@ -31,7 +31,10 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
     public QwenPawA2AClient(HttpClient http, IOptions<QwenPawOptions> options)
     {
         _http = http;
-        _http.BaseAddress = new Uri(options.Value.BaseUrl.TrimEnd('/') + "/");
+        // Native inter-agent tools execute inside the Core runtime; use its internal endpoint.
+        options.Value.Instances.TryGetValue("core", out var core);
+        var baseUrl = !string.IsNullOrWhiteSpace(core?.InternalUrl) ? core.InternalUrl : "http://100.76.185.111:33148";
+        _http.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
         _http.Timeout = Timeout.InfiniteTimeSpan;
     }
 

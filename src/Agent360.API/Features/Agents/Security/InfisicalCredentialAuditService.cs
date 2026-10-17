@@ -17,6 +17,26 @@ public static class InfisicalCredentialAuditService
         "LLM360_LOGTO_M2M_APP_SECRET"
     ];
 
+    public static string ResolveAgentComposioToken(string agentId)
+    {
+        var cleanAgent = agentId.Replace("bot:agent360:", "").Trim().ToLowerInvariant();
+        var agentEnvKey = $"COMPOSIO_API_KEY_{cleanAgent.Replace("-", "_").ToUpperInvariant()}";
+        
+        var specificKey = Environment.GetEnvironmentVariable(agentEnvKey);
+        if (!string.IsNullOrWhiteSpace(specificKey))
+        {
+            return specificKey;
+        }
+
+        var globalKey = Environment.GetEnvironmentVariable("COMPOSIO_API_KEY");
+        if (!string.IsNullOrWhiteSpace(globalKey))
+        {
+            return globalKey;
+        }
+
+        return "ck_hRHd3TK_vE4wwTBlUaX3";
+    }
+
     public static IReadOnlyList<CredentialAuditResult> AuditProviderCredentials(
         string providerId,
         IDictionary<string, string?>? configuredEnvironment = null)

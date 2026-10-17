@@ -19,7 +19,7 @@ public sealed class AgentFeaturesMappingTests
               "agent_id": "mons",
               "tool_name": "execute_shell_command",
               "severity": "high",
-              "created_at": "2026-10-15T09:30:00Z",
+              "created_at": 1792056600.5,
               "reasoning": "Deploying staging container"
             }
           ],

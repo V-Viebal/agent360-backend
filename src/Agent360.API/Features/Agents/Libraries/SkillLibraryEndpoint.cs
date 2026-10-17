@@ -1,10 +1,9 @@
+using Agent360.API.Features.Agents.Services;
 using System.Net.Http.Json;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
-using Agent360.API.Options;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.Libraries;
 
@@ -12,21 +11,15 @@ public sealed class SkillLibraryEndpoint : IEndpoint
 {
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
-        // 1. Get all skills across agent library / platform
+        // 1. Get all skills across agent library / platform (supports multi-node scoping via agentId)
         routeBuilder.MapGet(
             "libraries/skills",
             async Task<IResult> (
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IQwenPawClient qwenPawClient,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, "api/skills");
-
-                var rawSkills = await httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawSkillDto>>(
-                    requestUri,
-                    cancellationToken);
+                var rawSkills = await qwenPawClient.GetSkillsAsync(agentId, cancellationToken);
 
                 if (rawSkills is null)
                 {
@@ -59,18 +52,13 @@ public sealed class SkillLibraryEndpoint : IEndpoint
             async Task<IResult> (
                 string skillName,
                 [FromBody] ToggleSkillRequest request,
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, $"api/skills/{Uri.EscapeDataString(skillName)}/toggle");
-
-                var response = await httpClient.PostAsJsonAsync(
-                    requestUri,
-                    new { enabled = request.Enabled },
-                    cancellationToken);
+                var target = routing.ResolveTarget(agentId);
+                var action = request.Enabled ? "enable" : "disable";
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Post, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/skills/{Uri.EscapeDataString(skillName)}/{action}", ct: cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {

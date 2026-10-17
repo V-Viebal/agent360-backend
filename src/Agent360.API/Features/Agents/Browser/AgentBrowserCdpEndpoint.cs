@@ -1,3 +1,4 @@
+using Agent360.API.Features.Agents.Services;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
@@ -16,16 +17,18 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
-        // 1. List active browser pages for an agent
+        // 1. List active browser pages for an agent (routed to node CDP endpoint)
         routeBuilder.MapGet(
             "agents/{agentId}/browser/pages",
             async Task<IResult> (
                 string agentId,
                 IHttpClientFactory httpClientFactory,
+                IFleetInstanceRoutingService routingService,
                 CancellationToken cancellationToken) =>
             {
+                var target = routingService.ResolveTarget(agentId);
                 using var httpClient = httpClientFactory.CreateClient();
-                var pages = await GetBrowserPagesAsync(httpClient, cancellationToken);
+                var pages = await GetBrowserPagesAsync(httpClient, target.CdpUrl, cancellationToken);
                 return TypedResults.Ok(pages);
             })
             .MapToApiVersion(ApiVersion.Default)
@@ -40,11 +43,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             async Task<IResult> (
                 string agentId,
                 IHttpClientFactory httpClientFactory,
+                IFleetInstanceRoutingService routingService,
                 [FromQuery] string? pageId,
                 CancellationToken cancellationToken) =>
             {
+                var target = routingService.ResolveTarget(agentId);
                 using var httpClient = httpClientFactory.CreateClient();
-                var pages = await GetBrowserPagesAsync(httpClient, cancellationToken);
+                var pages = await GetBrowserPagesAsync(httpClient, target.CdpUrl, cancellationToken);
                 var targetPage = string.IsNullOrEmpty(pageId)
                     ? pages.FirstOrDefault(p => p.Type == "page")
                     : pages.FirstOrDefault(p => p.Id == pageId);
@@ -54,7 +59,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     return TypedResults.NotFound(new { message = $"No open browser page found for agent {agentId}" });
                 }
 
-                var screenshotBase64 = await CaptureScreenshotAsync(targetPage.Id, cancellationToken);
+                var screenshotBase64 = await CaptureScreenshotAsync(targetPage.Id, target.CdpUrl, cancellationToken);
                 if (screenshotBase64 is null)
                 {
                     return TypedResults.Problem("Failed to capture screenshot from CDP target.");
@@ -79,11 +84,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             async Task<IResult> (
                 string agentId,
                 IHttpClientFactory httpClientFactory,
+                IFleetInstanceRoutingService routingService,
                 [FromQuery] string? pageId,
                 CancellationToken cancellationToken) =>
             {
+                var target = routingService.ResolveTarget(agentId);
                 using var httpClient = httpClientFactory.CreateClient();
-                var pages = await GetBrowserPagesAsync(httpClient, cancellationToken);
+                var pages = await GetBrowserPagesAsync(httpClient, target.CdpUrl, cancellationToken);
                 var targetPage = string.IsNullOrEmpty(pageId)
                     ? pages.FirstOrDefault(p => p.Type == "page")
                     : pages.FirstOrDefault(p => p.Id == pageId);
@@ -93,7 +100,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     return TypedResults.NotFound(new { message = "No browser page available" });
                 }
 
-                var screenshotBase64 = await CaptureScreenshotAsync(targetPage.Id, cancellationToken);
+                var screenshotBase64 = await CaptureScreenshotAsync(targetPage.Id, target.CdpUrl, cancellationToken);
                 if (screenshotBase64 is null)
                 {
                     return TypedResults.Problem("Failed to capture screenshot");
@@ -123,8 +130,10 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
 
                 // Get target page
+                var routingService = context.RequestServices.GetRequiredService<IFleetInstanceRoutingService>();
+                var target = routingService.ResolveTarget(agentId);
                 using var http = new HttpClient();
-                var pages = await GetBrowserPagesAsync(http, context.RequestAborted);
+                var pages = await GetBrowserPagesAsync(http, target.CdpUrl, context.RequestAborted);
                 var page = pages.FirstOrDefault(p => p.Type == "page");
                 if (page is null)
                 {
@@ -133,7 +142,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 }
 
                 using var cdpWs = new ClientWebSocket();
-                var cdpUri = new Uri($"ws://100.76.185.111:19223/devtools/page/{page.Id}");
+                var wsHost = new Uri(target.CdpUrl).Authority;
+                var cdpUri = new Uri($"ws://{wsHost}/devtools/page/{page.Id}");
                 await cdpWs.ConnectAsync(cdpUri, context.RequestAborted);
 
                 // Start Screencast on CDP
@@ -156,11 +166,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             });
     }
 
-    private static async Task<IReadOnlyList<BrowserPageSummary>> GetBrowserPagesAsync(HttpClient httpClient, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<BrowserPageSummary>> GetBrowserPagesAsync(HttpClient httpClient, string? cdpHost, CancellationToken cancellationToken)
     {
         try
         {
-            var url = $"{DefaultCdpHttpHost}/json/list";
+            var host = !string.IsNullOrWhiteSpace(cdpHost) ? cdpHost : DefaultCdpHttpHost;
+            var url = $"{host.TrimEnd('/')}/json/list";
             var nodes = await httpClient.GetFromJsonAsync<JsonArray>(url, cancellationToken);
             if (nodes is null) return Array.Empty<BrowserPageSummary>();
 
@@ -185,10 +196,11 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         }
     }
 
-    private static async Task<string?> CaptureScreenshotAsync(string pageId, CancellationToken cancellationToken)
+    private static async Task<string?> CaptureScreenshotAsync(string pageId, string? cdpHost, CancellationToken cancellationToken)
     {
         using var ws = new ClientWebSocket();
-        var uri = new Uri($"ws://100.76.185.111:19223/devtools/page/{pageId}");
+        var host = !string.IsNullOrWhiteSpace(cdpHost) ? new Uri(cdpHost).Authority : "100.76.185.111:19223";
+        var uri = new Uri($"ws://{host}/devtools/page/{pageId}");
         await ws.ConnectAsync(uri, cancellationToken);
 
         var req = JsonSerializer.Serialize(new

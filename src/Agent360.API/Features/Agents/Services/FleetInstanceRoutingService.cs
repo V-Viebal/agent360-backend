@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
@@ -10,8 +11,32 @@ namespace Agent360.API.Features.Agents.Services;
 public interface IFleetInstanceRoutingService
 {
     ResolvedInstanceTarget ResolveTarget(string? agentId);
+
+    IReadOnlyList<QwenPawInstance> Instances { get; }
+
     Task<HttpRequestMessage> CreateProxiedRequestAsync(HttpMethod method, string path, string? agentId, HttpContent? content, CancellationToken ct = default);
+
+    /// <summary>Sends to the agent's runtime over the internal endpoint, failing over to the public one,
+    /// re-authenticating once on 401. <paramref name="relativePath"/> is relative to "/api/".</summary>
+    Task<HttpResponseMessage> SendAsync(
+        QwenPawInstance instance,
+        HttpMethod method,
+        string relativePath,
+        Func<HttpContent?>? contentFactory = null,
+        string? agentProfileHeader = null,
+        TimeSpan? timeout = null,
+        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead,
+        CancellationToken ct = default);
 }
+
+public sealed record QwenPawInstance(
+    string Key,
+    string ClusterNode,
+    string DisplayName,
+    string InternalUrl,
+    string PublicUrl,
+    bool RequiresLogin,
+    string CdpUrl);
 
 public sealed record ResolvedInstanceTarget(
     string ClusterNode,
@@ -21,20 +46,130 @@ public sealed record ResolvedInstanceTarget(
     string? LoginPath,
     string? Username,
     string? Password,
-    string CdpUrl);
+    string CdpUrl)
+{
+    public QwenPawInstance? Instance { get; init; }
+
+    public string AgentId { get; init; } = "";
+
+    /// <summary>False for agents that are not QwenPaw runtimes (AgentTeams, LLM360, unconfigured).</summary>
+    public bool IsQwenPaw => Instance is not null;
+}
 
 public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
 {
+    public const string HttpClientName = "qwenpaw-fleet";
+    private const string LoginPath = "api/auth/login";
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(15);
+
     private readonly HttpClient _httpClient;
     private readonly ILogger<FleetInstanceRoutingService> _logger;
-    private readonly ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> _tokenCache = new();
     private readonly QwenPawOptions _options;
+    private readonly ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> _tokenCache = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _loginLocks = new();
+    private readonly ConcurrentDictionary<string, DateTime> _internalDownUntil = new();
 
     public FleetInstanceRoutingService(HttpClient httpClient, ILogger<FleetInstanceRoutingService> logger, IOptions<QwenPawOptions>? options = null)
     {
         _httpClient = httpClient;
+        _httpClient.Timeout = Timeout.InfiniteTimeSpan;
         _logger = logger;
         _options = options?.Value ?? new QwenPawOptions();
+        Instances =
+        [
+            Build("core", "3rd", "Core QwenPaw / CoPaw (Node 3rd)", "http://100.76.185.111:33148", "https://ai.hmz.one", false, "http://100.76.185.111:19222"),
+            Build("gm", "6th", "Gia Moc QwenPaw (Node 6th)", "http://100.81.66.42:26888", "https://ai-gm.antares.vn", true, "http://100.81.66.42:19222"),
+            Build("climax", "5th", "Climax Creative (Node 5th)", "http://100.70.201.83:26404", "https://ai-climax.antares.vn", true, "http://100.70.201.83:19222"),
+            Build("planthy", "5th", "Planthy AI (Node 5th)", "http://100.70.201.83:32841", "https://planthy-ai.hmz.one", true, "http://100.70.201.83:19222"),
+        ];
+    }
+
+    public IReadOnlyList<QwenPawInstance> Instances { get; }
+
+    private QwenPawInstance Build(string key, string node, string name, string internalUrl, string publicUrl, bool requiresLogin, string cdp)
+    {
+        _options.Instances.TryGetValue(key, out var cfg);
+        return new QwenPawInstance(
+            key,
+            node,
+            name,
+            (string.IsNullOrWhiteSpace(cfg?.InternalUrl) ? internalUrl : cfg.InternalUrl).TrimEnd('/'),
+            (string.IsNullOrWhiteSpace(cfg?.PublicUrl) ? publicUrl : cfg.PublicUrl).TrimEnd('/'),
+            requiresLogin,
+            cdp);
+    }
+
+    private QwenPawInstance Instance(string key) => Instances.First(i => i.Key == key);
+
+    public static string NormalizeAgentId(string? agentId)
+    {
+        var raw = (agentId ?? "mons").Trim();
+        if (raw.StartsWith("bot:agent360:", StringComparison.OrdinalIgnoreCase))
+        {
+            raw = raw["bot:agent360:".Length..];
+        }
+        return string.IsNullOrWhiteSpace(raw) ? "mons" : raw;
+    }
+
+    public ResolvedInstanceTarget ResolveTarget(string? agentId)
+    {
+        var raw = NormalizeAgentId(agentId);
+        var id = raw.ToLowerInvariant();
+
+        if (id.StartsWith("gm-"))
+        {
+            var profile = id switch
+            {
+                "gm-boc" => "default",
+                "gm-team" => "team",
+                "gm-lua" => "customer",
+                "gm-gao" => "supplier",
+                _ => raw["gm-".Length..]
+            };
+            return Target(Instance("gm"), raw, profile);
+        }
+
+        if (id.StartsWith("climax-"))
+        {
+            return Target(Instance("climax"), raw, id == "climax-team" ? "team" : "default");
+        }
+
+        if (id.StartsWith("planthy-"))
+        {
+            return Target(Instance("planthy"), raw, id == "planthy-team" ? "team" : "default");
+        }
+
+        // Non-QwenPaw runtimes surfaced by Agent Guardian have no QwenPaw API to proxy to.
+        if (id.StartsWith("agentteams-") || id.StartsWith("llm360-") || id == "tsx-copaw")
+        {
+            return new ResolvedInstanceTarget("", "Non-QwenPaw runtime", "", raw, null, null, null, "") { AgentId = raw };
+        }
+
+        var coreProfile = id switch
+        {
+            "default-core" => "default",
+            "mons-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+            _ => raw
+        };
+        return Target(Instance("core"), raw, coreProfile);
+    }
+
+    private ResolvedInstanceTarget Target(QwenPawInstance instance, string agentId, string profile)
+    {
+        var (user, password) = instance.RequiresLogin ? Credentials(instance.Key) : (null, null);
+        return new ResolvedInstanceTarget(
+            instance.ClusterNode,
+            instance.DisplayName,
+            instance.InternalUrl,
+            profile,
+            instance.RequiresLogin ? "/" + LoginPath : null,
+            user,
+            password,
+            agentId.Equals("mons", StringComparison.OrdinalIgnoreCase) ? "http://100.81.66.42:19222" : instance.CdpUrl)
+        {
+            Instance = instance,
+            AgentId = agentId
+        };
     }
 
     // Instance credentials are injected from configuration (Infisical-rendered env:
@@ -45,86 +180,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         {
             return (string.IsNullOrWhiteSpace(inst.Username) ? "admin" : inst.Username, inst.Password);
         }
-        _logger.LogWarning("No QwenPaw credentials configured for instance {Instance}; requests will be unauthenticated", key);
         return (null, null);
-    }
-
-    public ResolvedInstanceTarget ResolveTarget(string? agentId)
-    {
-        var raw = (agentId ?? "mons").Replace("bot:agent360:", "").Trim();
-        var id = raw.ToLowerInvariant();
-
-        // 1. Gia Moc Node 6th (Dedicated Ops & ERP)
-        if (id.StartsWith("gm-") || id.Contains("giamoc") || id.Contains("boc") || id.Contains("gao") || id.Contains("lua"))
-        {
-            var profile = id switch
-            {
-                "gm-boc" => "default",
-                "gm-team" => "team",
-                "gm-lua" => "customer",
-                "gm-gao" => "supplier",
-                _ => raw.Replace("gm-", "")
-            };
-            return new ResolvedInstanceTarget(
-                ClusterNode: "6th",
-                InstanceName: "Gia Moc QwenPaw (Node 6th)",
-                BaseUrl: "https://ai-gm.antares.vn",
-                TargetAgentProfile: profile,
-                LoginPath: "/api/auth/login",
-                Username: Credentials("gm").User,
-                Password: Credentials("gm").Password,
-                CdpUrl: "http://100.81.66.42:19222");
-        }
-
-        // 2. Climax Creative Node 5th (Content & Discovery)
-        if (id.StartsWith("climax-"))
-        {
-            var profile = id == "climax-team" ? "team" : "default";
-            return new ResolvedInstanceTarget(
-                ClusterNode: "5th",
-                InstanceName: "Climax Creative (Node 5th)",
-                BaseUrl: "https://ai-climax.antares.vn",
-                TargetAgentProfile: profile,
-                LoginPath: "/api/auth/login",
-                Username: Credentials("climax").User,
-                Password: Credentials("climax").Password,
-                CdpUrl: "http://100.70.201.83:19222");
-        }
-
-        // 3. Planthy AI Node 5th (Delivery Office)
-        if (id.StartsWith("planthy-"))
-        {
-            var profile = id == "planthy-team" ? "team" : "default";
-            return new ResolvedInstanceTarget(
-                ClusterNode: "5th",
-                InstanceName: "Planthy AI (Node 5th)",
-                BaseUrl: "https://planthy-ai.hmz.one",
-                TargetAgentProfile: profile,
-                LoginPath: "/api/auth/login",
-                Username: Credentials("planthy").User,
-                Password: Credentials("planthy").Password,
-                CdpUrl: "http://100.70.201.83:19222");
-        }
-
-        // 4. Default: Core CoPaw / QwenPaw Node 3rd
-        var coreProfile = id switch
-        {
-            "default-core" => "default",
-            "mons-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
-            _ => raw
-        };
-
-        var cdp = id == "mons" ? "http://100.81.66.42:19222" : "http://100.76.185.111:19222";
-
-        return new ResolvedInstanceTarget(
-            ClusterNode: "3rd",
-            InstanceName: "Core QwenPaw / CoPaw (Node 3rd)",
-            BaseUrl: "https://ai.hmz.one",
-            TargetAgentProfile: coreProfile,
-            LoginPath: null,
-            Username: null,
-            Password: null,
-            CdpUrl: cdp);
     }
 
     public async Task<HttpRequestMessage> CreateProxiedRequestAsync(
@@ -135,48 +191,123 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         CancellationToken ct = default)
     {
         var target = ResolveTarget(agentId);
-        var baseUri = new Uri(target.BaseUrl.TrimEnd('/') + "/");
-        var cleanPath = path.TrimStart('/');
-        var fullUri = new Uri(baseUri, cleanPath);
-
-        var request = new HttpRequestMessage(method, fullUri);
-        if (content != null)
+        var instance = target.Instance ?? Instance("core");
+        var baseUrl = IsInternalDown(instance) ? instance.PublicUrl : instance.InternalUrl;
+        var request = new HttpRequestMessage(method, new Uri(new Uri(baseUrl + "/"), path.TrimStart('/')))
         {
-            request.Content = content;
-        }
-
+            Content = content
+        };
         request.Headers.TryAddWithoutValidation("X-Agent-Id", target.TargetAgentProfile);
-
-        // Authenticate if instance requires token login
-        if (!string.IsNullOrWhiteSpace(target.LoginPath) && !string.IsNullOrWhiteSpace(target.Username) && !string.IsNullOrWhiteSpace(target.Password))
-        {
-            var token = await GetOrRefreshTokenAsync(target, ct);
-            if (!string.IsNullOrWhiteSpace(token))
-            {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            }
-        }
-
+        await AuthorizeAsync(request, instance, baseUrl, forceRefresh: false, ct);
         return request;
     }
 
-    private async Task<string?> GetOrRefreshTokenAsync(ResolvedInstanceTarget target, CancellationToken ct)
+    public async Task<HttpResponseMessage> SendAsync(
+        QwenPawInstance instance,
+        HttpMethod method,
+        string relativePath,
+        Func<HttpContent?>? contentFactory = null,
+        string? agentProfileHeader = null,
+        TimeSpan? timeout = null,
+        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead,
+        CancellationToken ct = default)
     {
-        var cacheKey = $"{target.BaseUrl}:{target.Username}";
-        if (_tokenCache.TryGetValue(cacheKey, out var item) && DateTime.UtcNow < item.ExpiresAt)
+        var bases = IsInternalDown(instance)
+            ? new[] { instance.PublicUrl }
+            : new[] { instance.InternalUrl, instance.PublicUrl };
+        var path = "api/" + relativePath.TrimStart('/');
+        Exception? lastError = null;
+
+        foreach (var baseUrl in bases.Distinct())
         {
-            return item.Token;
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(timeout ?? DefaultTimeout);
+                using var request = new HttpRequestMessage(method, new Uri(new Uri(baseUrl + "/"), path))
+                {
+                    Content = contentFactory?.Invoke()
+                };
+                if (!string.IsNullOrWhiteSpace(agentProfileHeader))
+                {
+                    request.Headers.TryAddWithoutValidation("X-Agent-Id", agentProfileHeader);
+                }
+
+                try
+                {
+                    await AuthorizeAsync(request, instance, baseUrl, forceRefresh: attempt > 0, cts.Token);
+                    var response = await _httpClient.SendAsync(request, completion, cts.Token);
+                    if (response.StatusCode == HttpStatusCode.Unauthorized && instance.RequiresLogin && attempt == 0)
+                    {
+                        response.Dispose();
+                        continue; // token expired or rotated: refresh once
+                    }
+                    if (baseUrl == instance.InternalUrl)
+                    {
+                        _internalDownUntil.TryRemove(instance.Key, out _);
+                    }
+                    return response;
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException)
+                {
+                    lastError = ex;
+                    if (baseUrl == instance.InternalUrl)
+                    {
+                        // Skip the dead internal endpoint for a while instead of paying its timeout on every call.
+                        _internalDownUntil[instance.Key] = DateTime.UtcNow.AddSeconds(30);
+                        _logger.LogWarning(ex, "Internal endpoint {Url} for {Instance} unreachable; failing over to {Public}", baseUrl, instance.Key, instance.PublicUrl);
+                    }
+                    break;
+                }
+            }
         }
 
+        throw new HttpRequestException($"QwenPaw instance '{instance.Key}' is unreachable", lastError, HttpStatusCode.BadGateway);
+    }
+
+    private bool IsInternalDown(QwenPawInstance instance) =>
+        _internalDownUntil.TryGetValue(instance.Key, out var until) && until > DateTime.UtcNow;
+
+    private async Task AuthorizeAsync(HttpRequestMessage request, QwenPawInstance instance, string baseUrl, bool forceRefresh, CancellationToken ct)
+    {
+        if (!instance.RequiresLogin)
+        {
+            return;
+        }
+        var token = await GetOrRefreshTokenAsync(instance, baseUrl, forceRefresh, ct);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+    }
+
+    private async Task<string?> GetOrRefreshTokenAsync(QwenPawInstance instance, string baseUrl, bool forceRefresh, CancellationToken ct)
+    {
+        var (user, password) = Credentials(instance.Key);
+        if (user is null || password is null)
+        {
+            _logger.LogWarning("No QwenPaw credentials configured for instance {Instance}; requests will be unauthenticated", instance.Key);
+            return null;
+        }
+
+        if (!forceRefresh && _tokenCache.TryGetValue(instance.Key, out var cached) && DateTime.UtcNow < cached.ExpiresAt)
+        {
+            return cached.Token;
+        }
+
+        var gate = _loginLocks.GetOrAdd(instance.Key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
         try
         {
-            var loginUri = new Uri(new Uri(target.BaseUrl.TrimEnd('/') + "/"), target.LoginPath!.TrimStart('/'));
-            var payload = new { username = target.Username, password = target.Password };
+            if (!forceRefresh && _tokenCache.TryGetValue(instance.Key, out cached) && DateTime.UtcNow < cached.ExpiresAt)
+            {
+                return cached.Token;
+            }
 
-            using var resp = await _httpClient.PostAsJsonAsync(loginUri, payload, ct);
+            using var resp = await _httpClient.PostAsJsonAsync(new Uri(new Uri(baseUrl + "/"), LoginPath), new { username = user, password }, ct);
             if (!resp.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed login to instance {Url}. Status: {Status}", target.BaseUrl, resp.StatusCode);
+                _logger.LogWarning("Failed login to instance {Instance} at {Url}. Status: {Status}", instance.Key, baseUrl, resp.StatusCode);
                 return null;
             }
 
@@ -184,16 +315,13 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             var token = node?["token"]?.ToString();
             if (!string.IsNullOrWhiteSpace(token))
             {
-                // Cache token for 6 hours
-                _tokenCache[cacheKey] = (token, DateTime.UtcNow.AddHours(6));
-                return token;
+                _tokenCache[instance.Key] = (token, DateTime.UtcNow.AddHours(6));
             }
+            return token;
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogError(ex, "Exception authenticating to instance {Url}", target.BaseUrl);
+            gate.Release();
         }
-
-        return null;
     }
 }

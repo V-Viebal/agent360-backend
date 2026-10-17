@@ -2,9 +2,8 @@ using System.Net.Http.Json;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
-using Agent360.API.Options;
+using Agent360.API.Features.Agents.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.Schedules;
 
@@ -16,17 +15,14 @@ public sealed class ScheduleEndpoint : IEndpoint
         routeBuilder.MapGet(
             "schedules",
             async Task<IResult> (
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, "api/cron/jobs");
-
-                var jobs = await httpClient.GetFromJsonAsync<IReadOnlyList<CronJobItemDto>>(
-                    requestUri,
-                    cancellationToken);
+                var target = routing.ResolveTarget(agentId);
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/cron/jobs", ct: cancellationToken);
+                response.EnsureSuccessStatusCode();
+                var jobs = await response.Content.ReadFromJsonAsync<IReadOnlyList<CronJobItemDto>>(cancellationToken);
 
                 if (jobs is null)
                 {
@@ -57,15 +53,12 @@ public sealed class ScheduleEndpoint : IEndpoint
             "schedules/{jobId}/run",
             async Task<IResult> (
                 string jobId,
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, $"api/cron/jobs/{Uri.EscapeDataString(jobId)}/run");
-
-                var response = await httpClient.PostAsync(requestUri, null, cancellationToken);
+                var target = routing.ResolveTarget(agentId);
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Post, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/cron/jobs/{Uri.EscapeDataString(jobId)}/run", ct: cancellationToken);
                 if (response.IsSuccessStatusCode)
                 {
                     return TypedResults.Ok(new { jobId, status = "triggered" });
@@ -85,16 +78,13 @@ public sealed class ScheduleEndpoint : IEndpoint
             async Task<IResult> (
                 string jobId,
                 [FromQuery] bool enable,
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
+                var target = routing.ResolveTarget(agentId);
                 var action = enable ? "resume" : "pause";
-                var requestUri = new Uri(baseUri, $"api/cron/jobs/{Uri.EscapeDataString(jobId)}/{action}");
-
-                var response = await httpClient.PostAsync(requestUri, null, cancellationToken);
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Post, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/cron/jobs/{Uri.EscapeDataString(jobId)}/{action}", ct: cancellationToken);
                 if (response.IsSuccessStatusCode)
                 {
                     return TypedResults.Ok(new { jobId, enabled = enable });

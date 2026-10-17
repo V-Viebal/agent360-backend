@@ -2,9 +2,8 @@ using System.Net.Http.Json;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
-using Agent360.API.Options;
+using Agent360.API.Features.Agents.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.Tools;
 
@@ -16,17 +15,14 @@ public sealed class ToolManagementEndpoint : IEndpoint
         routeBuilder.MapGet(
             "tools",
             async Task<IResult> (
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, "api/tools");
-
-                var rawTools = await httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawBuiltinToolDto>>(
-                    requestUri,
-                    cancellationToken);
+                var target = routing.ResolveTarget(agentId);
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/tools", ct: cancellationToken);
+                response.EnsureSuccessStatusCode();
+                var rawTools = await response.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawBuiltinToolDto>>(cancellationToken);
 
                 if (rawTools is null)
                 {
@@ -57,18 +53,24 @@ public sealed class ToolManagementEndpoint : IEndpoint
             async Task<IResult> (
                 string toolName,
                 [FromBody] ToggleToolRequest request,
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, $"api/tools/{Uri.EscapeDataString(toolName)}/toggle");
+                var target = routing.ResolveTarget(agentId);
+                var basePath = $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}";
+                using (var current = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"{basePath}/tools", timeout: TimeSpan.FromSeconds(30), ct: cancellationToken))
+                {
+                    current.EnsureSuccessStatusCode();
+                    var node = await current.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonNode>(cancellationToken);
+                    var enabled = node?.AsArray().FirstOrDefault(t => t?["name"]?.GetValue<string>() == toolName)?["enabled"]?.GetValue<bool>();
+                    if (enabled == request.Enabled)
+                    {
+                        return TypedResults.Ok(new { tool = toolName, enabled = request.Enabled });
+                    }
+                }
 
-                var response = await httpClient.PostAsJsonAsync(
-                    requestUri,
-                    new { enabled = request.Enabled },
-                    cancellationToken);
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Patch, $"{basePath}/tools/{Uri.EscapeDataString(toolName)}/toggle", ct: cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {

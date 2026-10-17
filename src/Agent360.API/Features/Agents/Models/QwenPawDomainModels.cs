@@ -7,6 +7,7 @@ public sealed record QwenPawSkillDto(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("description")] string? Description,
     [property: JsonPropertyName("source")] string? Source,
+    [property: JsonPropertyName("emoji")] string? Emoji,
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("channels")] IReadOnlyList<string>? Channels,
     [property: JsonPropertyName("tags")] IReadOnlyList<string>? Tags,
@@ -33,8 +34,10 @@ public sealed record ApprovalItemDto(
     [property: JsonPropertyName("agent_id")] string? AgentId,
     [property: JsonPropertyName("tool_name")] string? ToolName,
     [property: JsonPropertyName("severity")] string? Severity,
-    [property: JsonPropertyName("created_at")] string? CreatedAt,
-    [property: JsonPropertyName("reasoning")] string? Reasoning);
+    [property: JsonPropertyName("created_at")] double? CreatedAt,
+    [property: JsonPropertyName("reasoning")] string? Reasoning,
+    [property: JsonPropertyName("timeout_seconds")] double? TimeoutSeconds = null,
+    [property: JsonPropertyName("result_summary")] string? ResultSummary = null);
 
 public sealed record ApprovalListResponseDto(
     [property: JsonPropertyName("pending_approvals")] IReadOnlyList<ApprovalItemDto> PendingApprovals,
@@ -71,7 +74,8 @@ public sealed record ConsoleChatSendRequestDto(
     [property: JsonPropertyName("input")] IReadOnlyList<ConsoleChatInputItem>? Input);
 
 public sealed record ConsoleChatStopRequestDto(
-    [property: JsonPropertyName("session_id")] string SessionId);
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("agent_id")] string? AgentId = null);
 
 // --- Workspace File Browser ---
 public sealed record WorkspaceTreeNodeDto(

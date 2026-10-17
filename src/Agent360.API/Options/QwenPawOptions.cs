@@ -12,8 +12,8 @@ public sealed class QwenPawOptions
 
     public string BrowserCdpUrl { get; set; } = "http://100.76.185.111:19223";
 
-    /// <summary>Per-instance login for auth-enabled QwenPaw runtimes (keys: gm, climax, planthy).
-    /// Bound from QwenPaw__Instances__&lt;key&gt;__Username/__Password; values come from Infisical.</summary>
+    /// <summary>Per-instance runtime settings (keys: core, gm, climax, planthy).
+    /// Bound from QwenPaw__Instances__&lt;key&gt;__*; credentials come from Infisical.</summary>
     public Dictionary<string, QwenPawInstanceCredentials> Instances { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -22,4 +22,10 @@ public sealed class QwenPawInstanceCredentials
     public string? Username { get; set; }
 
     public string? Password { get; set; }
+
+    /// <summary>Internal (Tailscale) endpoint, tried first.</summary>
+    public string? InternalUrl { get; set; }
+
+    /// <summary>Public endpoint, used only when the internal endpoint is unreachable.</summary>
+    public string? PublicUrl { get; set; }
 }

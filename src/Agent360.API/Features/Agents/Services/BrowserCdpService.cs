@@ -11,15 +11,18 @@ namespace Agent360.API.Features.Agents.Services;
 public sealed class BrowserCdpService : IBrowserCdpService
 {
     private readonly HttpClient _httpClient;
+    private readonly IFleetInstanceRoutingService _routingService;
     private readonly ILogger<BrowserCdpService> _logger;
     private readonly QwenPawOptions _options;
 
     public BrowserCdpService(
         HttpClient httpClient,
+        IFleetInstanceRoutingService routingService,
         IOptions<QwenPawOptions> options,
         ILogger<BrowserCdpService> logger)
     {
         _httpClient = httpClient;
+        _routingService = routingService;
         _logger = logger;
         _options = options.Value;
 
@@ -92,9 +95,9 @@ public sealed class BrowserCdpService : IBrowserCdpService
         // Connect over WebSocket to capture screenshot
         var wsUriString = pageTarget.WebSocketDebuggerUrl;
 
-        // If wsDebugger points to localhost, rewrite with actual host/port of cdp
+        // If wsDebugger points to localhost or private container ip, rewrite with authoritative baseUri
         var baseUri = _httpClient.BaseAddress!;
-        if (wsUriString.Contains("ws://localhost"))
+        if (wsUriString.Contains("ws://localhost") || wsUriString.Contains("ws://127.0.0.1"))
         {
             var path = new Uri(wsUriString).PathAndQuery;
             var hostPort = baseUri.Authority;

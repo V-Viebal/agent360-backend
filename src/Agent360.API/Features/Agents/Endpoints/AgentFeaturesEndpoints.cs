@@ -11,41 +11,22 @@ namespace Agent360.API.Features.Agents.Endpoints;
 
 public sealed class AgentFeaturesEndpoints : IEndpoint
 {
+    private static readonly HashSet<string> ReservedLiteralSegments = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "models", "skills", "approvals", "workspace", "providers", "analytics", "iam", "console", "browser", "chats", "health"
+    };
+
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         var group = routeBuilder.MapGroup("agents")
             .WithTags(EndpointTags.Agents)
             .MapToApiVersion(ApiVersion.Default);
 
-        // 1. Get Agent Profile Detail
-        group.MapGet("{agentId}", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
-        {
-            try
-            {
-                var profile = await client.GetAgentProfileRawAsync(agentId, ct);
-                return Results.Content(profile, "application/json");
-            }
-            catch (HttpRequestException)
-            {
-                return Results.NotFound(new { message = $"Agent profile {agentId} not found on infra" });
-            }
-        })
-        .WithName("GetAgentProfile")
-        .WithSummary("Get agent profile details")
-        .AllowAnonymous();
+        // ==========================================
+        // 1. Static Literal Routes (Priority 1)
+        // ==========================================
 
-        // 2. Set Active Model for Agent (Hot-reload override)
-        group.MapPut("{agentId}/active-model", async (string agentId, [FromBody] SetActiveModelRequestDto request, IQwenPawClient client, CancellationToken ct) =>
-        {
-            var res = await client.SetAgentActiveModelAsync(agentId, request.ProviderId, request.Model, ct);
-            return res is null ? Results.Problem("Failed to switch model") : TypedResults.Ok(res);
-        })
-        .WithName("SetAgentActiveModel")
-        .WithSummary("Hot-reload active LLM model provider and model for agent")
-        .AllowAnonymous();
-
-        
-        // 2b. List all available models from QwenPaw/LLM360 catalog
+        // 1a. List available LLM providers and models from catalog
         group.MapGet("models", async (IQwenPawClient client, CancellationToken ct) =>
         {
             try
@@ -72,54 +53,17 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("List available LLM providers and models from infra")
         .AllowAnonymous();
 
-        
-        // 2c. Get all chat sessions for specific agent from QwenPaw API
-        group.MapGet("{agentId}/chats", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+        // 1b. Global / Agent-scoped Skills
+        group.MapGet("skills", async ([FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
         {
-            try
-            {
-                var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
-                return Results.Content(chatsJson, "application/json");
-            }
-            catch (Exception)
-            {
-                // Fallback to global chats if agent-specific endpoint is unavailable
-                var allChats = await client.GetChatsAsync(ct);
-                return TypedResults.Ok(allChats);
-            }
-        })
-        .WithName("GetAgentChats")
-        .WithSummary("List all chat sessions for a specific agent")
-        .AllowAnonymous();
-
-        // 3. Chat History
-        group.MapGet("chats/{chatId}", async (string chatId, IQwenPawClient client, CancellationToken ct) =>
-        {
-            try
-            {
-                var historyRaw = await client.GetChatHistoryRawAsync(chatId, ct);
-                return Results.Content(historyRaw, "application/json");
-            }
-            catch (HttpRequestException)
-            {
-                return Results.NotFound(new { message = $"Chat {chatId} not found on infra" });
-            }
-        })
-        .WithName("GetChatHistory")
-        .WithSummary("Get chat session messages")
-        .AllowAnonymous();
-
-        // 4. Skills
-        group.MapGet("skills", async (IQwenPawClient client, CancellationToken ct) =>
-        {
-            var skills = await client.GetSkillsAsync(ct);
+            var skills = await client.GetSkillsAsync(agentId, ct);
             return TypedResults.Ok(skills);
         })
         .WithName("ListSkills")
-        .WithSummary("List all agent skills from infra")
+        .WithSummary("List all agent skills from infra (optionally scoped to specific bot)")
         .AllowAnonymous();
 
-        // 5. Approvals
+        // 1c. Approvals
         group.MapGet("approvals", async ([FromQuery] string? sessionId, IQwenPawClient client, CancellationToken ct) =>
         {
             var approvals = await client.GetApprovalsAsync(sessionId, ct);
@@ -147,7 +91,51 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Deny pending tool call")
         .AllowAnonymous();
 
-        // 6. Console chat stream & stop with Per-session Queue & IAM360 Revocation Check
+        // 1d. Workspace Tree & File Content
+        group.MapGet("workspace/tree", async ([FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            var tree = await client.GetWorkspaceTreeAsync(agentId, ct);
+            return TypedResults.Ok(tree);
+        })
+        .WithName("GetWorkspaceTree")
+        .WithSummary("Get workspace file tree (optionally scoped to agent)")
+        .AllowAnonymous();
+
+        group.MapGet("workspace/file-content", async ([FromQuery] string path, [FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            if (!WorkspacePathAcl.IsPathAllowed(path))
+            {
+                return Results.Problem(
+                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
+                    statusCode: StatusCodes.Status403Forbidden,
+                    title: "Forbidden Path");
+            }
+
+            var content = await client.GetFileContentAsync(path, agentId, ct);
+            return content is null ? Results.NotFound() : TypedResults.Ok(new { path, content });
+        })
+        .WithName("GetFileContent")
+        .WithSummary("Read workspace file content with ACL enforcement (optionally scoped to agent)")
+        .AllowAnonymous();
+
+        // 1e. Global Chat History
+        group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            try
+            {
+                var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
+                return Results.Content(historyRaw, "application/json");
+            }
+            catch (HttpRequestException)
+            {
+                return Results.NotFound(new { message = $"Chat {chatId} not found on infra" });
+            }
+        })
+        .WithName("GetChatHistory")
+        .WithSummary("Get chat session messages")
+        .AllowAnonymous();
+
+        // 1f. Console Chat Stream & Stop
         group.MapPost("console/chat", async (
             [FromBody] ConsoleChatSendRequestDto request,
             HttpContext httpContext,
@@ -157,7 +145,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             CancellationToken ct) =>
         {
             logger.LogInformation("Received console chat request for agent '{AgentId}', session '{SessionId}', message length: {Len}", request.AgentId, request.SessionId, request.Message?.Length ?? 0);
-            // IAM360 Revocation Gate Check
             var agentTarget = request.AgentId ?? "default";
             if (!IamRevocationGuard.IsExecutionAllowed(agentTarget, out var revocationReason))
             {
@@ -171,7 +158,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-            // Per-session Turn Coordination
             queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
             {
@@ -201,44 +187,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Stop active agent turn")
         .AllowAnonymous();
 
-        // 7. Workspace File Browser with Path ACL
-        group.MapGet("workspace/tree", async (IQwenPawClient client, CancellationToken ct) =>
-        {
-            var tree = await client.GetWorkspaceTreeAsync(ct);
-            return TypedResults.Ok(tree);
-        })
-        .WithName("GetWorkspaceTree")
-        .WithSummary("Get workspace file tree")
-        .AllowAnonymous();
-
-        group.MapGet("workspace/file-content", async ([FromQuery] string path, IQwenPawClient client, CancellationToken ct) =>
-        {
-            if (!WorkspacePathAcl.IsPathAllowed(path))
-            {
-                return Results.Problem(
-                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
-                    statusCode: StatusCodes.Status403Forbidden,
-                    title: "Forbidden Path");
-            }
-
-            var content = await client.GetFileContentAsync(path, ct);
-            return content is null ? Results.NotFound() : TypedResults.Ok(new { path, content });
-        })
-        .WithName("GetFileContent")
-        .WithSummary("Read workspace file content with ACL enforcement")
-        .AllowAnonymous();
-
-        // 8. Infisical Credential Audit Endpoint
-        group.MapGet("providers/{providerId}/credentials/audit", (string providerId) =>
-        {
-            var auditResults = InfisicalCredentialAuditService.AuditProviderCredentials(providerId);
-            return TypedResults.Ok(auditResults);
-        })
-        .WithName("AuditProviderCredentials")
-        .WithSummary("Audit provider credentials against Infisical policy without exposing secrets")
-        .AllowAnonymous();
-
-        // 9. Token Usage Analytics
+        // 1g. Analytics & Audits
         group.MapGet("analytics/token-usage", async (IQwenPawClient client, CancellationToken ct) =>
         {
             var metrics = await client.GetTokenUsageAsync(ct);
@@ -248,7 +197,15 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Aggregate token consumption and cache hit metrics")
         .AllowAnonymous();
 
-        // 10. IAM360 Revocation Trigger (Simulation / Webhook)
+        group.MapGet("providers/{providerId}/credentials/audit", (string providerId) =>
+        {
+            var auditResults = InfisicalCredentialAuditService.AuditProviderCredentials(providerId);
+            return TypedResults.Ok(auditResults);
+        })
+        .WithName("AuditProviderCredentials")
+        .WithSummary("Audit provider credentials against Infisical policy without exposing secrets")
+        .AllowAnonymous();
+
         group.MapPost("iam/revoke", ([FromBody] RevokeIdentityCellRequest request) =>
         {
             IamRevocationGuard.MarkIdentityCellRevoked(request.IdentityCellId, request.Reason);
@@ -258,7 +215,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Revoke a Bot identity cell")
         .AllowAnonymous();
 
-        // 11. Secure Upload Gateway (with Virtual Path Masking)
         group.MapPost("console/upload", async (
             IFormFile file,
             IWebHostEnvironment env,
@@ -281,7 +237,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .DisableAntiforgery()
         .AllowAnonymous();
 
-        // 12. Remote Browser CDP Live Stream
         group.MapGet("browser/stream", async (
             [FromQuery] string? targetId,
             [FromQuery] int fps,
@@ -302,7 +257,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 try
                 {
                     var imageBytes = await cdpService.CaptureScreenshotAsync(targetId, ct);
-
                     var headerText = $"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {imageBytes.Length}\r\n\r\n";
                     var headerBytes = Encoding.ASCII.GetBytes(headerText);
 
@@ -326,6 +280,161 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithName("GetBrowserCdpStream")
         .WithSummary("Realtime MJPEG live stream of Chromium viewport for visual inspection")
         .AllowAnonymous();
+
+        // ==========================================
+        // 2. Dynamic Agent-Scoped Sub-routes
+        // ==========================================
+
+        group.MapGet("{agentId}/chats", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            try
+            {
+                var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
+                return Results.Content(chatsJson, "application/json");
+            }
+            catch (Exception)
+            {
+                var allChats = await client.GetChatsAsync(ct);
+                return TypedResults.Ok(allChats);
+            }
+        })
+        .WithName("GetAgentChats")
+        .WithSummary("List all chat sessions for a specific agent")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            try
+            {
+                var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
+                return Results.Content(historyRaw, "application/json");
+            }
+            catch (HttpRequestException)
+            {
+                return Results.NotFound(new { message = $"Chat {chatId} for agent {agentId} not found on infra" });
+            }
+        })
+        .WithName("GetAgentChatHistory")
+        .WithSummary("Get chat session messages for specific agent")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/skills", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+            await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetSkillsAsync(agentId, ct))))
+        .WithName("ListAgentSkills")
+        .WithSummary("List skills belonging to a specific agent")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/workspace/tree", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+            await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetWorkspaceTreeAsync(agentId, ct))))
+        .WithName("GetAgentWorkspaceTree")
+        .WithSummary("Get workspace file tree for specific agent")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/workspace/file-content", async (string agentId, [FromQuery] string path, IQwenPawClient client, CancellationToken ct) =>
+        {
+            if (!WorkspacePathAcl.IsPathAllowed(path))
+            {
+                return Results.Problem(
+                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
+                    statusCode: StatusCodes.Status403Forbidden,
+                    title: "Forbidden Path");
+            }
+
+            return await RuntimeResultAsync(async () =>
+            {
+                var content = await client.GetFileContentAsync(path, agentId, ct);
+                return content is null ? Results.NotFound() : TypedResults.Ok(new { path, content });
+            });
+        })
+        .WithName("GetAgentFileContent")
+        .WithSummary("Read workspace file content for specific agent")
+        .AllowAnonymous();
+
+        group.MapPut("{agentId}/active-model", async (string agentId, [FromBody] SetActiveModelRequestDto request, IQwenPawClient client, CancellationToken ct) =>
+        {
+            var res = await client.SetAgentActiveModelAsync(agentId, request.ProviderId, request.Model, ct);
+            return res is null ? Results.Problem("Failed to switch model") : TypedResults.Ok(res);
+        })
+        .WithName("SetAgentActiveModel")
+        .WithSummary("Hot-reload active LLM model provider and model for agent")
+        .AllowAnonymous();
+
+        // 2e. Native Context Management & Compaction (/workspace/checkpoints/gc and /compact trigger)
+        group.MapPost("compact-context", async (
+            [FromBody] CompactContextRequestDto request,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var res = await client.CompactContextAsync(request, ct);
+            return TypedResults.Ok(res);
+        })
+        .WithName("CompactAgentContext")
+        .WithSummary("Perform context compaction and garbage collection on agent runtime")
+        .AllowAnonymous();
+
+        group.MapPost("{agentId}/compact-context", async (
+            string agentId,
+            [FromBody] CompactContextRequestDto request,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var enriched = request with { AgentId = agentId };
+            var res = await client.CompactContextAsync(enriched, ct);
+            return TypedResults.Ok(res);
+        })
+        .WithName("CompactSpecificAgentContext")
+        .WithSummary("Perform context compaction on specific agent runtime")
+        .AllowAnonymous();
+
+        // 2f. Tool Call Receipts & Audit Trail
+        group.MapGet("sessions/{sessionId}/tool-receipts", async (
+            string sessionId,
+            [FromQuery] string? agentId,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var receipts = await client.GetToolCallReceiptsAsync(sessionId, agentId, ct);
+            return TypedResults.Ok(receipts);
+        })
+        .WithName("GetToolCallReceipts")
+        .WithSummary("Retrieve verified tool call receipts for a session")
+        .AllowAnonymous();
+
+        // 3. Root Agent Profile Detail Route (Non-shadowing with literal guard)
+        group.MapGet("{agentId}", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+        {
+            if (ReservedLiteralSegments.Contains(agentId))
+            {
+                return Results.NotFound(new { message = $"Route '{agentId}' is not an agent profile." });
+            }
+
+            try
+            {
+                var profile = await client.GetAgentProfileRawAsync(agentId, ct);
+                return Results.Content(profile, "application/json");
+            }
+            catch (HttpRequestException)
+            {
+                return Results.NotFound(new { message = $"Agent profile {agentId} not found on infra" });
+            }
+        })
+        .WithName("GetAgentProfile")
+        .WithSummary("Get agent profile details")
+        .AllowAnonymous();
+    }
+
+    /// <summary>Maps runtime transport/status failures to their real HTTP status instead of 500.</summary>
+    private static async Task<IResult> RuntimeResultAsync(Func<Task<IResult>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (HttpRequestException ex)
+        {
+            var status = (int)(ex.StatusCode ?? System.Net.HttpStatusCode.BadGateway);
+            return Results.Problem(ex.Message, statusCode: status is >= 400 and < 600 ? status : 502, title: "Agent runtime request failed");
+        }
     }
 }
 

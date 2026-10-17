@@ -3,9 +3,8 @@ using System.Text.Json.Nodes;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
-using Agent360.API.Options;
+using Agent360.API.Features.Agents.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.Mcps;
 
@@ -17,21 +16,18 @@ public sealed class McpManagementEndpoint : IEndpoint
         routeBuilder.MapGet(
             "mcps",
             async Task<IResult> (
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, "api/mcp");
-
                 var list = new List<McpServerSummaryResponse>();
 
                 try
                 {
-                    var rawMcps = await httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawMcpDto>>(
-                        requestUri,
-                        cancellationToken);
+                    var target = routing.ResolveTarget(agentId);
+                    using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/mcp", timeout: TimeSpan.FromSeconds(30), ct: cancellationToken);
+                    response.EnsureSuccessStatusCode();
+                    var rawMcps = await response.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawMcpDto>>(cancellationToken);
 
                     if (rawMcps is not null)
                     {
@@ -80,18 +76,24 @@ public sealed class McpManagementEndpoint : IEndpoint
             async Task<IResult> (
                 string mcpKey,
                 [FromBody] ToggleMcpRequest request,
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, $"api/mcp/{Uri.EscapeDataString(mcpKey)}/toggle");
+                var target = routing.ResolveTarget(agentId);
+                var basePath = $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}";
+                using (var current = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"{basePath}/mcp/{Uri.EscapeDataString(mcpKey)}", timeout: TimeSpan.FromSeconds(30), ct: cancellationToken))
+                {
+                    current.EnsureSuccessStatusCode();
+                    var node = await current.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonNode>(cancellationToken);
+                    var enabled = node?["enabled"]?.GetValue<bool>();
+                    if (enabled == request.Enabled)
+                    {
+                        return TypedResults.Ok(new { mcp = mcpKey, enabled = request.Enabled });
+                    }
+                }
 
-                var response = await httpClient.PostAsJsonAsync(
-                    requestUri,
-                    new { enabled = request.Enabled },
-                    cancellationToken);
+                using var response = await routing.SendAsync(target.Instance!, HttpMethod.Patch, $"{basePath}/mcp/toggle/{Uri.EscapeDataString(mcpKey)}", ct: cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {

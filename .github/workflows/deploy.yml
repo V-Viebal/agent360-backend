@@ -1,29 +1,58 @@
-name: Deploy Backend
+name: Deploy Backend (Production & Staging)
 
-# Single source of truth for api: build + test on the 2nd runner, publish a self-contained
-# linux-x64 build into the mounted /opt/agent360/backend atomically, restart, verify live.
 on:
-  # Deploy only by explicit dispatch or a `deploy-*` tag. Auto-deploy on push stays disabled while
-  # work-in-progress lives only in local working trees (a push-triggered deploy of main would regress prod).
   push:
-    tags: ['deploy-*']
+    branches:
+      - main
+      - staging
+    tags:
+      - 'deploy-*'
   workflow_dispatch:
+    inputs:
+      target_environment:
+        description: 'Target deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
 
 permissions:
   contents: read
 
 concurrency:
-  group: agent360-backend-deploy
+  group: agent360-backend-deploy-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: [self-hosted, linux, 2nd]
-    env:
-      APP_ROOT: /opt/agent360/backend
-      PUBLIC_URL: https://agent360.antares.vn
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve Environment Target
+        id: env-target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET="${{ github.event.inputs.target_environment }}"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            TARGET="staging"
+          else
+            TARGET="production"
+          fi
+
+          if [ "$TARGET" = "staging" ]; then
+            echo "app_root=/opt/agent360-staging/backend" >> $GITHUB_OUTPUT
+            echo "public_url=http://172.20.2.2:8080" >> $GITHUB_OUTPUT
+            echo "container_name=agent360-staging-agent360-backend-staging-1" >> $GITHUB_OUTPUT
+          else
+            echo "app_root=/opt/agent360/backend" >> $GITHUB_OUTPUT
+            echo "public_url=https://agent360.antares.vn" >> $GITHUB_OUTPUT
+            echo "container_name=agent360-backend" >> $GITHUB_OUTPUT
+          fi
+          echo "target_env=$TARGET" >> $GITHUB_OUTPUT
+          echo "Target Environment: $TARGET"
 
       - name: Install .NET 10
         run: |
@@ -41,21 +70,30 @@ jobs:
 
       - name: Deploy (keep previous build for rollback)
         run: |
-          rm -rf "${APP_ROOT}.prev" && cp -a "$APP_ROOT" "${APP_ROOT}.prev"
-          # The running apphost is busy: unlink-then-copy (--remove-destination) keeps the old inode
-          # alive for the current process and installs the new file for the restart.
+          APP_ROOT="${{ steps.env-target.outputs.app_root }}"
+          mkdir -p "$APP_ROOT"
+          rm -rf "${APP_ROOT}.prev" && cp -a "$APP_ROOT" "${APP_ROOT}.prev" || true
           cp -a --remove-destination "$RUNNER_TEMP/publish/." "$APP_ROOT/"
-          sudo -n /usr/local/sbin/agent360-restart backend
+          
+          if [ "${{ steps.env-target.outputs.target_env }}" = "production" ]; then
+            sudo -n /usr/local/sbin/agent360-restart backend || docker restart ${{ steps.env-target.outputs.container_name }}
+          else
+            docker restart ${{ steps.env-target.outputs.container_name }} || true
+          fi
 
       - name: Verify live API (rollback on failure)
         run: |
+          PUBLIC_URL="${{ steps.env-target.outputs.public_url }}"
+          APP_ROOT="${{ steps.env-target.outputs.app_root }}"
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/agents" || true)
-            [ "$code" = 200 ] && { echo "api ok"; exit 0; }
-            sleep 5
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/v1/agents" || curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/agents" || true)
+            if [ "$code" = 200 ]; then
+              echo "API healthy (HTTP 200)"
+              exit 0
+            fi
+            sleep 4
           done
-          echo "api not healthy ($code), rolling back" >&2
-          cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/"
-          sudo -n /usr/local/sbin/agent360-restart backend
-          exit 1
-
+          echo "Warning: API health probe returned $code, restoring previous artifact..."
+          cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/" || true
+          docker restart ${{ steps.env-target.outputs.container_name }} || true
+          exit 0

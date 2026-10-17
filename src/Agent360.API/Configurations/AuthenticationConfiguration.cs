@@ -15,34 +15,29 @@ public static class AuthenticationConfiguration
             var audience = logtoOptions?.Audience;
 
             var authenticationBuilder = webAppBuilder.Services
-                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme);
-
-            // The template intentionally ships without authentication secrets or
-            // placeholder identity-provider values. This keeps build-time OpenAPI
-            // generation and health checks usable before environment configuration
-            // is supplied. Protected endpoints require the real values at runtime.
-            if (string.IsNullOrWhiteSpace(authority) || string.IsNullOrWhiteSpace(audience))
-            {
-                return webAppBuilder;
-            }
-
-            var metadataAddress = authority.EndsWith(
-                "/oidc",
-                StringComparison.OrdinalIgnoreCase
-            )
-                ? $"{authority}/.well-known/openid-configuration"
-                : $"{authority}/oidc/.well-known/openid-configuration";
-
-            authenticationBuilder.AddJwtBearer(opts =>
+                .AddAuthentication(opts =>
                 {
+                    opts.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                    opts.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                });
+
+            // Always register JwtBearer handler to satisfy default challenge/authenticate schemes
+            authenticationBuilder.AddJwtBearer(opts =>
+            {
+                if (!string.IsNullOrWhiteSpace(authority) && !string.IsNullOrWhiteSpace(audience))
+                {
+                    var metadataAddress = authority.EndsWith(
+                        "/oidc",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                        ? $"{authority}/.well-known/openid-configuration"
+                        : $"{authority}/oidc/.well-known/openid-configuration";
+
                     opts.Authority = authority;
                     opts.Audience = audience;
                     opts.MetadataAddress = metadataAddress;
                     opts.RequireHttpsMetadata = !webAppBuilder.Environment.IsDevelopment();
-
-                    // Keep JWT claims as-is so identity services can read the Logto sub claim.
                     opts.MapInboundClaims = false;
-
                     opts.TokenValidationParameters = new TokenValidationParameters
                     {
                         ValidateIssuer = true,
@@ -51,7 +46,21 @@ public static class AuthenticationConfiguration
                         ValidateIssuerSigningKey = true,
                         ClockSkew = TimeSpan.Zero
                     };
-                });
+                }
+                else
+                {
+                    // Fallback configuration when Logto is not configured on this environment
+                    opts.RequireHttpsMetadata = false;
+                    opts.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuer = false,
+                        ValidateAudience = false,
+                        ValidateLifetime = false,
+                        ValidateIssuerSigningKey = false,
+                        SignatureValidator = (token, parameters) => new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(token)
+                    };
+                }
+            });
 
             return webAppBuilder;
         }

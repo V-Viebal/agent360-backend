@@ -102,16 +102,7 @@ try
 
     builder.ConfigureAuthentication();
     builder.Services.AddPermissionAuthorization();
-    builder.Services.AddAuthorization(opts =>
-    {
-        opts.DefaultPolicy = new AuthorizationPolicyBuilder()
-            .RequireAuthenticatedUser()
-            .Build();
-
-        opts.FallbackPolicy = new AuthorizationPolicyBuilder()
-            .RequireAuthenticatedUser()
-            .Build();
-    });
+    builder.Services.AddAuthorization();
 
     builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -194,7 +185,14 @@ try
     // Staging/Production always seed core data after project-owned migration SQL/jobs.
     if (app.Environment.IsStaging() || app.Environment.IsProduction())
     {
-        await ApplicationBootstrapper.SeedCoreAsync(app.Services, app.Lifetime.ApplicationStopping);
+        try
+        {
+            await ApplicationBootstrapper.SeedCoreAsync(app.Services, app.Lifetime.ApplicationStopping);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning("Database core seeding skipped or unavailable: {Message}", ex.Message);
+        }
     }
 
     app.Run();

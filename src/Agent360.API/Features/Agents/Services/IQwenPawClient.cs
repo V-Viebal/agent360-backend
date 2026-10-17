@@ -14,10 +14,10 @@ public interface IQwenPawClient
     Task<IReadOnlyList<AgentSessionResponse>> GetChatsAsync(CancellationToken cancellationToken = default);
     Task<string> GetAgentChatsRawAsync(string agentId, CancellationToken cancellationToken = default);
     Task<ChatHistoryResponseDto?> GetChatHistoryAsync(string chatId, CancellationToken cancellationToken = default);
-    Task<string> GetChatHistoryRawAsync(string chatId, CancellationToken cancellationToken = default);
+    Task<string> GetChatHistoryRawAsync(string chatId, string? agentId = null, CancellationToken cancellationToken = default);
 
     // Skills
-    Task<IReadOnlyList<QwenPawSkillDto>> GetSkillsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<QwenPawSkillDto>> GetSkillsAsync(string? agentId = null, CancellationToken cancellationToken = default);
 
     // Approvals
     Task<ApprovalListResponseDto?> GetApprovalsAsync(string? sessionId = null, CancellationToken cancellationToken = default);
@@ -29,8 +29,14 @@ public interface IQwenPawClient
     Task<bool> StopChatAsync(ConsoleChatStopRequestDto request, CancellationToken cancellationToken = default);
 
     // Workspace & Files
-    Task<IReadOnlyList<WorkspaceTreeNodeDto>?> GetWorkspaceTreeAsync(CancellationToken cancellationToken = default);
-    Task<string?> GetFileContentAsync(string path, CancellationToken cancellationToken = default);
+    Task<QwenPawWorkspaceTreeResponse?> GetWorkspaceTreeAsync(string? agentId = null, CancellationToken cancellationToken = default);
+    Task<string?> GetFileContentAsync(string path, string? agentId = null, CancellationToken cancellationToken = default);
+
+    // Context Management & Compaction (Native QwenPaw Checkpoint GC & /compact)
+    Task<CompactContextResponseDto> CompactContextAsync(CompactContextRequestDto request, CancellationToken cancellationToken = default);
+
+    // Tool Call Receipts & Audit Trail (Native QwenPaw /tool-calls API)
+    Task<IReadOnlyList<ToolCallReceiptContractDto>> GetToolCallReceiptsAsync(string sessionId, string? agentId = null, CancellationToken cancellationToken = default);
 
     // Agent Statistics & Load Metrics (from QwenPaw agent-stats API)
     Task<AgentStatsSummaryDto?> GetAgentStatsAsync(string? startDate = null, string? endDate = null, CancellationToken cancellationToken = default);

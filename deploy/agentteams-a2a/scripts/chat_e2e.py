@@ -24,4 +24,13 @@ print("session",sid,"http",status,"events",n,"elapsed",int(time.time()-t),"s")
 print("tools",sorted(set(tools)))
 print("FINAL:",final[:1500])
 
-import sys; sys.exit(0 if ("agent360-a2a__agent360_delegate_external" in tools and "correlation_id" in final) else 1)
+# Verdict comes from the ledger, not from the model's wording.
+import os, sys
+cids = re.findall(r"a2a_[0-9a-f]{12,}", final)
+ok = "agent360-a2a__agent360_delegate_external" in tools and bool(cids)
+if ok and os.environ.get("A2A_TOKEN"):
+    t = json.load(urllib.request.urlopen(urllib.request.Request(A.api + "/a2a/delegations/" + cids[0],
+        headers={"Authorization": "Bearer " + os.environ["A2A_TOKEN"], "User-Agent": "Mozilla/5.0 agent360-a2a-final"}), timeout=60))
+    print("ledger", cids[0], t.get("status"), (t.get("acceptance") or {}).get("reviewer"))
+    ok = t.get("status") == "accepted"
+sys.exit(0 if ok else 1)

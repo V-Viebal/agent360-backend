@@ -1,8 +1,8 @@
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
-using Agent360.API.Options;
-using Microsoft.Extensions.Options;
+using Agent360.API.Features.Agents.Services;
+using Microsoft.AspNetCore.Mvc;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
@@ -37,17 +37,22 @@ public sealed class ListChatsEndpoint : IEndpoint
         routeBuilder.MapGet(
             "chats",
             async Task<IResult> (
-                HttpClient httpClient,
-                IOptions<QwenPawOptions> options,
+                [FromQuery] string? agentId,
+                IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
-                var opt = options.Value;
-                var baseUri = new Uri(opt.BaseUrl.TrimEnd('/') + "/");
-                var requestUri = new Uri(baseUri, "api/chats");
-
-                var chats = await httpClient.GetFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(
-                    requestUri,
-                    cancellationToken);
+                IReadOnlyList<QwenPawChatDto>? chats;
+                try
+                {
+                    var target = routing.ResolveTarget(agentId);
+                    using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats", ct: cancellationToken);
+                    response.EnsureSuccessStatusCode();
+                    chats = await response.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(cancellationToken);
+                }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    chats = Array.Empty<QwenPawChatDto>();
+                }
 
                 if (chats is null)
                 {
