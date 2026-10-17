@@ -143,6 +143,26 @@ public sealed class QwenPawClient : IQwenPawClient
         return Array.Empty<AgentSummaryResponse>();
     }
 
+    /// <summary>Reloads the fleet snapshot unconditionally; used by the background warmer so user calls stay on cache.</summary>
+    public async Task<IReadOnlyList<AgentSummaryResponse>> RefreshAgentsAsync(CancellationToken cancellationToken = default)
+    {
+        await AgentsRefreshGate.WaitAsync(cancellationToken);
+        try
+        {
+            var agents = await LoadFleetAgentsAsync(cancellationToken);
+            if (agents.Count > 0)
+            {
+                _cache.Set(AgentsCacheKey, agents, TimeSpan.FromSeconds(60));
+                _cache.Set(AgentsCacheKey + ":last-good", agents, TimeSpan.FromHours(6));
+            }
+            return agents;
+        }
+        finally
+        {
+            AgentsRefreshGate.Release();
+        }
+    }
+
     private async Task<IReadOnlyList<AgentSummaryResponse>> LoadFleetAgentsAsync(CancellationToken ct)
     {
         var guardianTask = LoadAgentsFromGuardianAsync(ct);

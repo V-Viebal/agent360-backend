@@ -22,6 +22,7 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddSingleton<SubAgentSkillSyncQueue>();
             webAppBuilder.Services.AddSingleton<ISubAgentSkillSyncQueue>(sp => sp.GetRequiredService<SubAgentSkillSyncQueue>());
             webAppBuilder.Services.AddHostedService(sp => sp.GetRequiredService<SubAgentSkillSyncQueue>());
+            webAppBuilder.Services.AddHostedService<AgentCacheWarmer>();
             // Inter-agent turns can legitimately take minutes; per-call timeouts are enforced in the adapter.
 #pragma warning disable EXTEXP0001 // Long inter-agent turns must not be cut by the default 30s resilience timeout.
             webAppBuilder.Services.AddHttpClient<IQwenPawA2AClient, QwenPawA2AClient>()

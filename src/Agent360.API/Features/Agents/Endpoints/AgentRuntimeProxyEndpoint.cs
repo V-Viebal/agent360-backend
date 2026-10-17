@@ -35,6 +35,32 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         "Content-Type", "Cache-Control", "ETag", "Last-Modified"
     };
 
+    internal static string CacheKey(string agentId, string route) =>
+        $"agent360:proxy:{FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant()}:{route.ToLowerInvariant()}";
+
+    /// <summary>Fetches one cacheable capability list and stores it as fresh + last-good (used by the background warmer).</summary>
+    internal static async Task WarmAsync(IFleetInstanceRoutingService routing, IMemoryCache cache, string agentId, ResolvedInstanceTarget target, string route, CancellationToken ct)
+    {
+        using var response = await routing.SendAsync(
+            target.Instance!,
+            HttpMethod.Get,
+            $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/{route}",
+            agentProfileHeader: target.TargetAgentProfile,
+            timeout: route.Equals("mcp", StringComparison.OrdinalIgnoreCase) ? TimeSpan.FromSeconds(45) : TimeSpan.FromSeconds(20),
+            ct: ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return;
+        }
+        var payload = await response.Content.ReadAsByteArrayAsync(ct);
+        var type = response.Content.Headers.ContentType?.ToString() ?? "application/json";
+        var key = CacheKey(agentId, route);
+        cache.Set(key, new CachedResponse(payload, type), WarmedFreshTtl);
+        cache.Set(key + ":last-good", new CachedResponse(payload, type), TimeSpan.FromMinutes(30));
+    }
+
+    private static readonly TimeSpan WarmedFreshTtl = TimeSpan.FromSeconds(90);
+
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         routeBuilder.MapMethods(
@@ -85,7 +111,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
 
                 var cacheable = HttpMethods.IsGet(context.Request.Method) && CachedRoutes.Contains(clean);
                 var agentKey = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
-                var cacheKey = $"agent360:proxy:{agentKey}:{clean.ToLowerInvariant()}{context.Request.QueryString}";
+                var cacheKey = CacheKey(agentId, clean) + context.Request.QueryString;
                 var lastGoodKey = cacheKey + ":last-good";
                 if (cacheable && cache.TryGetValue(cacheKey, out CachedResponse? cached) && cached is not null)
                 {
