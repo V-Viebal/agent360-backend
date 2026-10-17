@@ -26,6 +26,7 @@ public sealed class FleetRoutingTests
     [InlineData("climax-team", "climax", "team")]
     [InlineData("planthy-pm", "planthy", "default")]
     [InlineData("planthy-team", "planthy", "team")]
+    [InlineData("agentteams-manager", "agentteams", "default")]
     public void ResolveTarget_MapsEveryFleetAgentToItsRuntimeProfile(string agentId, string instance, string profile)
     {
         var target = Create(_ => new HttpResponseMessage(HttpStatusCode.OK)).ResolveTarget(agentId);
@@ -33,11 +34,11 @@ public sealed class FleetRoutingTests
         target.IsQwenPaw.Should().BeTrue();
         target.Instance!.Key.Should().Be(instance);
         target.TargetAgentProfile.Should().Be(profile);
-        target.Instance.InternalUrl.Should().StartWith("http://100.");
+        target.Instance.InternalUrl.Should().StartWith(instance == "agentteams" ? "https://" : "http://100.");
     }
 
     [Theory]
-    [InlineData("agentteams-manager")]
+    [InlineData("agentteams-gateway")]
     [InlineData("llm360-inference-provider")]
     [InlineData("tsx-copaw")]
     public void ResolveTarget_FlagsNonQwenPawRuntimes(string agentId)

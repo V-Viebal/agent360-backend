@@ -48,7 +48,7 @@ jobs:
             echo "container_name=agent360-staging-agent360-backend-staging-1" >> $GITHUB_OUTPUT
           else
             echo "app_root=/opt/agent360/backend" >> $GITHUB_OUTPUT
-            echo "public_url=https://agent360.antares.vn" >> $GITHUB_OUTPUT
+            echo "public_url=https://api-agent360.antares.vn" >> $GITHUB_OUTPUT
             echo "container_name=agent360-backend" >> $GITHUB_OUTPUT
           fi
           echo "target_env=$TARGET" >> $GITHUB_OUTPUT
@@ -86,14 +86,14 @@ jobs:
           PUBLIC_URL="${{ steps.env-target.outputs.public_url }}"
           APP_ROOT="${{ steps.env-target.outputs.app_root }}"
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/v1/agents" || curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/agents" || true)
+            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/v1/agents" || true)
             if [ "$code" = 200 ]; then
               echo "API healthy (HTTP 200)"
               exit 0
             fi
             sleep 4
           done
-          echo "Warning: API health probe returned $code, restoring previous artifact..."
+          echo "::error::API health probe returned $code, restoring previous artifact"
           cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/" || true
           docker restart ${{ steps.env-target.outputs.container_name }} || true
-          exit 0
+          exit 1

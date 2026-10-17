@@ -192,6 +192,7 @@ public sealed class QwenPawClient : IQwenPawClient
         },
         "climax" => $"climax-{profileId}",
         "planthy" => profileId == "default" ? "planthy-pm" : $"planthy-{profileId}",
+        "agentteams" => profileId == "default" ? "agentteams-manager" : $"agentteams-manager-{profileId}",
         _ => profileId switch
         {
             "default" => "default-core",
@@ -322,9 +323,33 @@ public sealed class QwenPawClient : IQwenPawClient
         }
     }
 
-    public async Task<string> GetAgentProfileRawAsync(string agentId, CancellationToken cancellationToken = default) =>
-        await CachedAsync($"agent360:profile:{FleetInstanceRoutingService.NormalizeAgentId(agentId)}", TimeSpan.FromSeconds(10),
-            () => GetStringAsync(agentId, "", ct: cancellationToken));
+    public async Task<string> GetAgentProfileRawAsync(string agentId, CancellationToken cancellationToken = default)
+    {
+        var slug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        if (!Resolve(slug).IsQwenPaw)
+        {
+            // Non-QwenPaw runtimes (AgentTeams gateway, LLM360) expose their profile through fleet discovery.
+            var agents = await GetAgentsAsync(cancellationToken);
+            var match = agents.FirstOrDefault(a => a.Slug.Equals(slug, StringComparison.OrdinalIgnoreCase))
+                ?? throw new HttpRequestException($"Agent '{slug}' not found in fleet", null, HttpStatusCode.NotFound);
+            return JsonSerializer.Serialize(new
+            {
+                id = match.Slug,
+                name = match.Name,
+                description = match.Description,
+                runtime = match.RuntimeVersion,
+                node = match.Node,
+                status = match.Status,
+                enabled = match.Enabled,
+                model = match.Model,
+                runtime_api = false,
+                tools = match.Tools
+            });
+        }
+
+        return await CachedAsync($"agent360:profile:{slug}", TimeSpan.FromSeconds(10),
+            () => GetStringAsync(slug, "", ct: cancellationToken));
+    }
 
     public async Task<SetActiveModelResponseDto?> SetAgentActiveModelAsync(string agentId, string providerId, string model, CancellationToken cancellationToken = default)
     {

@@ -37,7 +37,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         routeBuilder.MapMethods(
             "agents/{agentId}/{**path}",
             ["GET", "POST", "PUT", "PATCH", "DELETE"],
-            async (string agentId, string path, HttpContext context, IFleetInstanceRoutingService routing, IMemoryCache cache, CancellationToken ct) =>
+            async (string agentId, string path, HttpContext context, IFleetInstanceRoutingService routing, IQwenPawClient client, IMemoryCache cache, CancellationToken ct) =>
             {
                 var clean = (path ?? "").Trim('/');
                 if (!AllowedPrefixes.Any(p => clean.Equals(p, StringComparison.OrdinalIgnoreCase) || clean.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase)))
@@ -48,6 +48,21 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 var target = routing.ResolveTarget(agentId);
                 if (!target.IsQwenPaw)
                 {
+                    if (clean.Equals("agent-status", StringComparison.OrdinalIgnoreCase) && HttpMethods.IsGet(context.Request.Method))
+                    {
+                        // Status for non-QwenPaw runtimes comes from fleet health discovery.
+                        var agent = (await client.GetAgentsAsync(ct)).FirstOrDefault(a => a.Slug.Equals(target.AgentId, StringComparison.OrdinalIgnoreCase));
+                        return agent is null
+                            ? Results.NotFound(new { message = $"Agent '{agentId}' not found in fleet" })
+                            : Results.Ok(new
+                            {
+                                status = !agent.Enabled ? "disabled" : agent.Status == "active" ? "idle" : agent.Status,
+                                running_task_count = 0,
+                                last_run_at = (string?)null,
+                                last_finish_at = (string?)null,
+                                source = "fleet-health"
+                            });
+                    }
                     return Results.NotFound(new { message = $"Agent '{agentId}' is not hosted on a QwenPaw runtime" });
                 }
 

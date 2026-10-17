@@ -80,7 +80,9 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("core", "3rd", "Core QwenPaw / CoPaw (Node 3rd)", "http://100.76.185.111:33148", "https://ai.hmz.one", false, "http://100.76.185.111:19222"),
             Build("gm", "6th", "Gia Moc QwenPaw (Node 6th)", "http://100.81.66.42:26888", "https://ai-gm.antares.vn", true, "http://100.81.66.42:19222"),
             Build("climax", "5th", "Climax Creative (Node 5th)", "http://100.70.201.83:26404", "https://ai-climax.antares.vn", true, "http://100.70.201.83:19222"),
-            Build("planthy", "5th", "Planthy AI (Node 5th)", "http://100.70.201.83:32841", "https://planthy-ai.hmz.one", true, "http://100.70.201.83:19222"),
+            Build("planthy", "5th", "Planthy AI (Node 5th)", "http://100.70.201.83:32842", "https://planthy-ai.hmz.one", true, "http://100.70.201.83:19222"),
+            // AgentTeams manager is a QwenPaw runtime bound to loopback on 4th; only the public proxy is reachable.
+            Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
         ];
     }
 
@@ -137,6 +139,11 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         if (id.StartsWith("planthy-"))
         {
             return Target(Instance("planthy"), raw, id == "planthy-team" ? "team" : "default");
+        }
+
+        if (id == "agentteams-manager")
+        {
+            return Target(Instance("agentteams"), raw, "default");
         }
 
         // Non-QwenPaw runtimes surfaced by Agent Guardian have no QwenPaw API to proxy to.
