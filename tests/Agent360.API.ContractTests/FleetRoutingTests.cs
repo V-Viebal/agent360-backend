@@ -92,6 +92,86 @@ public sealed class FleetRoutingTests
         calls.Should().Be(2);
     }
 
+    [Fact]
+    public async Task SendAsync_DoesNotReplayChatPost_WhenRuntimeIsSlow()
+    {
+        var hosts = new List<string>();
+        var routing = Create(req =>
+        {
+            hosts.Add(req.RequestUri!.Host);
+            throw new TaskCanceledException("runtime still thinking");
+        });
+        var core = routing.Instances.Single(i => i.Key == "core");
+
+        var act = () => routing.SendAsync(core, HttpMethod.Post, "console/chat", () => JsonContent.Create(new { q = 1 }), timeout: TimeSpan.FromSeconds(1), ct: TestContext.Current.CancellationToken);
+
+        (await act.Should().ThrowAsync<HttpRequestException>()).Which.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
+        hosts.Should().Equal("100.76.185.111");
+    }
+
+    [Fact]
+    public async Task SendAsync_FailsOverChatPost_OnlyWhenInternalConnectFails_AndRemembersIt()
+    {
+        var hosts = new List<string>();
+        var state = new FleetRoutingState();
+        HttpResponseMessage Handler(HttpRequestMessage req)
+        {
+            hosts.Add(req.RequestUri!.Host);
+            if (req.RequestUri.Host.StartsWith("100."))
+            {
+                throw new HttpRequestException(HttpRequestError.ConnectionError, "refused", new System.Net.Sockets.SocketException(111));
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+        FleetInstanceRoutingService New() => new(new HttpClient(new StubHandler(Handler)), NullLogger<FleetInstanceRoutingService>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new QwenPawOptions()), state);
+
+        var first = New();
+        using var r1 = await first.SendAsync(first.Instances.Single(i => i.Key == "core"), HttpMethod.Post, "console/chat", ct: TestContext.Current.CancellationToken);
+        // A second (transient) service instance must reuse the shared failover mark and go straight to public.
+        var second = New();
+        using var r2 = await second.SendAsync(second.Instances.Single(i => i.Key == "core"), HttpMethod.Post, "console/chat", ct: TestContext.Current.CancellationToken);
+
+        r1.StatusCode.Should().Be(HttpStatusCode.OK);
+        r2.StatusCode.Should().Be(HttpStatusCode.OK);
+        hosts.Should().Equal("100.76.185.111", "ai.hmz.one", "ai.hmz.one");
+    }
+
+    [Fact]
+    public async Task LoginToken_IsSharedAcrossServiceInstances()
+    {
+        var logins = 0;
+        var state = new FleetRoutingState();
+        var options = new QwenPawOptions();
+        options.Instances["gm"] = new QwenPawInstanceCredentials { Username = "admin", Password = "secret-value" };
+        HttpResponseMessage Handler(HttpRequestMessage req)
+        {
+            if (req.RequestUri!.AbsolutePath == "/api/auth/login")
+            {
+                logins++;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new { token = "t" }) };
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+        for (var i = 0; i < 3; i++)
+        {
+            var routing = new FleetInstanceRoutingService(new HttpClient(new StubHandler(Handler)), NullLogger<FleetInstanceRoutingService>.Instance,
+                Microsoft.Extensions.Options.Options.Create(options), state);
+            using var _ = await routing.SendAsync(routing.Instances.Single(x => x.Key == "gm"), HttpMethod.Get, "agents/team/chats", ct: TestContext.Current.CancellationToken);
+        }
+
+        logins.Should().Be(1);
+    }
+
+    [Fact]
+    public void ConnectFailureClassifier_DistinguishesNeverSentFromSlow()
+    {
+        FleetInstanceRoutingService.IsConnectFailure(new HttpRequestException(HttpRequestError.ConnectionError, "x")).Should().BeTrue();
+        FleetInstanceRoutingService.IsConnectFailure(new TaskCanceledException("t", new TimeoutException("A connection could not be established within the configured ConnectTimeout."))).Should().BeTrue();
+        FleetInstanceRoutingService.IsConnectFailure(new TaskCanceledException("request timeout")).Should().BeFalse();
+        FleetInstanceRoutingService.IsConnectFailure(new HttpRequestException(HttpRequestError.ResponseEnded, "x")).Should().BeFalse();
+    }
+
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

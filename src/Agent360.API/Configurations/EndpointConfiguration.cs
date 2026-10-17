@@ -13,7 +13,23 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddScoped<LogtoWebhookSignatureFilter>();
             webAppBuilder.Services.AddSingleton<SessionQueueManager>();
             webAppBuilder.Services.AddMemoryCache();
-            webAppBuilder.Services.AddHttpClient<IFleetInstanceRoutingService, FleetInstanceRoutingService>();
+            webAppBuilder.Services.AddSingleton<FleetRoutingState>();
+#pragma warning disable EXTEXP0001 // Fleet calls stream long chat turns; hidden retries would duplicate POSTs and a shared breaker would cut every agent.
+            webAppBuilder.Services.AddHttpClient<IFleetInstanceRoutingService, FleetInstanceRoutingService>()
+                .RemoveAllResilienceHandlers()
+                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+                {
+                    // Tailnet connects take ms; a dead internal route must fail fast so failover is cheap.
+                    ConnectTimeout = TimeSpan.FromSeconds(3),
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+                    KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+                    KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+                    KeepAlivePingTimeout = TimeSpan.FromSeconds(15),
+                    MaxConnectionsPerServer = 64,
+                    AutomaticDecompression = System.Net.DecompressionMethods.All,
+                });
+#pragma warning restore EXTEXP0001
             webAppBuilder.Services.AddHttpClient<IQwenPawClient, QwenPawClient>();
             webAppBuilder.Services.AddHttpClient<IBrowserCdpService, BrowserCdpService>();
             webAppBuilder.Services.AddOptions<SubAgentOptions>().BindConfiguration(SubAgentOptions.Section);

@@ -65,13 +65,15 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
     private readonly HttpClient _httpClient;
     private readonly ILogger<FleetInstanceRoutingService> _logger;
     private readonly QwenPawOptions _options;
-    private readonly ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> _tokenCache = new();
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _loginLocks = new();
-    private readonly ConcurrentDictionary<string, DateTime> _internalDownUntil = new();
+    private readonly FleetRoutingState _state;
+    private ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> _tokenCache => _state.Tokens;
+    private ConcurrentDictionary<string, SemaphoreSlim> _loginLocks => _state.LoginLocks;
+    private ConcurrentDictionary<string, DateTime> _internalDownUntil => _state.InternalDownUntil;
 
-    public FleetInstanceRoutingService(HttpClient httpClient, ILogger<FleetInstanceRoutingService> logger, IOptions<QwenPawOptions>? options = null)
+    public FleetInstanceRoutingService(HttpClient httpClient, ILogger<FleetInstanceRoutingService> logger, IOptions<QwenPawOptions>? options = null, FleetRoutingState? state = null)
     {
         _httpClient = httpClient;
+        _state = state ?? new FleetRoutingState();
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
         _logger = logger;
         _options = options?.Value ?? new QwenPawOptions();
@@ -258,18 +260,51 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 catch (Exception ex) when (!ct.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException)
                 {
                     lastError = ex;
-                    if (baseUrl == instance.InternalUrl)
+                    var notSent = IsConnectFailure(ex);
+                    if (baseUrl == instance.InternalUrl && notSent)
                     {
-                        // Skip the dead internal endpoint for a while instead of paying its timeout on every call.
+                        // Tailnet path is down (connect refused/timeout): skip it for a while and use the public route.
                         _internalDownUntil[instance.Key] = DateTime.UtcNow.AddSeconds(30);
-                        _logger.LogWarning(ex, "Internal endpoint {Url} for {Instance} unreachable; failing over to {Public}", baseUrl, instance.Key, instance.PublicUrl);
+                        _logger.LogWarning("Internal endpoint {Url} for {Instance} unreachable ({Error}); failing over to {Public}", baseUrl, instance.Key, ex.Message, instance.PublicUrl);
+                        break;
                     }
+                    // The request may already be executing on the runtime (slow turn, dropped response).
+                    // Replaying it elsewhere would duplicate chat turns and writes, so only safe reads may try the other route.
+                    if (!IsIdempotent(method))
+                    {
+                        throw new HttpRequestException($"QwenPaw instance '{instance.Key}' did not answer in time", ex, HttpStatusCode.GatewayTimeout);
+                    }
+                    _logger.LogWarning("Runtime {Instance} slow/failed on {Url} ({Error}); retrying read on next route", instance.Key, baseUrl, ex.Message);
                     break;
                 }
             }
         }
 
         throw new HttpRequestException($"QwenPaw instance '{instance.Key}' is unreachable", lastError, HttpStatusCode.BadGateway);
+    }
+
+    private static bool IsIdempotent(HttpMethod method) =>
+        method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Options;
+
+    // True only when the TCP/TLS connection was never established, i.e. the runtime never saw the request.
+    internal static bool IsConnectFailure(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is HttpRequestException { HttpRequestError: HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError })
+            {
+                return true;
+            }
+            if (e is System.Net.Sockets.SocketException)
+            {
+                return true;
+            }
+            if (e is TimeoutException && e.Message.Contains("connect", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private bool IsInternalDown(QwenPawInstance instance) =>
@@ -331,4 +366,13 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             gate.Release();
         }
     }
+}
+
+/// <summary>Process-wide routing state (login tokens, failover marks). The typed HttpClient service is transient,
+/// so this must live in a singleton or every request re-logs in and forgets which internal endpoint is down.</summary>
+public sealed class FleetRoutingState
+{
+    public ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> Tokens { get; } = new();
+    public ConcurrentDictionary<string, SemaphoreSlim> LoginLocks { get; } = new();
+    public ConcurrentDictionary<string, DateTime> InternalDownUntil { get; } = new();
 }

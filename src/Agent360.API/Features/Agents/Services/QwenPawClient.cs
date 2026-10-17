@@ -443,8 +443,46 @@ public sealed class QwenPawClient : IQwenPawClient
             Unread: false)).ToList();
     }
 
-    public Task<string> GetAgentChatsRawAsync(string agentId, CancellationToken cancellationToken = default) =>
-        GetStringAsync(agentId, "chats", ct: cancellationToken);
+    // Session lists are read on every workspace open; the core runtime can take seconds under load.
+    // Serve a 10s fresh copy, coalesce concurrent loads, and fall back to the last good list on runtime errors.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> ChatListGates = new();
+
+    public async Task<string> GetAgentChatsRawAsync(string agentId, CancellationToken cancellationToken = default)
+    {
+        var key = ChatListKey(agentId);
+        if (_cache.TryGetValue(key, out string? fresh) && fresh is not null)
+        {
+            return fresh;
+        }
+        var gate = ChatListGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_cache.TryGetValue(key, out fresh) && fresh is not null)
+            {
+                return fresh;
+            }
+            var body = await GetStringAsync(agentId, "chats", ct: cancellationToken);
+            _cache.Set(key, body, TimeSpan.FromSeconds(10));
+            _cache.Set(key + ":last-good", body, TimeSpan.FromHours(1));
+            return body;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is null or >= HttpStatusCode.InternalServerError
+            && _cache.TryGetValue(key + ":last-good", out string? stale) && stale is not null)
+        {
+            _logger.LogWarning("Serving last good chat list for {Agent}: {Error}", agentId, ex.Message);
+            return stale;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static string ChatListKey(string? agentId) =>
+        $"agent360:chats:{FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant()}";
+
+    public void InvalidateChatList(string? agentId) => _cache.Remove(ChatListKey(agentId));
 
     public Task<string> GetChatHistoryRawAsync(string chatId, string? agentId = null, CancellationToken cancellationToken = default) =>
         GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(chatId)}", SlowReadTimeout, ct: cancellationToken);
@@ -552,6 +590,7 @@ public sealed class QwenPawClient : IQwenPawClient
             }
         };
 
+        InvalidateChatList(request.AgentId);
         return await SendAsync(
             Resolve(request.AgentId),
             HttpMethod.Post,
