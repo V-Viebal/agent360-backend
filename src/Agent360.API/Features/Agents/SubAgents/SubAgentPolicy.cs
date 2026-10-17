@@ -55,6 +55,20 @@ public static partial class SubAgentPolicy
         return PolicyDecision.Ok;
     }
 
+    /// <summary>Structural validation before any normalization, so malformed bodies return 400 instead of 500.</summary>
+    public static PolicyDecision ValidateCreateShape(CreateDelegationRequest? r)
+    {
+        if (r is null) return PolicyDecision.Deny("request body is required");
+        if (string.IsNullOrWhiteSpace(r.ParentAgentId)) return PolicyDecision.Deny("parent_agent_id is required");
+        if (string.IsNullOrWhiteSpace(r.ChildAgentId)) return PolicyDecision.Deny("child_agent_id is required");
+        if (string.IsNullOrWhiteSpace(r.Objective)) return PolicyDecision.Deny("objective is required");
+        if (r.Mode is not null && !DelegationModes.All.Contains(r.Mode.ToLowerInvariant()))
+            return PolicyDecision.Deny("mode must be sync or async");
+        if (r.Objective.Length > 8000) return PolicyDecision.Deny("objective is too long (max 8000 chars)");
+        if (r.TimeoutSeconds is < 10 or > 3600) return PolicyDecision.Deny("timeout_seconds must be between 10 and 3600");
+        return PolicyDecision.Ok;
+    }
+
     public static bool ContainsSecret(string? text) => !string.IsNullOrEmpty(text) && SecretRegex().IsMatch(text);
 
     public static string BuildDelegationPrompt(CreateDelegationRequest r, IReadOnlyList<string> criteria, string? feedback = null)
@@ -75,6 +89,7 @@ public static partial class SubAgentPolicy
         {
             lines.Add("");
             lines.Add("## Reviewer feedback from previous attempt (must be addressed)");
+            lines.Add("This is a retry. The previous answer was rejected. Where this feedback conflicts with the sections above, the feedback takes precedence.");
             lines.Add(feedback.Trim());
         }
 

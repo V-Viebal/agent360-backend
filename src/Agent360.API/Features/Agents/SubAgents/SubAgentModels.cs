@@ -15,6 +15,25 @@ public sealed class SubAgentOptions
     public int MaxDepth { get; set; } = 1;
 
     public int MaxAttempts { get; set; } = 2;
+
+    /// <summary>Background monitor: polls running async tasks and enforces timeouts.</summary>
+    public bool MonitorEnabled { get; set; } = true;
+
+    public int MonitorIntervalSeconds { get; set; } = 30;
+
+    /// <summary>Extra time beyond the binding timeout before a running task is marked timed_out.</summary>
+    public int TimeoutGraceSeconds { get; set; } = 90;
+
+    /// <summary>Phase 4 auto-ledger: scan bound parents' recent chats for native A2A tool calls (0 disables).</summary>
+    public int IngestIntervalSeconds { get; set; } = 180;
+
+    public int IngestMaxChats { get; set; } = 10;
+
+    /// <summary>Ledger retention: terminal tasks older than this are archived to monthly JSONL files.</summary>
+    public int RetentionDays { get; set; } = 30;
+
+    /// <summary>Hard cap on in-ledger tasks; oldest terminal tasks are archived beyond it.</summary>
+    public int MaxLedgerTasks { get; set; } = 2000;
 }
 
 public static class DelegationModes
@@ -147,7 +166,10 @@ public sealed record ReviewDelegationRequest(
     [property: JsonPropertyName("reason")] string? Reason);
 
 public sealed record RetryDelegationRequest(
-    [property: JsonPropertyName("feedback")] string Feedback);
+    [property: JsonPropertyName("feedback")] string? Feedback,
+    [property: JsonPropertyName("objective")] string? Objective = null,
+    [property: JsonPropertyName("expected_output")] string? ExpectedOutput = null,
+    [property: JsonPropertyName("acceptance_criteria")] IReadOnlyList<string>? AcceptanceCriteria = null);
 
 public sealed record ProbeSubAgentRequest(
     [property: JsonPropertyName("prompt")] string? Prompt);

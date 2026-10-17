@@ -195,8 +195,12 @@ public sealed class SubAgentService(
         }));
     }
 
-    public async Task<ServiceResult<DelegationTask>> RetryAsync(string taskId, string feedback, CancellationToken ct)
+    public Task<ServiceResult<DelegationTask>> RetryAsync(string taskId, string feedback, CancellationToken ct) =>
+        RetryAsync(taskId, new RetryDelegationRequest(feedback), ct);
+
+    public async Task<ServiceResult<DelegationTask>> RetryAsync(string taskId, RetryDelegationRequest body, CancellationToken ct)
     {
+        var feedback = body.Feedback ?? "";
         var task = await store.GetTaskAsync(taskId);
         if (task is null) return ServiceResult<DelegationTask>.Fail(PolicyDecision.Deny("delegation not found", 404));
         if (task.Status != DelegationStatuses.Rejected)
@@ -209,14 +213,22 @@ public sealed class SubAgentService(
         if (binding is null || !binding.Enabled)
             return ServiceResult<DelegationTask>.Fail(PolicyDecision.Deny("binding missing or disabled", 403));
 
+        if (SubAgentPolicy.ContainsSecret(feedback) || SubAgentPolicy.ContainsSecret(body.Objective))
+            return ServiceResult<DelegationTask>.Fail(PolicyDecision.Deny("retry payload appears to contain a secret or credential", 422));
+
+        // The reviewer may revise the contract for the retry; revised fields replace the original ones
+        // so the sub-agent never receives contradictory instructions.
+        var objective = string.IsNullOrWhiteSpace(body.Objective) ? task.Objective : body.Objective.Trim();
+        var criteria = body.AcceptanceCriteria is { Count: > 0 } c ? c : task.AcceptanceCriteria;
         var retry = await store.SaveTaskAsync(task with
         {
             Status = DelegationStatuses.RetryQueued, Attempt = task.Attempt + 1, Output = null, Error = null,
+            Objective = objective, AcceptanceCriteria = criteria,
             Acceptance = null, NativeTaskId = null, UpdatedAt = DateTimeOffset.UtcNow, CompletedAt = null,
         });
-        var req = new CreateDelegationRequest(task.ParentAgentId, task.ChildAgentId, task.Mode, task.Objective, task.InputSummary,
-            null, null, task.AcceptanceCriteria, task.ParentRunId, task.RootRunId, task.ParentTaskId, task.CallChain, null);
-        return ServiceResult<DelegationTask>.Ok(await DispatchAsync(retry, binding, SubAgentPolicy.BuildDelegationPrompt(req, task.AcceptanceCriteria, feedback), null, ct));
+        var req = new CreateDelegationRequest(task.ParentAgentId, task.ChildAgentId, task.Mode, objective, task.InputSummary,
+            null, body.ExpectedOutput, criteria, task.ParentRunId, task.RootRunId, task.ParentTaskId, task.CallChain, null);
+        return ServiceResult<DelegationTask>.Ok(await DispatchAsync(retry, binding, SubAgentPolicy.BuildDelegationPrompt(req, criteria, feedback), null, ct));
     }
 
     public async Task<ServiceResult<DelegationTask>> CancelAsync(string taskId, CancellationToken ct)
@@ -234,6 +246,55 @@ public sealed class SubAgentService(
             CompletedAt = DateTimeOffset.UtcNow,
         }));
     }
+
+    /// <summary>
+    /// Monitor pass: refresh running async tasks from QwenPaw and time out tasks that exceed
+    /// binding timeout + grace. Returns the number of tasks whose state changed.
+    /// </summary>
+    public async Task<int> MonitorOnceAsync(CancellationToken ct)
+    {
+        var changed = 0;
+        var now = DateTimeOffset.UtcNow;
+        var active = (await store.GetTasksAsync())
+            .Where(t => t.Status is DelegationStatuses.Running or DelegationStatuses.Queued or DelegationStatuses.RetryQueued)
+            .ToList();
+        foreach (var t in active)
+        {
+            ct.ThrowIfCancellationRequested();
+            var binding = await store.GetBindingAsync(t.ParentAgentId, t.ChildAgentId);
+            var limit = TimeSpan.FromSeconds((binding?.TimeoutSeconds ?? 300) + _opt.TimeoutGraceSeconds);
+            if (t.NativeTaskId is not null)
+            {
+                try
+                {
+                    var updated = await SyncNativeStatusAsync(t.Id, ct);
+                    if (updated is not null && updated.Status != t.Status) { changed++; continue; }
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && ex is HttpRequestException or OperationCanceledException or QwenPawUnavailableException)
+                {
+                    logger.LogDebug(ex, "Monitor could not refresh {Task}", t.Id);
+                }
+            }
+            var fresh = await store.GetTaskAsync(t.Id);
+            if (fresh is null || fresh.Status is not (DelegationStatuses.Running or DelegationStatuses.Queued or DelegationStatuses.RetryQueued)) continue;
+            if (now - fresh.UpdatedAt > limit && now - fresh.CreatedAt > limit)
+            {
+                await store.SaveTaskAsync(fresh with
+                {
+                    Status = DelegationStatuses.TimedOut,
+                    Error = fresh.Error ?? $"no completion within {(int)limit.TotalSeconds}s (monitor)",
+                    Evidence = [.. fresh.Evidence, $"monitor:timed_out@{now:O}"],
+                    UpdatedAt = now, CompletedAt = now,
+                });
+                changed++;
+            }
+        }
+        return changed;
+    }
+
+    /// <summary>Parents that currently have at least one enabled binding (auto-ledger scan targets).</summary>
+    public async Task<IReadOnlyList<string>> BoundParentsAsync() =>
+        (await store.GetAllBindingsAsync()).Where(b => b.Enabled).Select(b => b.ParentAgentId).Distinct(StringComparer.Ordinal).ToList();
 
     /// <summary>Phase 4: ingest autonomous chat_with_agent/submit_to_agent tool calls from the parent's chat history.</summary>
     public async Task<IReadOnlyList<DelegationTask>> IngestNativeAsync(string parent, int maxChats, CancellationToken ct)

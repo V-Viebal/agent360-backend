@@ -14,6 +14,7 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithTags(EndpointTags.Agents)
             .MapToApiVersion(ApiVersion.Default)
             .AddEndpointFilter(RuntimeUnavailableFilter)
+            .AddEndpointFilter<OperatorAuthFilter>()
             .AllowAnonymous();
 
         // ---- Registry ----
@@ -22,10 +23,10 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("ListSubAgents");
 
         agents.MapPut("subagents/{childAgentId}", async (string agentId, string childAgentId,
-                [FromBody] UpsertSubAgentBindingRequest body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
+                [FromBody] UpsertSubAgentBindingRequest? body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
             {
                 if (!opt.Value.Enabled) return Disabled();
-                var r = await svc.UpsertBindingAsync(agentId, childAgentId, body, ct);
+                var r = await svc.UpsertBindingAsync(agentId, childAgentId, body ?? new UpsertSubAgentBindingRequest(null, null, null, null, null, null, null), ct);
                 return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
             })
             .WithName("UpsertSubAgent");
@@ -87,12 +88,14 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithTags(EndpointTags.Agents)
             .MapToApiVersion(ApiVersion.Default)
             .AddEndpointFilter(RuntimeUnavailableFilter)
+            .AddEndpointFilter<OperatorAuthFilter>()
             .AllowAnonymous();
 
-        dlg.MapPost("", async ([FromBody] CreateDelegationRequest body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
+        dlg.MapPost("", async ([FromBody] CreateDelegationRequest? body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
             {
                 if (!opt.Value.Enabled) return Disabled();
-                var r = await svc.CreateAsync(body, ct);
+                if (SubAgentPolicy.ValidateCreateShape(body) is { Allowed: false } shape) return Problem(shape);
+                var r = await svc.CreateAsync(body!, ct);
                 return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
             })
             .WithName("CreateDelegation");
@@ -113,17 +116,19 @@ public sealed class SubAgentEndpoints : IEndpoint
             })
             .WithName("CancelDelegation");
 
-        dlg.MapPost("{taskId}/review", async (string taskId, [FromBody] ReviewDelegationRequest body, SubAgentService svc) =>
+        dlg.MapPost("{taskId}/review", async (string taskId, [FromBody] ReviewDelegationRequest? body, SubAgentService svc) =>
             {
+                if (body is null) return Problem(PolicyDecision.Deny("request body is required"));
                 var r = await svc.ReviewAsync(taskId, body);
                 return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
             })
             .WithName("ReviewDelegation");
 
-        dlg.MapPost("{taskId}/retry", async (string taskId, [FromBody] RetryDelegationRequest body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
+        dlg.MapPost("{taskId}/retry", async (string taskId, [FromBody] RetryDelegationRequest? body, SubAgentService svc, IOptions<SubAgentOptions> opt, CancellationToken ct) =>
             {
                 if (!opt.Value.Enabled) return Disabled();
-                var r = await svc.RetryAsync(taskId, body.Feedback, ct);
+                if (body is null) return Problem(PolicyDecision.Deny("request body is required"));
+                var r = await svc.RetryAsync(taskId, body, ct);
                 return r.Decision.Allowed ? Results.Ok(r.Value) : Problem(r.Decision);
             })
             .WithName("RetryDelegation");
@@ -134,6 +139,10 @@ public sealed class SubAgentEndpoints : IEndpoint
         try
         {
             return await next(ctx);
+        }
+        catch (BadHttpRequestException ex)
+        {
+            return Results.Problem(detail: ex.Message, statusCode: 400, title: "Invalid request");
         }
         catch (QwenPawUnavailableException ex)
         {

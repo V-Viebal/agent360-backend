@@ -44,6 +44,55 @@ public sealed class SubAgentStore
         }
     }
 
+    public async Task<IReadOnlyList<SubAgentBinding>> GetAllBindingsAsync()
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            return _bindings.ToList();
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Move terminal tasks older than <paramref name="retention"/> (or beyond <paramref name="maxTasks"/>)
+    /// into monthly JSONL archives next to the ledger. Active tasks are never archived.
+    /// </summary>
+    public async Task<int> CompactAsync(TimeSpan retention, int maxTasks, DateTimeOffset? now = null)
+    {
+        var cutoff = (now ?? DateTimeOffset.UtcNow) - retention;
+        await _lock.WaitAsync();
+        try
+        {
+            static bool Finished(DelegationTask t) => t.Status is DelegationStatuses.Accepted or DelegationStatuses.Rejected
+                or DelegationStatuses.Failed or DelegationStatuses.TimedOut or DelegationStatuses.Cancelled;
+            var archive = _tasks.Where(t => Finished(t) && t.UpdatedAt < cutoff).ToHashSet();
+            var overflow = _tasks.Count - archive.Count - Math.Max(100, maxTasks);
+            if (overflow > 0)
+            {
+                foreach (var t in _tasks.Where(t => Finished(t) && !archive.Contains(t)).OrderBy(t => t.UpdatedAt).Take(overflow))
+                    archive.Add(t);
+            }
+            if (archive.Count == 0) return 0;
+
+            foreach (var group in archive.GroupBy(t => t.UpdatedAt.UtcDateTime.ToString("yyyy-MM")))
+            {
+                var path = Path.Combine(Path.GetDirectoryName(_ledgerPath)!, $"delegation_tasks.archive-{group.Key}.jsonl");
+                await File.AppendAllLinesAsync(path, group.Select(t => JsonSerializer.Serialize(t)));
+            }
+            _tasks.RemoveAll(archive.Contains);
+            await SaveAsync(_ledgerPath, _tasks);
+            return archive.Count;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public async Task<SubAgentBinding?> GetBindingAsync(string parentAgentId, string childAgentId)
     {
         await _lock.WaitAsync();

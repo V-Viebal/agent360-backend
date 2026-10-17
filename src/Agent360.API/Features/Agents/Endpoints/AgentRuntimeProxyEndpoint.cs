@@ -66,8 +66,14 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         routeBuilder.MapMethods(
             "agents/{agentId}/{**path}",
             ["GET", "POST", "PUT", "PATCH", "DELETE"],
-            async (string agentId, string path, HttpContext context, IFleetInstanceRoutingService routing, IQwenPawClient client, IMemoryCache cache, CancellationToken ct) =>
+            async (string agentId, string path, HttpContext context, IFleetInstanceRoutingService routing, IQwenPawClient client, IMemoryCache cache,
+                Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions> security, IHostEnvironment env, CancellationToken ct) =>
             {
+                if (security.CurrentValue.ProtectRuntimeProxyWrites && !HttpMethods.IsGet(context.Request.Method)
+                    && !Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.IsAuthorized(context, security.CurrentValue, env))
+                {
+                    return Results.Problem("Operator token required for this action.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
+                }
                 var clean = (path ?? "").Trim('/');
                 if (!AllowedPrefixes.Any(p => clean.Equals(p, StringComparison.OrdinalIgnoreCase) || clean.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase)))
                 {

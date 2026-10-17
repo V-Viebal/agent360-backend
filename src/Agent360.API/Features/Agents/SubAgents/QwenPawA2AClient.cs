@@ -81,7 +81,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             var list = await LoadAgentsAsync(ct);
             if (_cache is not null && list.Count > 0)
             {
-                _cache.Set(AgentsCacheKey, list, TimeSpan.FromSeconds(20));
+                _cache.Set(AgentsCacheKey, list, TimeSpan.FromSeconds(60));
                 _cache.Set(AgentsCacheKey + ":last-good", list, TimeSpan.FromMinutes(10));
             }
             return list;

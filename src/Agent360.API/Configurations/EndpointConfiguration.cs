@@ -22,6 +22,10 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddSingleton<SubAgentSkillSyncQueue>();
             webAppBuilder.Services.AddSingleton<ISubAgentSkillSyncQueue>(sp => sp.GetRequiredService<SubAgentSkillSyncQueue>());
             webAppBuilder.Services.AddHostedService(sp => sp.GetRequiredService<SubAgentSkillSyncQueue>());
+            webAppBuilder.Services.AddOptions<Agent360SecurityOptions>().BindConfiguration(Agent360SecurityOptions.Section);
+            webAppBuilder.Services.AddScoped<OperatorAuthFilter>();
+            webAppBuilder.Services.AddSingleton<DelegationMonitor>();
+            webAppBuilder.Services.AddHostedService(sp => sp.GetRequiredService<DelegationMonitor>());
             webAppBuilder.Services.AddHostedService<AgentCacheWarmer>();
             // Inter-agent turns can legitimately take minutes; per-call timeouts are enforced in the adapter.
 #pragma warning disable EXTEXP0001 // Long inter-agent turns must not be cut by the default 30s resilience timeout.

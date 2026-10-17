@@ -11,6 +11,7 @@ Paths (canonical-service-paths-v1):
   control plane : core/prod:/agent360-a2a/app/runtime  A2A_SERVICE_TOKEN, A2A_CALLBACK_SECRET, A2A_OPERATOR_TOKEN
   child runtime : <child project>/prod:/qwenpaw-<instance>/app/runtime  QWENPAW_AUTH_PASSWORD (username admin)
   backend       : core/prod:/agent360-backend/app/backend ConnectionStrings__DefaultConnection
+                  + core/prod:/agent360-a2a/app/runtime A2A_OPERATOR_TOKEN -> Agent360__Security__OperatorToken
                   + QwenPaw__Instances__{gm,climax,planthy}__Username/Password from each instance runtime path
 Secret values never touch stdout or local disk; files are written 0600 over ssh stdin.
 """
@@ -55,10 +56,15 @@ if A.role == "control-plane":
     want = {k: digest(v) for k, v in vals.items()}
     remote = "python3 -c \"import hashlib,sys;d=dict(l.strip().split('=',1) for l in open('%s') if '=' in l);print(' '.join(k+':'+hashlib.sha256(v.encode()).hexdigest()[:12] for k,v in sorted(d.items())))\"" % target
 elif A.role == "backend":
-    vals = {"ConnectionStrings__DefaultConnection": get(PROJECTS["core"], "/agent360-backend/app/backend", "ConnectionStrings__DefaultConnection")}
+    vals = {"ConnectionStrings__DefaultConnection": get(PROJECTS["core"], "/agent360-backend/app/backend", "ConnectionStrings__DefaultConnection"),
+            # Same operator credential as the A2A control plane; guards mutating sub-agent/delegation routes.
+            "Agent360__Security__OperatorToken": get(PROJECTS["core"], "/agent360-a2a/app/runtime", "A2A_OPERATOR_TOKEN")}
     for key, (proj, path) in FLEET.items():
         vals[f"QwenPaw__Instances__{key}__Username"] = "admin"
         vals[f"QwenPaw__Instances__{key}__Password"] = get(PROJECTS[proj], path, "QWENPAW_AUTH_PASSWORD")
+    # Non-secret routing: agentteams-manager binds 127.0.0.1:18888 on node 4th; a tailnet-only socat
+    # (systemd agentteams-manager-tailnet.service) exposes it at 100.77.205.126:18889 for Agent360.
+    vals["QwenPaw__Instances__agentteams__InternalUrl"] = "http://100.77.205.126:18889"
     content = "".join(f"{k}={v}\n" for k, v in vals.items())
     target = "/opt/agent360/deploy/backend.env"
     want = {k: digest(v) for k, v in vals.items()}
