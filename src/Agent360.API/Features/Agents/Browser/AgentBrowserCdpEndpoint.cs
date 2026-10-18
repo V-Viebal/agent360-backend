@@ -32,6 +32,28 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .WithSummary("Agent's browser service, owned Chromium profile and its live tabs")
             .AllowAnonymous();
 
+        // Bring the agent's own profile window to the front of the shared Selkies desktop
+        // before the viewer opens it, so the user sees this agent's tabs, not the last agent's.
+        routeBuilder.MapPost(
+            "agents/{agentId}/browser/focus",
+            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            {
+                var (page, cdp, error) = await PickPageAsync(directory, agentId, null, ct);
+                if (page is null)
+                {
+                    return TypedResults.Conflict(new { message = error });
+                }
+                var ok = await ActivateAsync(cdp!, page.TargetId, ct);
+                return ok
+                    ? TypedResults.Ok(new { agentId, targetId = page.TargetId, url = page.Url })
+                    : TypedResults.Problem("Failed to focus the agent's browser window", statusCode: StatusCodes.Status502BadGateway);
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("FocusAgentBrowser")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Bring the agent's own Chromium profile window to the front of the desktop")
+            .AllowAnonymous();
+
         routeBuilder.MapGet(
             "agents/{agentId}/browser/pages",
             async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
@@ -138,6 +160,16 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             ? info.Tabs.FirstOrDefault(t => !t.Anchor) ?? info.Tabs.FirstOrDefault()
             : info.Tabs.FirstOrDefault(t => t.TargetId == pageId);
         return page is null ? (null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, null);
+    }
+
+    private static async Task<bool> ActivateAsync(string cdpUrl, string targetId, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(8));
+        using var http = new HttpClient();
+        // /json/activate focuses the tab and raises its window (no browser-level websocket needed).
+        using var res = await http.GetAsync($"{cdpUrl.TrimEnd('/')}/json/activate/{Uri.EscapeDataString(targetId)}", cts.Token);
+        return res.IsSuccessStatusCode;
     }
 
     private static Uri PageSocket(string cdpUrl, string targetId)
