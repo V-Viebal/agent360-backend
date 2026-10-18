@@ -263,9 +263,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         group.MapPost("console/upload", async (
             IFormFile file,
             IWebHostEnvironment env,
+            Agent360.API.Features.Agents.Security.SecureUploadStorageService storageService,
             CancellationToken ct) =>
         {
-            var (success, error, uploadResponse) = await SecureUploadStorageService.StoreFileAsync(
+            var (success, error, uploadResponse) = await storageService.StoreFileAsync(
                 file,
                 env.ContentRootPath,
                 ct);

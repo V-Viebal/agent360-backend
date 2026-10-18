@@ -1,12 +1,40 @@
 using System.Text;
 using Agent360.API.Features.Agents.Security;
+using Agent360.API.Options;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Agent360.API.ContractTests;
 
 public sealed class SecureUploadStorageTests
 {
+    private sealed class SimpleOptionsMonitor<T>(T currentValue) : IOptionsMonitor<T>
+    {
+        public T CurrentValue => currentValue;
+        public T Get(string? name) => currentValue;
+        public IDisposable? OnChange(Action<T, string?> listener) => null;
+    }
+
+    private sealed class SimpleHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new HttpClient();
+    }
+
+    private static SecureUploadStorageService CreateService()
+    {
+        var optionsMonitor = new SimpleOptionsMonitor<StorageOptions>(new StorageOptions
+        {
+            Provider = "Local"
+        });
+
+        return new SecureUploadStorageService(
+            optionsMonitor,
+            new SimpleHttpClientFactory(),
+            NullLogger<SecureUploadStorageService>.Instance);
+    }
+
     [Fact]
     public async Task StoreFileAsync_MasksPhysicalPath_WithVirtualUri()
     {
@@ -23,7 +51,8 @@ public sealed class SecureUploadStorageTests
                 ContentType = "application/javascript"
             };
 
-            var (success, error, response) = await SecureUploadStorageService.StoreFileAsync(
+            var service = CreateService();
+            var (success, error, response) = await service.StoreFileAsync(
                 formFile,
                 tempRoot,
                 CancellationToken.None);
@@ -58,7 +87,8 @@ public sealed class SecureUploadStorageTests
                 ContentType = "application/x-msdownload"
             };
 
-            var (success, error, response) = await SecureUploadStorageService.StoreFileAsync(
+            var service = CreateService();
+            var (success, error, response) = await service.StoreFileAsync(
                 formFile,
                 tempRoot,
                 CancellationToken.None);

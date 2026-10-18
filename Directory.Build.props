@@ -7,7 +7,7 @@
 		<LangVersion>preview</LangVersion>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<!-- CS1591: Missing XML comment for publicly visible type or member. Suppressed to avoid build warnings/errors when XML documentation file generation is enabled. -->
-		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<NoWarn>$(NoWarn);CS1591;NU1901;NU1902;NU1903;NU1904</NoWarn>
 	</PropertyGroup>
 
 	<!-- Optional AOT configuration. Keep disabled until the API and all dependencies pass native publish/trimming validation. Re-enable this complete block when ready.

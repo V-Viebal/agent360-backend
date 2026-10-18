@@ -79,8 +79,8 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         _options = options?.Value ?? new QwenPawOptions();
         Instances =
         [
-            Build("core", "3rd", "Core QwenPaw / CoPaw (Node 3rd)", "http://100.76.185.111:33148", "https://ai.hmz.one", false, "http://100.76.185.111:19222"),
-            Build("gm", "6th", "Gia Moc QwenPaw (Node 6th)", "http://100.81.66.42:26888", "https://ai-gm.antares.vn", true, "http://100.81.66.42:19222"),
+            Build("core", "3rd", "Core Skyer Fleet (Node 3rd)", "http://100.76.185.111:33148", "https://ai.hmz.one", false, "http://100.76.185.111:19222"),
+            Build("gm", "6th", "Gia Moc Skyer Fleet (Node 6th)", "http://100.81.66.42:26888", "https://ai-gm.antares.vn", true, "http://100.81.66.42:19222"),
             Build("climax", "5th", "Climax Creative (Node 5th)", "http://100.70.201.83:26404", "https://ai-climax.antares.vn", true, "http://100.70.201.83:19222"),
             Build("planthy", "5th", "Planthy AI (Node 5th)", "http://100.70.201.83:32842", "https://planthy-ai.hmz.one", true, "http://100.70.201.83:19224"),
             // AgentTeams manager is a QwenPaw runtime bound to loopback on 4th; only the public proxy is reachable.

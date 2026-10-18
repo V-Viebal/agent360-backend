@@ -1,9 +1,14 @@
 using System.Security.Cryptography;
 using Agent360.API.Features.Agents.Models;
+using Agent360.API.Options;
+using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.Security;
 
-public static class SecureUploadStorageService
+public class SecureUploadStorageService(
+    IOptionsMonitor<StorageOptions> storageOpts,
+    IHttpClientFactory httpClientFactory,
+    ILogger<SecureUploadStorageService> logger)
 {
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -14,7 +19,7 @@ public static class SecureUploadStorageService
 
     private const long MaxFileSizeBytes = 25 * 1024 * 1024; // 25 MB
 
-    public static async Task<(bool Success, string? Error, FileUploadResponse? Response)> StoreFileAsync(
+    public async Task<(bool Success, string? Error, FileUploadResponse? Response)> StoreFileAsync(
         IFormFile file,
         string uploadDirectoryRoot,
         CancellationToken ct = default)
@@ -57,15 +62,47 @@ public static class SecureUploadStorageService
             await file.CopyToAsync(stream, ct);
         }
 
-        // Virtual URI hides physical disk path from external clients & QwenPaw
-        var virtualUri = $"virtual://workspace/uploads/{fileId}/{sanitizedFilename}{ext}";
+        var currentConfig = storageOpts.CurrentValue;
+        string publicUri = $"virtual://workspace/uploads/{fileId}/{sanitizedFilename}{ext}";
+
+        // If MinIO S3 is configured, push the payload to MinIO directly
+        if (currentConfig.Provider.Equals("Minio", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(currentConfig.ServerUrl))
+        {
+            try
+            {
+                var s3Endpoint = currentConfig.ServerUrl.TrimEnd('/');
+                var s3Url = $"{s3Endpoint}/{currentConfig.BucketName}/{storageFilename}";
+                var client = httpClientFactory.CreateClient("MinioStorageClient");
+                
+                await using var uploadStream = File.OpenRead(destinationPath);
+                using var content = new StreamContent(uploadStream);
+                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType ?? "application/octet-stream");
+
+                var s3Request = new HttpRequestMessage(HttpMethod.Put, s3Url) { Content = content };
+                var s3Response = await client.SendAsync(s3Request, ct);
+
+                if (s3Response.IsSuccessStatusCode)
+                {
+                    publicUri = s3Url;
+                    logger.LogInformation("Successfully uploaded {FileId} to MinIO S3: {Url}", fileId, s3Url);
+                }
+                else
+                {
+                    logger.LogWarning("MinIO S3 upload returned {Status}; fallback to local virtual URI", s3Response.StatusCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "MinIO S3 sync failed for {FileId}; fallback to local virtual URI", fileId);
+            }
+        }
 
         var response = new FileUploadResponse(
             FileId: fileId,
             Filename: $"{sanitizedFilename}{ext}",
-            VirtualUri: virtualUri,
+            VirtualUri: publicUri,
             SizeBytes: file.Length,
-            ContentType: file.ContentType,
+            ContentType: file.ContentType ?? "application/octet-stream",
             UploadedAt: DateTime.UtcNow);
 
         return (true, null, response);

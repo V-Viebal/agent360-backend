@@ -278,7 +278,7 @@ public sealed class QwenPawClient : IQwenPawClient
     private AgentSummaryResponse FromRuntime(string slug, QwenPawAgentDto a)
     {
         var target = Resolve(slug);
-        var (friendlyName, roleTag) = MapAgentIdentity(slug, a.Description, "qwenpaw");
+        var (friendlyName, roleTag) = MapAgentIdentity(slug, a.Description, "skyer");
         return new AgentSummaryResponse(
             Id: $"bot:agent360:{slug}",
             Name: friendlyName == slug && !string.IsNullOrWhiteSpace(a.Name) ? a.Name : friendlyName,
@@ -287,7 +287,7 @@ public sealed class QwenPawClient : IQwenPawClient
             Node: FormatNodeDisplay(target.ClusterNode, target.InstanceName),
             Status: a.StartupStatus switch { "pending" => "evaluating", "disabled" => "idle", _ => "active" },
             Model: RuntimeModel(a, null),
-            RuntimeVersion: "qwenpaw v2.2.1",
+            RuntimeVersion: "Skyer v2.2.1",
             Uptime: "Online (Runtime)",
             Description: a.Description,
             Enabled: a.Enabled,
@@ -357,7 +357,7 @@ public sealed class QwenPawClient : IQwenPawClient
                     Node: FormatNodeDisplay(g.Node, g.Instance),
                     Status: status,
                     Model: ExtractModel(g),
-                    RuntimeVersion: $"{g.Runtime ?? "qwenpaw"} v2.2.1",
+                    RuntimeVersion: "Skyer v2.2.1",
                     Uptime: "Online (Fleet)",
                     Description: g.Description,
                     Enabled: isConfigured,
@@ -915,7 +915,7 @@ public sealed class QwenPawClient : IQwenPawClient
         if (id == "ken") return ("Ken (Product Owner)", "Operations");
         if (id == "zen") return ("Zen (Sales & Delivery)", "Operations");
         if (id == "mkai") return ("Mkai (Generalist Core)", "Engineering");
-        if (id == "default-core") return ("Core QwenPaw Default", "Operations");
+        if (id == "default-core") return ("Core Skyer Default", "Operations");
         if (id.Contains("qa_agent")) return ("QA Helper (Core)", "Quality");
         if (id == "gm-boc") return ("GM Bốc (Executive)", "Operations");
         if (id == "gm-gao") return ("GM Gạo (Procurement)", "Operations");

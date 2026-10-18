@@ -11,6 +11,11 @@ public static class EndpointConfiguration
         public WebApplicationBuilder ConfigureEndpoints()
         {
             webAppBuilder.Services.AddScoped<LogtoWebhookSignatureFilter>();
+            webAppBuilder.Services.AddScoped<Agent360.API.Features.Agents.Security.SecureUploadStorageService>();
+            webAppBuilder.Services.AddHttpClient("MinioStorageClient", client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(30);
+            });
             webAppBuilder.Services.AddSingleton<SessionQueueManager>();
             webAppBuilder.Services.AddMemoryCache();
             webAppBuilder.Services.AddSingleton<FleetRoutingState>();

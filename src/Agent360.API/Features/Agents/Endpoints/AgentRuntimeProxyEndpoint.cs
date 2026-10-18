@@ -18,6 +18,8 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         "agent-status",
         "config/channels",
         "config/heartbeat",
+        "config/loop-mode",
+        "loop-mode",
         "cron/jobs",
         "mcp",
         "tools",
@@ -70,12 +72,13 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
             async (string agentId, string path, HttpContext context, IFleetInstanceRoutingService routing, IQwenPawClient client, IMemoryCache cache,
                 Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions> security, IHostEnvironment env, CancellationToken ct) =>
             {
-                if (security.CurrentValue.ProtectRuntimeProxyWrites && !HttpMethods.IsGet(context.Request.Method)
+                var clean = (path ?? "").Trim('/');
+                var isLoopModeRoute = clean.Equals("loop-mode", StringComparison.OrdinalIgnoreCase) || clean.Equals("config/loop-mode", StringComparison.OrdinalIgnoreCase);
+                if (security.CurrentValue.ProtectRuntimeProxyWrites && !HttpMethods.IsGet(context.Request.Method) && !isLoopModeRoute
                     && !Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.IsAuthorized(context, security.CurrentValue, env))
                 {
                     return Results.Problem("Operator token required for this action.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
                 }
-                var clean = (path ?? "").Trim('/');
                 // Disallow reserved static segment collisions (e.g. agents/console/chat must pass to dedicated handler)
                 if (agentId.Equals("console", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("models", StringComparison.OrdinalIgnoreCase) ||
