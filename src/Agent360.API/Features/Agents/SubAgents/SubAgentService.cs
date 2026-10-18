@@ -260,7 +260,20 @@ public sealed class SubAgentService(
     {
         var changed = 0;
         var now = DateTimeOffset.UtcNow;
-        var active = (await store.GetTasksAsync())
+        var all = await store.GetTasksAsync();
+        foreach (var w in all.Where(t => t.Status == DelegationStatuses.AwaitingParent
+            && now - t.UpdatedAt > TimeSpan.FromSeconds(_opt.AwaitingParentTimeoutSeconds)))
+        {
+            await store.SaveTaskAsync(w with
+            {
+                Status = DelegationStatuses.TimedOut,
+                Error = $"parent did not answer the sub-agent question within {_opt.AwaitingParentTimeoutSeconds}s",
+                Evidence = [.. w.Evidence, $"monitor:awaiting_parent_timeout@{now:O}"],
+                UpdatedAt = now, CompletedAt = now,
+            });
+            changed++;
+        }
+        var active = all
             .Where(t => t.Status is DelegationStatuses.Running or DelegationStatuses.Queued or DelegationStatuses.RetryQueued)
             .ToList();
         foreach (var t in active)
@@ -305,11 +318,19 @@ public sealed class SubAgentService(
     public async Task<IReadOnlyList<DelegationTask>> IngestNativeAsync(string parent, int maxChats, CancellationToken ct)
     {
         parent = NormalizeAgentId(parent);
-        var detected = await native.ScanAgentDelegationsAsync(parent, maxChats, ct);
+        var detected = (await native.ScanAgentDelegationsAsync(parent, maxChats, ct))
+            .OrderBy(d => d.ObservedAt ?? DateTimeOffset.MaxValue).ToList();
         var ingested = new List<DelegationTask>();
         foreach (var d in detected)
         {
             if (await store.FindByNativeKeyAsync(parent, d.CallId) is not null) continue;
+            if (d.ToolName == "chat_with_agent" && !string.IsNullOrWhiteSpace(d.NativeSessionId)
+                && await store.FindByNativeKeyAsync(parent, d.NativeSessionId!) is { } conv
+                && conv.ChildAgentId == d.ChildAgentId && conv.Mode == DelegationModes.Sync)
+            {
+                ingested.Add(await AppendNativeTurnAsync(conv, d));
+                continue;
+            }
             var binding = await store.GetBindingAsync(parent, d.ChildAgentId);
             var mode = d.ToolName == "submit_to_agent" ? DelegationModes.Async : DelegationModes.Sync;
             var policyNote = binding is null ? "policy_violation:unbound_child" : !binding.Enabled ? "policy_violation:binding_disabled" : "policy:bound";
@@ -324,10 +345,80 @@ public sealed class SubAgentService(
                 mode == DelegationModes.Sync ? outputText : null, status == DelegationStatuses.Failed ? Truncate(outputText, 300) : null,
                 [$"call_id:{d.CallId}", $"tool:{d.ToolName}", $"chat_id:{d.ChatId}", policyNote], null, [], at, DateTimeOffset.UtcNow,
                 status == DelegationStatuses.Completed ? at : null);
+            if (mode == DelegationModes.Sync)
+            {
+                var question = SubAgentPolicy.ExtractQuestion(outputText);
+                var turns = new List<DelegationTurn> { new(1, parent, d.ChildAgentId, DelegationTurnKinds.Request, Truncate(d.Text, 4000), at, d.CallId) };
+                if (!string.IsNullOrWhiteSpace(outputText) && status != DelegationStatuses.Failed)
+                {
+                    turns.Add(new(2, d.ChildAgentId, parent, question is null ? DelegationTurnKinds.Final : DelegationTurnKinds.Question, Truncate(outputText, 4000), at, d.CallId));
+                }
+                task = task with
+                {
+                    Turns = turns,
+                    Status = question is not null ? DelegationStatuses.AwaitingParent : task.Status,
+                    CompletedAt = question is not null ? null : task.CompletedAt,
+                };
+            }
             ingested.Add(await store.SaveTaskAsync(task));
         }
 
         return ingested;
+    }
+
+    /// <summary>
+    /// Record a child reply on a sync conversation: a <c>QUESTION_FOR_PARENT:</c> reply parks the delegation in
+    /// <c>awaiting_parent</c>; any other successful reply completes it and goes to review.
+    /// </summary>
+    private async Task<DelegationTask> ApplyChildReplyAsync(DelegationTask task, NativeChatResult r, string evidence)
+    {
+        var at = DateTimeOffset.UtcNow;
+        var question = r.Success ? SubAgentPolicy.ExtractQuestion(r.Text) : null;
+        var turns = task.Turns.ToList();
+        if (r.Success)
+        {
+            turns.Add(new DelegationTurn(turns.Count + 1, task.ChildAgentId, task.ParentAgentId,
+                question is null ? DelegationTurnKinds.Final : DelegationTurnKinds.Question, Truncate(r.Text, 4000), at));
+        }
+        if (question is not null)
+        {
+            return await store.SaveTaskAsync(task with
+            {
+                Status = DelegationStatuses.AwaitingParent, SessionId = r.SessionId, Output = r.Text, Error = null,
+                Evidence = [.. task.Evidence, evidence, $"awaiting_parent:{Truncate(question, 200)}"],
+                Turns = turns, UpdatedAt = at, CompletedAt = null, Acceptance = null,
+            });
+        }
+        var status = r.Success ? DelegationStatuses.Completed : r.Error == "timed_out" ? DelegationStatuses.TimedOut : DelegationStatuses.Failed;
+        var done = await store.SaveTaskAsync(task with
+        {
+            Status = status, SessionId = r.SessionId, Output = r.Text, Error = r.Error,
+            Evidence = [.. task.Evidence, evidence], Turns = turns,
+            UpdatedAt = at, CompletedAt = at, Acceptance = null,
+        });
+        return await AutoReviewAsync(done);
+    }
+
+    /// <summary>
+    /// Parent → child message in the same native session: answers a pending <c>QUESTION_FOR_PARENT</c>
+    /// or sends a follow-up after a result. Same QwenPaw session, so the child keeps its context.
+    /// </summary>
+    public async Task<ServiceResult<DelegationTask>> SendMessageAsync(string taskId, DelegationMessageRequest? body, CancellationToken ct)
+    {
+        var task = await store.GetTaskAsync(taskId);
+        if (task is null) return ServiceResult<DelegationTask>.Fail(PolicyDecision.Deny("delegation not found", 404));
+        var binding = await store.GetBindingAsync(task.ParentAgentId, task.ChildAgentId);
+        var check = SubAgentPolicy.ValidateMessage(task, binding, body, _opt.MaxConversationTurns);
+        if (!check.Allowed) return ServiceResult<DelegationTask>.Fail(check);
+
+        var kind = body!.Kind ?? (task.Status == DelegationStatuses.AwaitingParent ? DelegationTurnKinds.Answer : DelegationTurnKinds.Message);
+        var now = DateTimeOffset.UtcNow;
+        var text = SubAgentPolicy.BuildParentMessage(kind, body.Text!);
+        var turns = task.Turns.Append(new DelegationTurn(task.Turns.Count + 1, task.ParentAgentId, task.ChildAgentId, kind, body.Text!.Trim(), now)).ToList();
+        var running = await store.SaveTaskAsync(task with { Status = DelegationStatuses.Running, Turns = turns, UpdatedAt = now, CompletedAt = null });
+        var r = await native.ChatInSessionAsync(task.ParentAgentId, task.ChildAgentId, text, task.SessionId, binding!.TimeoutSeconds, ct);
+        return ServiceResult<DelegationTask>.Ok(await ApplyChildReplyAsync(running, r,
+            $"native:console/chat status={r.StatusCode} session={r.SessionId} turn={turns.Count}"));
     }
 
     private async Task<DelegationTask> DispatchAsync(DelegationTask task, SubAgentBinding binding, string prompt, int? timeoutOverride, CancellationToken ct)
@@ -336,16 +427,11 @@ public sealed class SubAgentService(
         var now = DateTimeOffset.UtcNow;
         if (task.Mode == DelegationModes.Sync)
         {
-            await store.SaveTaskAsync(task with { Status = DelegationStatuses.Running, UpdatedAt = now });
+            var turns = task.Turns.Append(new DelegationTurn(task.Turns.Count + 1, task.ParentAgentId, task.ChildAgentId,
+                DelegationTurnKinds.Request, Truncate(prompt, 4000), now)).ToList();
+            await store.SaveTaskAsync(task with { Status = DelegationStatuses.Running, UpdatedAt = now, Turns = turns });
             var r = await native.ChatAsync(task.ParentAgentId, task.ChildAgentId, prompt, timeout, ct);
-            var status = r.Success ? DelegationStatuses.Completed : r.Error == "timed_out" ? DelegationStatuses.TimedOut : DelegationStatuses.Failed;
-            var done = await store.SaveTaskAsync(task with
-            {
-                Status = status, SessionId = r.SessionId, Output = r.Text, Error = r.Error,
-                Evidence = [.. task.Evidence, $"native:console/chat status={r.StatusCode} session={r.SessionId}"],
-                UpdatedAt = DateTimeOffset.UtcNow, CompletedAt = DateTimeOffset.UtcNow,
-            });
-            return await AutoReviewAsync(done);
+            return await ApplyChildReplyAsync(task with { Turns = turns }, r, $"native:console/chat status={r.StatusCode} session={r.SessionId}");
         }
 
         var s = await native.SubmitAsync(task.ParentAgentId, task.ChildAgentId, prompt, timeout, ct);
@@ -355,6 +441,31 @@ public sealed class SubAgentService(
             NativeTaskId = s.NativeTaskId, SessionId = s.SessionId, Error = s.Error,
             Evidence = [.. task.Evidence, $"native:console/chat/task status={s.StatusCode} task_id={s.NativeTaskId}"],
             UpdatedAt = DateTimeOffset.UtcNow, CompletedAt = s.Success ? null : DateTimeOffset.UtcNow,
+        });
+    }
+
+    /// <summary>Phase 4 multi-turn: a later native chat_with_agent call on an existing session becomes the next turns.</summary>
+    private async Task<DelegationTask> AppendNativeTurnAsync(DelegationTask conv, DetectedNativeDelegation d)
+    {
+        var at = d.ObservedAt ?? DateTimeOffset.UtcNow;
+        var output = StripTags(d.Output);
+        var turns = conv.Turns.ToList();
+        var parentKind = conv.Status == DelegationStatuses.AwaitingParent || d.Text.TrimStart().StartsWith(SubAgentPolicy.AnswerMarker, StringComparison.OrdinalIgnoreCase)
+            ? DelegationTurnKinds.Answer : DelegationTurnKinds.Message;
+        turns.Add(new DelegationTurn(turns.Count + 1, conv.ParentAgentId, conv.ChildAgentId, parentKind, Truncate(d.Text, 4000), at, d.CallId));
+        var failed = string.IsNullOrWhiteSpace(output) || output.StartsWith("ERROR", StringComparison.Ordinal);
+        var question = failed ? null : SubAgentPolicy.ExtractQuestion(output);
+        if (!failed)
+        {
+            turns.Add(new DelegationTurn(turns.Count + 1, conv.ChildAgentId, conv.ParentAgentId,
+                question is null ? DelegationTurnKinds.Final : DelegationTurnKinds.Question, Truncate(output, 4000), at, d.CallId));
+        }
+        var status = failed ? DelegationStatuses.Failed : question is not null ? DelegationStatuses.AwaitingParent : DelegationStatuses.Completed;
+        return await store.SaveTaskAsync(conv with
+        {
+            Status = status, Output = failed ? conv.Output : output, Error = failed ? Truncate(output, 300) : null,
+            Evidence = [.. conv.Evidence, $"call_id:{d.CallId}", $"turn:{turns.Count}"],
+            Turns = turns, UpdatedAt = DateTimeOffset.UtcNow, CompletedAt = status == DelegationStatuses.Completed ? at : null,
         });
     }
 

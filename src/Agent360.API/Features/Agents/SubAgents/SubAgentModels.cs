@@ -47,6 +47,12 @@ public sealed class SubAgentOptions
     /// background (keeps responses under edge proxy limits such as Cloudflare's 100s).
     /// </summary>
     public int SyncWaitSeconds { get; set; } = 85;
+
+    /// <summary>Multi-turn: max turns (request + questions + answers + replies) per delegation conversation.</summary>
+    public int MaxConversationTurns { get; set; } = 6;
+
+    /// <summary>Multi-turn: a delegation left in awaiting_parent longer than this is timed out by the monitor.</summary>
+    public int AwaitingParentTimeoutSeconds { get; set; } = 1800;
 }
 
 public static class DelegationModes
@@ -61,6 +67,7 @@ public static class DelegationStatuses
 {
     public const string Queued = "queued";
     public const string Running = "running";
+    public const string AwaitingParent = "awaiting_parent";
     public const string Completed = "completed";
     public const string UnderReview = "under_review";
     public const string Accepted = "accepted";
@@ -77,10 +84,11 @@ public static class DelegationStatuses
 
     private static readonly IReadOnlyDictionary<string, string[]> Transitions = new Dictionary<string, string[]>
     {
-        [Queued] = [Running, Completed, Failed, TimedOut, Cancelled],
-        [Running] = [Completed, Failed, TimedOut, Cancelled],
-        [Completed] = [UnderReview, Accepted, Rejected],
-        [UnderReview] = [Accepted, Rejected],
+        [Queued] = [Running, Completed, AwaitingParent, Failed, TimedOut, Cancelled],
+        [Running] = [Completed, AwaitingParent, Failed, TimedOut, Cancelled],
+        [AwaitingParent] = [Running, Completed, Failed, TimedOut, Cancelled],
+        [Completed] = [UnderReview, Accepted, Rejected, Running],
+        [UnderReview] = [Accepted, Rejected, Running],
         [Rejected] = [RetryQueued],
         [RetryQueued] = [Running, Completed, Failed, TimedOut, Cancelled],
     };
@@ -155,7 +163,36 @@ public sealed record DelegationTask(
     [property: JsonPropertyName("history")] IReadOnlyList<AcceptanceResult> ReviewHistory,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
-    [property: JsonPropertyName("completed_at")] DateTimeOffset? CompletedAt);
+    [property: JsonPropertyName("completed_at")] DateTimeOffset? CompletedAt)
+{
+    /// <summary>Ordered conversation turns (multi-turn delegations). Empty for one-shot legacy records.</summary>
+    [JsonPropertyName("turns")]
+    public IReadOnlyList<DelegationTurn> Turns { get; init; } = [];
+}
+
+/// <summary>One message in a delegation conversation. kind: request | question | answer | message | reply | final.</summary>
+public sealed record DelegationTurn(
+    [property: JsonPropertyName("seq")] int Seq,
+    [property: JsonPropertyName("from")] string From,
+    [property: JsonPropertyName("to")] string To,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("at")] DateTimeOffset At,
+    [property: JsonPropertyName("call_id")] string? CallId = null);
+
+public static class DelegationTurnKinds
+{
+    public const string Request = "request";
+    public const string Question = "question";
+    public const string Answer = "answer";
+    public const string Message = "message";
+    public const string Reply = "reply";
+    public const string Final = "final";
+}
+
+public sealed record DelegationMessageRequest(
+    [property: JsonPropertyName("text")] string? Text,
+    [property: JsonPropertyName("kind")] string? Kind);
 
 public sealed record CreateDelegationRequest(
     [property: JsonPropertyName("parent_agent_id")] string ParentAgentId,

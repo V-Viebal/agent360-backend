@@ -69,6 +69,50 @@ public static partial class SubAgentPolicy
         return PolicyDecision.Ok;
     }
 
+    public const string QuestionMarker = "QUESTION_FOR_PARENT:";
+    public const string AnswerMarker = "ANSWER_FROM_PARENT:";
+
+    public const string ClarificationInstruction =
+        "If you cannot complete the objective without a missing fact or decision that only the requesting agent has, " +
+        "do not guess and do not give a partial answer: reply with exactly one line `QUESTION_FOR_PARENT: <one precise question>` and stop. " +
+        "The requesting agent will answer in this same conversation with a message starting `ANSWER_FROM_PARENT:`; then finish the task. " +
+        "Never call the requesting agent yourself.";
+
+    /// <summary>Extracts the clarification question when the child ended its turn with the protocol marker.</summary>
+    public static string? ExtractQuestion(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return null;
+        var i = output.IndexOf(QuestionMarker, StringComparison.OrdinalIgnoreCase);
+        if (i < 0) return null;
+        var q = output[(i + QuestionMarker.Length)..].Trim().Trim('`').Trim();
+        var nl = q.IndexOf('\n');
+        if (nl >= 0) q = q[..nl].Trim();
+        return q.Length == 0 ? null : q;
+    }
+
+    /// <summary>Wraps a parent message so the child can tell answers from new instructions.</summary>
+    public static string BuildParentMessage(string kind, string text) => kind == DelegationTurnKinds.Answer
+        ? $"{AnswerMarker} {text.Trim()}\n\nContinue the original task with this information. {ClarificationInstruction}"
+        : $"Follow-up from the requesting agent: {text.Trim()}\n\n{ClarificationInstruction}";
+
+    public static PolicyDecision ValidateMessage(DelegationTask task, SubAgentBinding? binding, DelegationMessageRequest? body, int maxTurns)
+    {
+        if (body is null || string.IsNullOrWhiteSpace(body.Text)) return PolicyDecision.Deny("text is required");
+        if (body.Text.Length > 8000) return PolicyDecision.Deny("text is too long (max 8000 chars)");
+        if (body.Kind is not null && body.Kind is not (DelegationTurnKinds.Answer or DelegationTurnKinds.Message))
+            return PolicyDecision.Deny("kind must be answer or message");
+        if (binding is null || !binding.Enabled) return PolicyDecision.Deny("binding missing or disabled", 403);
+        if (!binding.AllowedModes.Contains(DelegationModes.Sync))
+            return PolicyDecision.Deny("conversation messages require the sync mode on this binding", 403);
+        if (task.Mode != DelegationModes.Sync) return PolicyDecision.Deny("only sync delegations support conversation messages", 409);
+        if (string.IsNullOrWhiteSpace(task.SessionId)) return PolicyDecision.Deny("delegation has no native session to continue", 409);
+        if (task.Status is not (DelegationStatuses.AwaitingParent or DelegationStatuses.Completed or DelegationStatuses.UnderReview))
+            return PolicyDecision.Deny($"cannot message a delegation in status '{task.Status}'", 409);
+        if (task.Turns.Count + 2 > maxTurns) return PolicyDecision.Deny($"conversation turn budget {maxTurns} exhausted", 409);
+        if (ContainsSecret(body.Text)) return PolicyDecision.Deny("message appears to contain a secret or credential", 422);
+        return PolicyDecision.Ok;
+    }
+
     public static bool ContainsSecret(string? text) => !string.IsNullOrEmpty(text) && SecretRegex().IsMatch(text);
 
     public static string BuildDelegationPrompt(CreateDelegationRequest r, IReadOnlyList<string> criteria, string? feedback = null)
@@ -85,6 +129,9 @@ public static partial class SubAgentPolicy
         lines.Add("");
         lines.Add("## Evidence required");
         lines.Add("State briefly how your answer satisfies each acceptance criterion.");
+        lines.Add("");
+        lines.Add("## If you need information from the requesting agent");
+        lines.Add(ClarificationInstruction);
         if (!string.IsNullOrWhiteSpace(feedback))
         {
             lines.Add("");

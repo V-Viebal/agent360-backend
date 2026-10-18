@@ -60,6 +60,14 @@ public static class SubAgentSkillGenerator
         sb.AppendLine("- Use `check_agent_task(task_id)` to monitor background work. Wait at least 30 seconds between checks.");
         sb.AppendLine("- Respect each agent's timeout and max-parallel limit from the table.");
         sb.AppendLine();
+        sb.AppendLine("## Multi-turn conversations (clarifications and follow-ups)");
+        sb.AppendLine();
+        sb.AppendLine("- `chat_with_agent` returns `[SESSION: <id>]` on the first line. Keep that id for the whole conversation with that sub-agent.");
+        sb.AppendLine($"- Tell the sub-agent in your first message: if it needs missing information it must reply with one line `{SubAgentPolicy.QuestionMarker} <question>` and stop.");
+        sb.AppendLine($"- When a reply starts with `{SubAgentPolicy.QuestionMarker}`: answer it yourself if you know the fact, otherwise ask the user, then call `chat_with_agent(to_agent=<same agent>, session_id=<same SESSION id>, text=\"{SubAgentPolicy.AnswerMarker} <answer>\")`.");
+        sb.AppendLine("- Use the same `session_id` for follow-up corrections after a result, so the sub-agent keeps its context. Never open a new session for the same task.");
+        sb.AppendLine("- A conversation is one delegation: review only the final answer. Stop after 3 parent messages; if still unresolved, report the open question to the user.");
+        sb.AppendLine();
         sb.AppendLine("## Required Delegation Format");
         sb.AppendLine();
         sb.AppendLine("Every delegated task text must include these sections:");

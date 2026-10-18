@@ -13,6 +13,8 @@ public interface IQwenPawA2AClient
 {
     Task<IReadOnlyList<NativeAgentInfo>> ListAgentsAsync(CancellationToken ct);
     Task<NativeChatResult> ChatAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct);
+    /// <summary>Continue (or start, when <paramref name="sessionId"/> is null) a native chat session with the child.</summary>
+    Task<NativeChatResult> ChatInSessionAsync(string fromAgent, string toAgent, string text, string? sessionId, int timeoutSeconds, CancellationToken ct);
     Task<NativeSubmitResult> SubmitAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct);
     Task<NativeTaskStatus> GetTaskAsync(string nativeTaskId, string? toAgent, CancellationToken ct);
     Task<bool> StopChatAsync(string sessionId, string toAgent, CancellationToken ct);
@@ -128,9 +130,12 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         return list;
     }
 
-    public async Task<NativeChatResult> ChatAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct)
+    public Task<NativeChatResult> ChatAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct) =>
+        ChatInSessionAsync(fromAgent, toAgent, text, null, timeoutSeconds, ct);
+
+    public async Task<NativeChatResult> ChatInSessionAsync(string fromAgent, string toAgent, string text, string? existingSessionId, int timeoutSeconds, CancellationToken ct)
     {
-        var sessionId = BuildSessionId(fromAgent, toAgent);
+        var sessionId = string.IsNullOrWhiteSpace(existingSessionId) ? BuildSessionId(fromAgent, toAgent) : existingSessionId;
         using var cts = Linked(ct, timeoutSeconds);
         using var req = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
         {
@@ -422,7 +427,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             : doc.RootElement.TryGetProperty("messages", out var m) ? m : default;
         if (messages.ValueKind != JsonValueKind.Array) return [];
 
-        var calls = new Dictionary<string, (string Tool, string To, string Text, DateTimeOffset? At)>();
+        var calls = new Dictionary<string, (string Tool, string To, string Text, DateTimeOffset? At, string? Session, int Order)>();
         var outputs = new Dictionary<string, string>();
         foreach (var msg in messages.EnumerateArray())
         {
@@ -444,7 +449,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
                         var to = Str(args.RootElement, "to_agent");
                         if (!string.IsNullOrWhiteSpace(to))
                         {
-                            calls[callId] = (name, to.Trim(), Str(args.RootElement, "text") ?? "", at);
+                            calls[callId] = (name, to.Trim(), Str(args.RootElement, "text") ?? "", at, Str(args.RootElement, "session_id"), calls.Count);
                         }
                     }
                     catch (JsonException)
@@ -459,7 +464,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             }
         }
 
-        return calls.Select(kv =>
+        return calls.OrderBy(kv => kv.Value.Order).Select(kv =>
         {
             outputs.TryGetValue(kv.Key, out var output);
             return new DetectedNativeDelegation(
@@ -468,7 +473,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
                 agentId,
                 kv.Value.To,
                 kv.Value.Text,
-                Tag(output, "SESSION"),
+                Tag(output, "SESSION") ?? (string.IsNullOrWhiteSpace(kv.Value.Session) ? null : kv.Value.Session!.Trim()),
                 Tag(output, "TASK_ID"),
                 output,
                 chatId,

@@ -127,6 +127,22 @@ public sealed class SubAgentEndpoints : IEndpoint
             })
             .WithName("ReviewDelegation");
 
+        dlg.MapPost("{taskId}/messages", async (string taskId, [FromBody] DelegationMessageRequest? body, IServiceScopeFactory scopes,
+                SubAgentStore store, IOptions<SubAgentOptions> opt, ILogger<SubAgentEndpoints> logger) =>
+            {
+                if (!opt.Value.Enabled) return Disabled();
+                if (body is null || string.IsNullOrWhiteSpace(body.Text)) return Problem(PolicyDecision.Deny("text is required"));
+                return await AwaitOrDetach(InOwnScope(scopes, svc => svc.SendMessageAsync(taskId, body, CancellationToken.None)), taskId, store, opt.Value, logger);
+            })
+            .WithName("SendDelegationMessage")
+            .WithSummary("Parent answers a sub-agent question (awaiting_parent) or sends a follow-up in the same native session");
+
+        dlg.MapGet("{taskId}/turns", async (string taskId, SubAgentStore store) =>
+            await store.GetTaskAsync(taskId) is { } t
+                ? Results.Ok(new { id = t.Id, status = t.Status, session_id = t.SessionId, turns = t.Turns })
+                : Results.NotFound(new { message = "delegation not found" }))
+            .WithName("GetDelegationTurns");
+
         dlg.MapPost("{taskId}/retry", async (string taskId, [FromBody] RetryDelegationRequest? body, IServiceScopeFactory scopes, SubAgentStore store,
                 IOptions<SubAgentOptions> opt, ILogger<SubAgentEndpoints> logger) =>
             {
