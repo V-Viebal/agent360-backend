@@ -31,25 +31,26 @@ public sealed class BillingEndpoints : IEndpoint
         // Ensure database tables exist helper
         async Task EnsureTablesAsync(NpgsqlConnection conn, CancellationToken ct)
         {
-            await using var cmd = new NpgsqlCommand(@"
-                CREATE SCHEMA IF NOT EXISTS user_management;
+            var ddlStatements = new[]
+            {
+                @"CREATE SCHEMA IF NOT EXISTS user_management;",
 
-                CREATE TABLE IF NOT EXISTS user_management.""Wallets"" (
+                @"CREATE TABLE IF NOT EXISTS user_management.""Wallets"" (
                     ""TenantId"" text PRIMARY KEY,
                     ""BalanceTokens"" numeric(18, 4) NOT NULL DEFAULT 500000.0000,
                     ""Status"" text NOT NULL DEFAULT 'Active',
                     ""UpdatedAt"" timestamptz NOT NULL DEFAULT NOW()
-                );
+                );",
 
-                CREATE TABLE IF NOT EXISTS user_management.""TopupPackages"" (
+                @"CREATE TABLE IF NOT EXISTS user_management.""TopupPackages"" (
                     ""Id"" text PRIMARY KEY,
                     ""Name"" text NOT NULL,
                     ""FiatPrice"" numeric(18, 2) NOT NULL,
                     ""TokenYield"" numeric(18, 4) NOT NULL,
                     ""IsActive"" boolean NOT NULL DEFAULT true
-                );
+                );",
 
-                CREATE TABLE IF NOT EXISTS user_management.""PaymentTransactions"" (
+                @"CREATE TABLE IF NOT EXISTS user_management.""PaymentTransactions"" (
                     ""Id"" bigserial PRIMARY KEY,
                     ""TenantId"" text NOT NULL,
                     ""OrderCode"" bigint NOT NULL UNIQUE,
@@ -60,9 +61,9 @@ public sealed class BillingEndpoints : IEndpoint
                     ""PackageId"" text,
                     ""CreatedAt"" timestamptz NOT NULL DEFAULT NOW(),
                     ""CompletedAt"" timestamptz
-                );
+                );",
 
-                CREATE TABLE IF NOT EXISTS user_management.""LedgerTransactions"" (
+                @"CREATE TABLE IF NOT EXISTS user_management.""LedgerTransactions"" (
                     ""Id"" bigserial PRIMARY KEY,
                     ""TenantId"" text NOT NULL,
                     ""Amount"" numeric(18, 4) NOT NULL,
@@ -71,17 +72,22 @@ public sealed class BillingEndpoints : IEndpoint
                     ""ReferenceId"" text,
                     ""Description"" text NOT NULL,
                     ""CreatedAt"" timestamptz NOT NULL DEFAULT NOW()
-                );
+                );",
 
-                INSERT INTO user_management.""TopupPackages"" (""Id"", ""Name"", ""FiatPrice"", ""TokenYield"", ""IsActive"")
+                @"INSERT INTO user_management.""TopupPackages"" (""Id"", ""Name"", ""FiatPrice"", ""TokenYield"", ""IsActive"")
                 VALUES 
                     ('pkg_starter', 'Starter Pack (1M Tokens)', 100000, 1000000, true),
                     ('pkg_growth', 'Growth Pack (5M Tokens)', 450000, 5000000, true),
                     ('pkg_scale', 'Enterprise Pack (20M Tokens)', 1600000, 20000000, true)
                 ON CONFLICT (""Id"") DO UPDATE 
-                SET ""Name"" = EXCLUDED.""Name"", ""FiatPrice"" = EXCLUDED.""FiatPrice"", ""TokenYield"" = EXCLUDED.""TokenYield"";
-            ", conn);
-            await cmd.ExecuteNonQueryAsync(ct);
+                SET ""Name"" = EXCLUDED.""Name"", ""FiatPrice"" = EXCLUDED.""FiatPrice"", ""TokenYield"" = EXCLUDED.""TokenYield"";"
+            };
+
+            foreach (var ddl in ddlStatements)
+            {
+                await using var cmd = new NpgsqlCommand(ddl, conn);
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
         }
 
         // 1. Get Wallet status & Topup Packages (App360 pattern)
@@ -425,28 +431,42 @@ public sealed class BillingEndpoints : IEndpoint
 
                     var newBalance = currentBalance + tokenYield;
 
-                    await using (var creditCmd = new NpgsqlCommand(@"
+                    // 1. Update Payment Transaction to paid
+                    await using (var updateTxCmd = new NpgsqlCommand(@"
                         UPDATE user_management.""PaymentTransactions""
                         SET ""Status"" = 'paid', ""CompletedAt"" = NOW()
                         WHERE ""OrderCode"" = $1;
-
-                        UPDATE user_management.""Wallets""
-                        SET ""BalanceTokens"" = $2,
-                            ""UpdatedAt"" = NOW()
-                        WHERE ""TenantId"" = $3;
-
-                        INSERT INTO user_management.""LedgerTransactions""
-                        (""TenantId"", ""Amount"", ""BalanceAfter"", ""Type"", ""ReferenceId"", ""Description"", ""CreatedAt"")
-                        VALUES ($3, $4, $2, 'TOPUP', $5, $6, NOW());
                     ", conn, tx))
                     {
-                        creditCmd.Parameters.AddWithValue(orderCode);
-                        creditCmd.Parameters.AddWithValue(newBalance);
-                        creditCmd.Parameters.AddWithValue(tenantId);
-                        creditCmd.Parameters.AddWithValue(tokenYield);
-                        creditCmd.Parameters.AddWithValue($"order_{orderCode}");
-                        creditCmd.Parameters.AddWithValue($"PayOS Token Topup (+{tokenYield:#,##0} tokens)");
-                        await creditCmd.ExecuteNonQueryAsync(ct);
+                        updateTxCmd.Parameters.AddWithValue(orderCode);
+                        await updateTxCmd.ExecuteNonQueryAsync(ct);
+                    }
+
+                    // 2. Update Wallet balance
+                    await using (var updateWalletCmd = new NpgsqlCommand(@"
+                        UPDATE user_management.""Wallets""
+                        SET ""BalanceTokens"" = $1, ""UpdatedAt"" = NOW()
+                        WHERE ""TenantId"" = $2;
+                    ", conn, tx))
+                    {
+                        updateWalletCmd.Parameters.AddWithValue(newBalance);
+                        updateWalletCmd.Parameters.AddWithValue(tenantId);
+                        await updateWalletCmd.ExecuteNonQueryAsync(ct);
+                    }
+
+                    // 3. Insert Ledger Transaction record (App360 parity)
+                    await using (var insertLedgerCmd = new NpgsqlCommand(@"
+                        INSERT INTO user_management.""LedgerTransactions""
+                        (""TenantId"", ""Amount"", ""BalanceAfter"", ""Type"", ""ReferenceId"", ""Description"", ""CreatedAt"")
+                        VALUES ($1, $2, $3, 'TOPUP', $4, $5, NOW());
+                    ", conn, tx))
+                    {
+                        insertLedgerCmd.Parameters.AddWithValue(tenantId);
+                        insertLedgerCmd.Parameters.AddWithValue(tokenYield);
+                        insertLedgerCmd.Parameters.AddWithValue(newBalance);
+                        insertLedgerCmd.Parameters.AddWithValue($"order_{orderCode}");
+                        insertLedgerCmd.Parameters.AddWithValue($"PayOS Token Topup (+{tokenYield:#,##0} tokens)");
+                        await insertLedgerCmd.ExecuteNonQueryAsync(ct);
                     }
 
                     await tx.CommitAsync(ct);
