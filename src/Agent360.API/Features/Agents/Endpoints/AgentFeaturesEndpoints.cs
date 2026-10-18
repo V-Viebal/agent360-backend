@@ -42,7 +42,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     return Results.Content(await client.GetModelsCompactAsync(ct), "application/json");
                 }
                 var modelsJson = await client.GetModelsAsync(ct);
-                return Results.Content(modelsJson, "application/json");
+                return Results.Content(Agent360.API.Features.Agents.Security.SecretRedaction.RedactJson(modelsJson), "application/json");
             }
             catch (Exception)
             {
@@ -216,6 +216,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         group.MapPost("console/chat/stop", async ([FromBody] ConsoleChatStopRequestDto request, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
+            if (string.IsNullOrWhiteSpace(request?.SessionId))
+            {
+                return Results.Problem("session_id is required.", statusCode: StatusCodes.Status400BadRequest, title: "Bad Request");
+            }
             queueManager.SetSessionTurnActive(request.SessionId, false);
             var ok = await client.StopChatAsync(request, ct);
             return ok ? TypedResults.Ok(new { stopped = true }) : Results.Problem("Failed to stop chat execution or no active turn.");
@@ -245,7 +249,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         group.MapPost("iam/revoke", ([FromBody] RevokeIdentityCellRequest request) =>
         {
-            IamRevocationGuard.MarkIdentityCellRevoked(request.IdentityCellId, request.Reason);
+            if (string.IsNullOrWhiteSpace(request?.IdentityCellId))
+            {
+                return Results.Problem("identityCellId is required.", statusCode: StatusCodes.Status400BadRequest, title: "Bad Request");
+            }
+            IamRevocationGuard.MarkIdentityCellRevoked(request.IdentityCellId, request.Reason ?? "revoked");
             return TypedResults.Ok(new { success = true, revoked = request.IdentityCellId });
         })
         .WithName("RevokeIdentityCell")
@@ -412,7 +420,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             try
             {
                 var profile = await client.GetAgentProfileRawAsync(agentId, ct);
-                return Results.Content(profile, "application/json");
+                return Results.Content(Agent360.API.Features.Agents.Security.SecretRedaction.RedactJson(profile), "application/json");
             }
             catch (HttpRequestException)
             {

@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
+using Agent360.API.Features.Agents.Security;
 using Agent360.API.Features.Agents.Services;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -131,7 +132,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 if (cacheable && cache.TryGetValue(cacheKey, out CachedResponse? cached) && cached is not null)
                 {
                     context.Response.Headers["X-Agent360-Cache"] = "HIT";
-                    return Results.Bytes(cached.Body, cached.ContentType);
+                    return Results.Bytes(SecretRedaction.RedactJson(cached.Body), cached.ContentType);
                 }
                 if (!HttpMethods.IsGet(context.Request.Method))
                 {
@@ -157,6 +158,21 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     body = ms.ToArray();
                 }
                 var contentType = context.Request.ContentType;
+                // The UI saves by merging a (redacted) GET back into the PUT body: put the live secrets back
+                // at the same JSON paths so a save never overwrites a credential with the mask.
+                if (body is not null && contentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true
+                    && System.Text.Encoding.UTF8.GetString(body).Contains(SecretRedaction.Mask, StringComparison.Ordinal))
+                {
+                    string? live = null;
+                    try
+                    {
+                        using var current = await routing.SendAsync(target.Instance!, HttpMethod.Get,
+                            $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/{clean}", agentProfileHeader: target.TargetAgentProfile, ct: ct);
+                        if (current.IsSuccessStatusCode) live = await current.Content.ReadAsStringAsync(ct);
+                    }
+                    catch (HttpRequestException) { }
+                    body = System.Text.Encoding.UTF8.GetBytes(SecretRedaction.RestoreMaskedValues(System.Text.Encoding.UTF8.GetString(body), live));
+                }
 
                 try
                 {
@@ -184,13 +200,13 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                         cache.Set(cacheKey, new CachedResponse(payload, type), TimeSpan.FromSeconds(30));
                         cache.Set(lastGoodKey, new CachedResponse(payload, type), TimeSpan.FromMinutes(30));
                         context.Response.Headers["X-Agent360-Cache"] = "MISS";
-                        return Results.Bytes(payload, type);
+                        return Results.Bytes(SecretRedaction.RedactJson(payload), type);
                     }
 
                     if (cacheable && (int)response.StatusCode >= 500 && cache.TryGetValue(lastGoodKey, out CachedResponse? staleOnError) && staleOnError is not null)
                     {
                         context.Response.Headers["X-Agent360-Cache"] = "STALE";
-                        return Results.Bytes(staleOnError.Body, staleOnError.ContentType);
+                        return Results.Bytes(SecretRedaction.RedactJson(staleOnError.Body), staleOnError.ContentType);
                     }
 
                     context.Response.StatusCode = (int)response.StatusCode;
@@ -201,6 +217,15 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                             context.Response.Headers[header.Key] = header.Value.ToArray();
                         }
                     }
+                    var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+                    if (mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Agent configs carry channel bot tokens and MCP env secrets: never return them raw.
+                        var json = SecretRedaction.RedactJson(await response.Content.ReadAsByteArrayAsync(ct));
+                        context.Response.Headers.ContentLength = json.Length;
+                        await context.Response.Body.WriteAsync(json, ct);
+                        return Results.Empty;
+                    }
                     await response.Content.CopyToAsync(context.Response.Body, ct);
                     return Results.Empty;
                 }
@@ -209,9 +234,11 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     if (cacheable && cache.TryGetValue(lastGoodKey, out CachedResponse? stale) && stale is not null)
                     {
                         context.Response.Headers["X-Agent360-Cache"] = "STALE";
-                        return Results.Bytes(stale.Body, stale.ContentType);
+                        return Results.Bytes(SecretRedaction.RedactJson(stale.Body), stale.ContentType);
                     }
-                    return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway, title: "Agent runtime unavailable");
+                    // Do not echo transport errors (internal hosts/ports) to anonymous callers.
+                    context.Response.Headers.RetryAfter = "5";
+                    return Results.Problem("The agent runtime did not answer. Retry shortly.", statusCode: StatusCodes.Status502BadGateway, title: "Agent runtime unavailable");
                 }
             })
             .MapToApiVersion(ApiVersion.Default)

@@ -32,8 +32,11 @@ public sealed class SessionQueueManager
         return _activeSessionTurns.TryGetValue(sessionId, out var active) && active;
     }
 
-    public void SetSessionTurnActive(string sessionId, bool active)
+    public void SetSessionTurnActive(string? sessionId, bool active)
     {
-        _activeSessionTurns[sessionId] = active;
+        if (string.IsNullOrWhiteSpace(sessionId)) return;
+        // Only active turns are tracked; finished sessions are removed so the map cannot grow without bound.
+        if (active) _activeSessionTurns[sessionId] = true;
+        else _activeSessionTurns.TryRemove(sessionId, out _);
     }
 }

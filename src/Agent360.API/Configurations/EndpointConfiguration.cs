@@ -48,6 +48,28 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddRateLimiter(o =>
             {
                 o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                o.OnRejected = (ctx, _) =>
+                {
+                    ctx.HttpContext.Response.Headers.RetryAfter = "10";
+                    return ValueTask.CompletedTask;
+                };
+                // Global per-client budget for the (mostly anonymous) API: generous for the SPA's polling, but
+                // stops scripted floods. Writes/chat get a tighter bucket than reads; health probes are exempt.
+                o.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<HttpContext, string>(http =>
+                {
+                    var path = http.Request.Path.Value ?? "";
+                    if (path is "/health" or "/alive" || !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                        return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter("exempt");
+                    var ip = http.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+                        ?? http.Request.Headers["X-Real-IP"].FirstOrDefault()
+                        ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    var write = !HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method) && !HttpMethods.IsOptions(http.Request.Method);
+                    return write
+                        ? System.Threading.RateLimiting.RateLimitPartition.GetTokenBucketLimiter("w:" + ip, _ => new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
+                            { TokenLimit = 60, TokensPerPeriod = 30, ReplenishmentPeriod = TimeSpan.FromSeconds(10), QueueLimit = 0, AutoReplenishment = true })
+                        : System.Threading.RateLimiting.RateLimitPartition.GetTokenBucketLimiter("r:" + ip, _ => new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
+                            { TokenLimit = 600, TokensPerPeriod = 200, ReplenishmentPeriod = TimeSpan.FromSeconds(10), QueueLimit = 0, AutoReplenishment = true });
+                });
                 // Per client IP: preview polling (1 req/5 s) and focus/pages calls fit far below this.
                 o.AddPolicy(Agent360.API.Features.Agents.Browser.AgentBrowserCdpEndpoint.RateLimitPolicy, http =>
                     System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
