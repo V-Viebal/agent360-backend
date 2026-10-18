@@ -26,10 +26,10 @@ public sealed class AgentBrowserEndpointHostTests : IAsyncLifetime
         var b = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
         b.WebHost.UseUrls("http://127.0.0.1:0");
         b.Configuration["Cors:AllowedOrigins:0"] = "https://agent360.antares.vn";
-        // Point every instance at a closed local port so the test never dials the fleet.
+        // Point every instance at a name that never resolves so the test never dials the fleet.
         foreach (var k in new[] { "core", "gm", "climax" })
         {
-            b.Configuration[$"QwenPaw:Instances:{k}:BrowserCdpUrl"] = "http://127.0.0.1:9";
+            b.Configuration[$"QwenPaw:Instances:{k}:BrowserCdpUrl"] = "http://a360-test-no-such-browser:9";
         }
         b.Services.AddRouting();
         b.Services.AddApiVersioning(o => o.DefaultApiVersion = new Asp.Versioning.ApiVersion(1));
@@ -80,7 +80,7 @@ public sealed class AgentBrowserEndpointHostTests : IAsyncLifetime
         using var http = new HttpClient { BaseAddress = _base };
         (await HandshakeAsync("mons", "https://agent360.antares.vn")).Should().Be(HttpStatusCode.NotFound);
         var body = await (await http.GetAsync("api/v1/agents/mons/browser/pages", Ct)).Content.ReadAsStringAsync(Ct);
-        body.Should().NotContain("127.0.0.1").And.NotContain("ws://");
+        body.Should().NotContain("a360-test-no-such-browser").And.NotContain("ws://");
     }
 
     [Theory]
@@ -96,6 +96,6 @@ public sealed class AgentBrowserEndpointHostTests : IAsyncLifetime
         var res = await http.GetAsync("api/v1/agents/gm-boc/browser", Ct);
         res.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await res.Content.ReadAsStringAsync(Ct);
-        json.Should().Contain("browser-gm-21er").And.NotContain("127.0.0.1").And.NotContain("cdpUrl").And.NotContain("browserContextId");
+        json.Should().Contain("browser-gm-21er").And.NotContain("a360-test-no-such-browser").And.NotContain("cdpUrl").And.NotContain("browserContextId");
     }
 }
