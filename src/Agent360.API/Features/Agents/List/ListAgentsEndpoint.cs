@@ -21,9 +21,22 @@ public sealed class ListAgentsEndpoint : IEndpoint
                 CurrentUser currentUser,
                 IQwenPawClient client,
                 IConfiguration config,
+                Microsoft.AspNetCore.Authorization.IAuthorizationService authorization,
                 CancellationToken cancellationToken) =>
             {
+                // The Admin policy (operator token, Logto admin role/scope, AdminSubjects) sees the whole fleet.
+                // Without this the operator UI / A2A / E2E lost the agent list once the endpoint stopped
+                // requiring "Admin" (operator tokens carry no user claims).
+                var adminByPolicy = (await authorization.AuthorizeAsync(context.User, context, "Admin")).Succeeded;
+                if (!adminByPolicy && context.User.Identity?.IsAuthenticated != true)
+                {
+                    return TypedResults.Unauthorized();
+                }
                 var allAgents = await client.GetAgentsAsync(cancellationToken);
+                if (adminByPolicy)
+                {
+                    return TypedResults.Ok(allAgents);
+                }
 
                 // 1. Check if caller has Admin role / claim / token
                 var user = context.User;
@@ -98,6 +111,6 @@ public sealed class ListAgentsEndpoint : IEndpoint
             .WithSummary("List agents (Infra-wide for Admin, Assigned-only for Members)")
             .WithDescription("Retrieves the list of active agents: all infra agents if caller is admin, or only owned agents if member.")
             .Produces<IReadOnlyList<AgentSummaryResponse>>()
-            .RequireAuthorization();
+            .AllowAnonymous();
     }
 }
