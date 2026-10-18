@@ -144,6 +144,11 @@ public sealed class AgentBrowserDirectoryTests
         AgentBrowserCdpEndpoint.IsAllowedOrigin(ctx, ["https://agent360.antares.vn"]).Should().Be(ok);
     }
 
+    [Fact]
+    public void CorsOriginsFromOneEnvValueAreSplit() =>
+        new Agent360.API.Options.CorsOptions { AllowedOrigins = ["https://a.example;https://b.example, http://localhost:5173"] }
+            .AllowedOrigins.Should().Equal("https://a.example", "https://b.example", "http://localhost:5173");
+
     private sealed class NoHttpFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();
