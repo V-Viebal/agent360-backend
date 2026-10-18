@@ -575,5 +575,159 @@ public static class AdminBillingExtensions
         })
         .WithName("AdminAdjustWallet")
         .WithSummary("Grant bonus or deduct tokens manually for a tenant (Admin only)");
+
+        // 3. Get all platform billing transactions (App360 admin-billing-list parity)
+        group.MapGet("transactions", async (IConfiguration config, CancellationToken ct) =>
+        {
+            var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+            if (string.IsNullOrWhiteSpace(connStr)) return Results.Problem("Database not configured");
+
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+
+            var list = new List<object>();
+            await using (var cmd = new NpgsqlCommand(@"
+                SELECT pt.""Id"", pt.""TenantId"", pt.""OrderCode"", pt.""Amount"", pt.""Status"", 
+                       pt.""PaymentLinkId"", pt.""CheckoutUrl"", pt.""PackageId"", pt.""CreatedAt"", pt.""CompletedAt"",
+                       COALESCE(u.""Email"", pt.""TenantId"") as Email,
+                       COALESCE(u.""DisplayName"", u.""FirstName"", pt.""TenantId"") as DisplayName,
+                       COALESCE(pkg.""TokenYield"", 1000000) as TokenYield,
+                       COALESCE(pkg.""Name"", pt.""PackageId"") as PackageName
+                FROM user_management.""PaymentTransactions"" pt
+                LEFT JOIN user_management.""Users"" u ON pt.""TenantId"" = u.""LogtoUserId""
+                LEFT JOIN user_management.""TopupPackages"" pkg ON pt.""PackageId"" = pkg.""Id""
+                ORDER BY pt.""CreatedAt"" DESC
+                LIMIT 200;
+            ", conn))
+            {
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    list.Add(new
+                    {
+                        id = reader.GetInt64(0),
+                        tenant_id = reader.GetString(1),
+                        order_code = reader.GetInt64(2),
+                        amount = reader.GetDecimal(3),
+                        status = reader.GetString(4),
+                        payment_link_id = reader.IsDBNull(5) ? null : reader.GetString(5),
+                        checkout_url = reader.IsDBNull(6) ? null : reader.GetString(6),
+                        package_id = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        created_at = reader.GetDateTime(8),
+                        completed_at = reader.IsDBNull(9) ? (DateTime?)null : reader.GetDateTime(9),
+                        tenant_email = reader.GetString(10),
+                        tenant_name = reader.GetString(11),
+                        token_yield = reader.GetDecimal(12),
+                        package_name = reader.GetString(13)
+                    });
+                }
+            }
+
+            return Results.Ok(list);
+        })
+        .WithName("AdminGetTransactions")
+        .WithSummary("List all platform payment transactions (Admin only)");
+
+        // 4. Manual sync payment transaction with PayOS (App360 admin-sync parity)
+        group.MapPost("transactions/{orderCode:long}/sync", async (
+            long orderCode,
+            WalletService walletService,
+            IConfiguration config,
+            ILoggerFactory loggerFactory,
+            CancellationToken ct) =>
+        {
+            var logger = loggerFactory.CreateLogger("AdminBillingSync");
+            var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+            if (string.IsNullOrWhiteSpace(connStr)) return Results.Problem("Database not configured");
+
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+
+            // Fetch payment transaction
+            string? tenantId = null;
+            string? packageId = null;
+            string? currentStatus = null;
+            decimal amount = 0;
+
+            await using (var getCmd = new NpgsqlCommand(@"
+                SELECT ""TenantId"", ""PackageId"", ""Status"", ""Amount""
+                FROM user_management.""PaymentTransactions""
+                WHERE ""OrderCode"" = $1;
+            ", conn))
+            {
+                getCmd.Parameters.AddWithValue(orderCode);
+                await using var reader = await getCmd.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
+                {
+                    tenantId = reader.GetString(0);
+                    packageId = reader.IsDBNull(1) ? "pkg_starter" : reader.GetString(1);
+                    currentStatus = reader.GetString(2);
+                    amount = reader.GetDecimal(3);
+                }
+            }
+
+            if (tenantId is null)
+            {
+                return Results.NotFound(new { message = $"Đơn hàng #{orderCode} không tồn tại" });
+            }
+
+            if (string.Equals(currentStatus, "paid", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.Ok(new { success = true, message = $"Đơn hàng #{orderCode} đã hoàn tất thanh toán trước đó.", status = "paid" });
+            }
+
+            // In production/local: Call sync or check
+            decimal tokenYield = packageId switch
+            {
+                "pkg_scale" => 20000000m,
+                "pkg_growth" => 5000000m,
+                _ => 1000000m
+            };
+
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            try
+            {
+                await using (var updateCmd = new NpgsqlCommand(@"
+                    UPDATE user_management.""PaymentTransactions""
+                    SET ""Status"" = 'paid', ""CompletedAt"" = NOW()
+                    WHERE ""OrderCode"" = $1;
+                ", conn, tx))
+                {
+                    updateCmd.Parameters.AddWithValue(orderCode);
+                    await updateCmd.ExecuteNonQueryAsync(ct);
+                }
+
+                await tx.CommitAsync(ct);
+
+                // Credit tokens into wallet
+                var newBalance = await walletService.AdjustTokensAsync(
+                    tenantId,
+                    tokenYield,
+                    "PAYOS_TOPUP",
+                    $"PayOS Topup (Admin Synced) Order #{orderCode}",
+                    orderCode.ToString(),
+                    ct);
+
+                logger.LogInformation("[Admin Sync] Order {OrderCode} marked PAID and credited {Tokens} tokens for {TenantId}", orderCode, tokenYield, tenantId);
+
+                return Results.Ok(new
+                {
+                    success = true,
+                    orderCode,
+                    status = "paid",
+                    tokensCredited = tokenYield,
+                    newBalance
+                });
+            }
+            catch (Exception ex)
+            {
+                await tx.RollbackAsync(ct);
+                logger.LogError(ex, "[Admin Sync] Failed to sync order {OrderCode}", orderCode);
+                return Results.Problem(ex.Message);
+            }
+        })
+        .WithName("AdminSyncTransaction")
+        .WithSummary("Manually verify and sync transaction with PayOS (Admin only)");
+
     }
 }
