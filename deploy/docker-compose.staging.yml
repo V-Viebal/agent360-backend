@@ -1,0 +1,48 @@
+# Agent360 staging (mirrors production topology on 2nd; artifacts deployed by CI into /opt/agent360-staging)
+name: agent360-staging
+services:
+  agent360-frontend-staging:
+    image: nginx:alpine
+    pull_policy: missing
+    container_name: agent360-frontend-staging
+    restart: unless-stopped
+    volumes:
+      - /opt/agent360-staging/frontend-dist:/usr/share/nginx/html:ro
+      - /opt/agent360-staging/nginx-conf:/etc/nginx/conf.d:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.agent360-frontend-staging.rule=Host(`staging-agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-frontend-staging.entrypoints=https"
+      - "traefik.http.routers.agent360-frontend-staging.tls=true"
+      - "traefik.http.routers.agent360-frontend-staging.tls.certresolver=letsencrypt"
+      - "traefik.http.services.agent360-frontend-staging.loadbalancer.server.port=80"
+    networks: [coolify]
+
+  agent360-backend-staging:
+    image: ghcr.io/v-viebal/agent360-backend:latest
+    pull_policy: never   # runtime-only image; code is bind-mounted at /app
+    container_name: agent360-backend-staging
+    restart: unless-stopped
+    env_file: [/opt/agent360-staging/deploy/backend.env]
+    volumes:
+      - /opt/agent360-staging/backend:/app
+      - /opt/agent360-staging/data:/data
+    environment:
+      ASPNETCORE_ENVIRONMENT: Staging
+      QwenPaw__BaseUrl: https://ai.hmz.one
+      Agent360__SubAgents__StoragePath: /data/subagents
+      Cors__AllowedOrigins: "https://staging-agent360.antares.vn;http://localhost:5173"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.agent360-backend-staging.rule=Host(`api-staging-agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-backend-staging.entrypoints=https"
+      - "traefik.http.routers.agent360-backend-staging.tls=true"
+      - "traefik.http.routers.agent360-backend-staging.tls.certresolver=letsencrypt"
+      - "traefik.http.services.agent360-backend-staging.loadbalancer.server.port=8080"
+    networks: [coolify]
+
+networks:
+  coolify:
+    external: true

@@ -35,3 +35,27 @@ jobs:
           test ! -e website
           bash -n scripts/verify-separation.sh
           echo "Agent360 overlay contract: PASS"
+
+  subagent-postgres:
+    # Real PostgreSQL for the SubAgent registry/delegation ledger (schema, upsert, archive, legacy JSON import).
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agent360
+          POSTGRES_PASSWORD: agent360-ci
+          POSTGRES_DB: agent360_subagents_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agent360" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AGENT360_SUBAGENTS_TEST_PG: Host=localhost;Port=5432;Database=agent360_subagents_ci;Username=agent360;Password=agent360-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Contract tests with real PostgreSQL (SubAgentPostgresPersistenceTests no longer skipped)
+        run: dotnet test tests/Agent360.API.ContractTests -c Release
+
