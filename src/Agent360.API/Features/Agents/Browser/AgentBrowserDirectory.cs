@@ -64,6 +64,9 @@ public sealed class AgentBrowserDirectory(
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["Planthy_Dev_Agent_0.1"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
         ["climax"] = new("climax-browser", "https://browser-climax.antares.vn", "http://100.70.201.83:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
+        // Planthy has its own browser on 5th, exposed on the tailnet at :19224 (climax owns :19222 there).
+        ["planthy"] = new("planthy-browser-rff7", "https://browser-planthy.hmz.one", "http://100.70.201.83:19224",
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["Planthy_Dev_Agent_0.1"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
     };
 
     public bool TryResolve(string agentId, out ResolvedInstanceTarget target, out string service, out string viewerUrl, out string cdpUrl, out string? profile)
