@@ -46,6 +46,22 @@ public sealed class OperatorAuthFilter(
                 title: "Unauthorized"));
     }
 
+    /// <summary>True only when a configured operator token is presented (never true by configuration alone).</summary>
+    public static bool PresentsOperatorToken(HttpContext http, Agent360SecurityOptions opt)
+    {
+        if (string.IsNullOrWhiteSpace(opt.OperatorToken)) return false;
+        var presented = http.Request.Headers[HeaderName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(presented))
+        {
+            var auth = http.Request.Headers.Authorization.FirstOrDefault();
+            if (auth is not null && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) presented = auth[7..].Trim();
+        }
+        if (string.IsNullOrEmpty(presented)) return false;
+        var a = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
+        var b = SHA256.HashData(Encoding.UTF8.GetBytes(opt.OperatorToken.Trim()));
+        return CryptographicOperations.FixedTimeEquals(a, b);
+    }
+
     public static bool IsAuthorized(HttpContext http, Agent360SecurityOptions opt, IHostEnvironment env)
     {
         if (!opt.RequireOperatorForWrites) return true;

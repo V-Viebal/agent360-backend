@@ -110,6 +110,17 @@ try
         {
             policy.RequireAssertion(ctx =>
             {
+                // Operator token (same secret as Agent360 writes / sensitive reads) is an admin credential too:
+                // the operator UI, A2A control plane and E2E checks list the fleet without a Logto session.
+                if (ctx.Resource is HttpContext http)
+                {
+                    var sec = http.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>().CurrentValue;
+                    if (Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.PresentsOperatorToken(http, sec))
+                    {
+                        return true;
+                    }
+                }
+
                 var user = ctx.User;
                 if (!user.Identity?.IsAuthenticated ?? true) return false;
 
