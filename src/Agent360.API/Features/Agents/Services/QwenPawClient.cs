@@ -427,6 +427,43 @@ public sealed class QwenPawClient : IQwenPawClient
     public async Task<string> GetModelsAsync(CancellationToken cancellationToken = default) =>
         await CachedAsync("agent360:models", TimeSpan.FromMinutes(2), () => GetStringAsync("mons", "models", global: true, ct: cancellationToken));
 
+    /// <summary>Provider catalog trimmed to id/name/model ids (no discovery metadata or key prefixes).</summary>
+    public async Task<string> GetModelsCompactAsync(CancellationToken cancellationToken = default) =>
+        await CachedAsync("agent360:models:compact", TimeSpan.FromMinutes(2), async () =>
+        {
+            var raw = await GetModelsAsync(cancellationToken);
+            var providers = JsonNode.Parse(raw) as JsonArray ?? [];
+            var compact = new JsonArray();
+            foreach (var p in providers.OfType<JsonObject>())
+            {
+                var models = new JsonArray();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var list in new[] { "discovered_models", "extra_models", "models" })
+                {
+                    if (p[list] is not JsonArray arr)
+                    {
+                        continue;
+                    }
+                    foreach (var m in arr.OfType<JsonObject>())
+                    {
+                        var id = m["id"]?.GetValue<string>();
+                        if (string.IsNullOrWhiteSpace(id) || !seen.Add(id))
+                        {
+                            continue;
+                        }
+                        models.Add(new JsonObject { ["id"] = id, ["name"] = m["name"]?.GetValue<string>() ?? id });
+                    }
+                }
+                compact.Add(new JsonObject
+                {
+                    ["id"] = p["id"]?.GetValue<string>(),
+                    ["name"] = p["name"]?.GetValue<string>(),
+                    ["models"] = models
+                });
+            }
+            return compact.ToJsonString();
+        });
+
     // ------------------------------------------------------------------
     // Chats
     // ------------------------------------------------------------------
@@ -519,7 +556,42 @@ public sealed class QwenPawClient : IQwenPawClient
     // Approvals (global router, resolved by session tree)
     // ------------------------------------------------------------------
 
+    private static readonly TimeSpan ApprovalsCacheTtl = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Fleet-wide pending approvals. Every open approvals SSE stream and page poll shares one cached snapshot
+    /// (TTL 3 s, single-flight per session key), so N browser tabs cost one fan-out instead of N x instances.
+    /// A runtime that times out is backed off for 20 s and its last good list is served meanwhile, instead of
+    /// stacking a timeout on an already overloaded node every poll.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> ApprovalGates = new();
+
     public async Task<ApprovalListResponseDto?> GetApprovalsAsync(string? sessionId = null, CancellationToken cancellationToken = default)
+    {
+        var key = $"agent360:approvals:{sessionId ?? "*"}";
+        if (_cache.TryGetValue(key, out ApprovalListResponseDto? fresh) && fresh is not null)
+        {
+            return fresh;
+        }
+        var gate = ApprovalGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_cache.TryGetValue(key, out fresh) && fresh is not null)
+            {
+                return fresh;
+            }
+            var result = await LoadApprovalsAsync(sessionId, cancellationToken);
+            _cache.Set(key, result, ApprovalsCacheTtl);
+            return result;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<ApprovalListResponseDto> LoadApprovalsAsync(string? sessionId, CancellationToken cancellationToken)
     {
         var url = string.IsNullOrWhiteSpace(sessionId)
             ? "approval/list"
@@ -527,17 +599,32 @@ public sealed class QwenPawClient : IQwenPawClient
 
         var lists = await Task.WhenAll(_routingService.Instances.Select(async instance =>
         {
+            var lastGoodKey = $"agent360:approvals:{instance.Key}:{sessionId ?? "*"}:last-good";
+            var backoffKey = $"agent360:approvals:{instance.Key}:backoff";
+            if (_cache.TryGetValue(backoffKey, out bool _))
+            {
+                return _cache.TryGetValue(lastGoodKey, out ApprovalListResponseDto? held) ? held : null;
+            }
             try
             {
-                using var response = await _routingService.SendAsync(instance, HttpMethod.Get, url, timeout: TimeSpan.FromSeconds(5), ct: cancellationToken);
-                return response.IsSuccessStatusCode
-                    ? await response.Content.ReadFromJsonAsync<ApprovalListResponseDto>(cancellationToken)
-                    : null;
+                using var response = await _routingService.SendAsync(instance, HttpMethod.Get, url, timeout: TimeSpan.FromSeconds(4), ct: cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+                var list = await response.Content.ReadFromJsonAsync<ApprovalListResponseDto>(cancellationToken);
+                _cache.Remove(backoffKey);
+                if (list is not null)
+                {
+                    _cache.Set(lastGoodKey, list, TimeSpan.FromMinutes(2));
+                }
+                return list;
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning(ex, "Approvals unavailable on {Instance}", instance.Key);
-                return null;
+                _cache.Set(backoffKey, true, TimeSpan.FromSeconds(20));
+                _logger.LogWarning("Approvals unavailable on {Instance} ({Error}); backing off 20s", instance.Key, ex.Message);
+                return _cache.TryGetValue(lastGoodKey, out ApprovalListResponseDto? stale) ? stale : null;
             }
         }));
 
@@ -553,6 +640,8 @@ public sealed class QwenPawClient : IQwenPawClient
 
     private async Task<ApprovalActionResponseDto?> ResolveApprovalAsync(string action, ApprovalActionRequestDto request, CancellationToken ct)
     {
+        _cache.Remove("agent360:approvals:*");
+        _cache.Remove($"agent360:approvals:{request.SessionId}");
         // The request id only exists on one runtime; the others answer 404.
         foreach (var instance in _routingService.Instances)
         {

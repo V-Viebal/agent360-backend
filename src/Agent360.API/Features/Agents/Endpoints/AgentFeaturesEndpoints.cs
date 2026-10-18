@@ -27,10 +27,20 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // ==========================================
 
         // 1a. List available LLM providers and models from catalog
-        group.MapGet("models", async (IQwenPawClient client, CancellationToken ct) =>
+        group.MapMethods("models", ["GET", "HEAD"], async ([FromQuery] string? view, HttpContext http, IQwenPawClient client, CancellationToken ct) =>
         {
             try
             {
+                // HEAD is used as a cheap reachability/latency probe by the workspace.
+                if (HttpMethods.IsHead(http.Request.Method))
+                {
+                    return Results.Ok();
+                }
+                // ~820 KB raw provider catalog; ?view=compact returns only what the model picker needs (~a few KB).
+                if (string.Equals(view, "compact", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.Content(await client.GetModelsCompactAsync(ct), "application/json");
+                }
                 var modelsJson = await client.GetModelsAsync(ct);
                 return Results.Content(modelsJson, "application/json");
             }

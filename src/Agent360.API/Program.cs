@@ -110,6 +110,16 @@ try
 
     builder.ConfigureCors();
 
+    // Agent lists/chats/catalogs are 30-800 KB JSON; compress for every client (internal callers bypass Cloudflare).
+    builder.Services.AddResponseCompression(opts =>
+    {
+        opts.EnableForHttps = true;
+        opts.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+        opts.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+    });
+    builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+    builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+
     builder.Services.AddEndpoints(typeof(Program).Assembly);
 
     builder.Services.AddMediator(opts =>
@@ -142,6 +152,8 @@ try
     // Their fixture applies real migrations; core seeding remains independent.
     // This flag never disables Staging/Production core seeding.
     var isTestHost = app.Configuration.GetValue<bool>("Testing:IsTestHost");
+    // text/event-stream is not in the default MIME list, so SSE chat/approval streams stay uncompressed and unbuffered.
+    app.UseResponseCompression();
     app.MapDefaultEndpoints();
 
     app.UseExceptionHandler(new ExceptionHandlerOptions
