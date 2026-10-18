@@ -3,7 +3,8 @@
 # The controller injects AGENTTEAMS_MANAGER_MATRIX_TOKEN into the manager container once; if Tuwunel revokes it the
 # manager's Matrix channel silently stops (seen 2026-10-11 .. 2026-10-17, M_UNKNOWN_TOKEN). This guard:
 #   1. calls /whoami with the token the manager actually uses (openclaw.json in the manager workspace);
-#   2. on 401 logs ALERT and (MANAGER_MATRIX_AUTOHEAL=1, default) writes a valid token into openclaw.json: the
+#   2. on 401 logs ALERT and (MANAGER_MATRIX_AUTOHEAL=1, default) writes a valid token into openclaw.json (local and
+#      the MinIO copy the manager re-pulls every 60 s): the
 #      controller-injected env token when it is still valid, else one minted through the appservice login.
 #      The manager's openclaw.json watcher re-bridges the change without a container restart.
 # No token value is ever printed.
@@ -29,6 +30,23 @@ write_cfg_token() { # stdin = token. The manager watcher re-bridges openclaw.jso
 import json,sys
 p=sys.argv[1]; t=sys.stdin.read().strip(); d=json.load(open(p))
 d["channels"]["matrix"]["accessToken"]=t; json.dump(d,open(p,"w"),indent=2)' "$CFG"
+  # Root cause seen 2026-10-18: in k8s runtime start-manager-agent.sh pulls
+  # ${AGENTTEAMS_STORAGE_PREFIX}/manager/openclaw.json every 60 s and overwrites the local file, so a stale token
+  # there keeps coming back. That prefix is the external Core MinIO (storage.hmz.one, controller alias `agentteams`),
+  # which the manager's own credentials cannot write. Publish the healed file there through the controller.
+  # The controller regenerates agents/manager/openclaw.json from data/worker-creds/default.env
+  # (WORKER_MATRIX_TOKEN), which is the real source of the stale token: fix it first.
+  local creds=${MANAGER_WORKER_CREDS:-/data/agentteams/agentteams-core/data/worker-creds/default.env}
+  if [ -f "$creds" ]; then
+    python3 -c '
+import json,re,sys
+c,cfg=sys.argv[1],sys.argv[2]; t=json.load(open(cfg))["channels"]["matrix"]["accessToken"]
+s=open(c).read(); n=re.sub(r"^WORKER_MATRIX_TOKEN=.*$", "WORKER_MATRIX_TOKEN=\"%s\"" % t, s, flags=re.M)
+if n!=s: open(c,"w").write(n)' "$creds" "$CFG"
+  fi
+  docker cp "$CFG" "$CTRL:/tmp/.guard-openclaw.json"
+  docker exec "$CTRL" sh -c 'mc cp /tmp/.guard-openclaw.json agentteams/agentteams-core/manager/openclaw.json >/dev/null && mc cp /tmp/.guard-openclaw.json agentteams/agentteams-core/agents/manager/openclaw.json >/dev/null; rc=$?; rm -f /tmp/.guard-openclaw.json; exit $rc' \
+    || echo "$(date -u +%FT%TZ) WARN could not publish healed openclaw.json to the storage prefix (token will revert)"
 }
 code=$(whoami "$(cfg_token)")
 echo "$(date -u +%FT%TZ) manager_matrix_whoami=$code" > "$LOG"
