@@ -27,6 +27,6 @@ public sealed class ListAgentsEndpoint : IEndpoint
             .WithSummary("List all infra agents")
             .WithDescription("Retrieves the list of active agents running on infrastructure mapped from the QwenPaw runtime adapter.")
             .Produces<IReadOnlyList<AgentSummaryResponse>>()
-            .AllowAnonymous();
+            .RequireAuthorization("Admin");
     }
 }

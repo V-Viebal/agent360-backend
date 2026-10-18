@@ -104,7 +104,40 @@ try
 
     builder.ConfigureAuthentication();
     builder.Services.AddPermissionAuthorization();
-    builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(options =>
+    {
+        options.AddPolicy("Admin", policy =>
+        {
+            policy.RequireAssertion(ctx =>
+            {
+                var user = ctx.User;
+                if (!user.Identity?.IsAuthenticated ?? true) return false;
+
+                // 1. Roles claim check (case-insensitive for 'admin' or 'ADMIN')
+                var roles = user.FindAll("roles").Concat(user.FindAll(System.Security.Claims.ClaimTypes.Role)).Select(c => c.Value);
+                if (roles.Any(r => string.Equals(r, "admin", StringComparison.OrdinalIgnoreCase) || string.Equals(r, "administrator", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+
+                // 2. Scopes claim check (contains 'admin:all')
+                var scopes = user.FindAll("scope").Concat(user.FindAll("scp")).SelectMany(c => c.Value.Split(' '));
+                if (scopes.Any(s => string.Equals(s, "admin:all", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+
+                // 3. M2M service token sub check
+                var sub = user.FindFirst("sub")?.Value;
+                if (string.Equals(sub, "skyer-m2m-backend", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                return false;
+            });
+        });
+    });
 
     builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
@@ -117,8 +150,8 @@ try
         opts.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
         opts.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
     });
-    builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Optimal);
-    builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Optimal);
+    builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+    builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
 
     builder.Services.AddEndpoints(typeof(Program).Assembly);
 

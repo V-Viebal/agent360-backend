@@ -41,10 +41,14 @@ public static class AuthenticationConfiguration
                     opts.TokenValidationParameters = new TokenValidationParameters
                     {
                         ValidateIssuer = true,
+                        ValidIssuer = authority.EndsWith("/oidc", StringComparison.OrdinalIgnoreCase) ? authority : $"{authority}/oidc",
                         ValidateAudience = true,
+                        ValidAudience = audience,
                         ValidateLifetime = true,
                         ValidateIssuerSigningKey = true,
-                        ClockSkew = TimeSpan.Zero
+                        ClockSkew = TimeSpan.FromSeconds(60),
+                        NameClaimType = "sub",
+                        RoleClaimType = "roles",
                     };
                 }
                 else
