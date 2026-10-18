@@ -21,6 +21,17 @@ public sealed class Agent360SecurityOptions
 
     /// <summary>Expose Scalar/OpenAPI outside Development (default off).</summary>
     public bool ExposeApiReference { get; set; }
+
+    /// <summary>
+    /// Logto user ids (JWT <c>sub</c>) that hold the Agent360 Admin policy, ';' or ',' separated. Logto access tokens
+    /// for this resource carry no role/scope claims, so platform admins are bound by subject.
+    /// </summary>
+    public string AdminSubjects { get; set; } = "";
+
+    public bool IsAdminSubject(string? sub) =>
+        !string.IsNullOrWhiteSpace(sub) &&
+        AdminSubjects.Split([';', ',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(s => string.Equals(s, sub, StringComparison.Ordinal));
 }
 
 /// <summary>

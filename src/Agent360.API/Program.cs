@@ -145,6 +145,14 @@ try
                     return true;
                 }
 
+                // 4. Configured platform admins (Logto subject ids; access tokens carry no role/scope claims).
+                if (ctx.Resource is HttpContext adminHttp &&
+                    adminHttp.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()
+                        .CurrentValue.IsAdminSubject(sub))
+                {
+                    return true;
+                }
+
                 return false;
             });
         });

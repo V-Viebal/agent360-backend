@@ -168,6 +168,18 @@ public sealed class ApiSecurityHardeningTests
         public IDisposable? OnChange(Action<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions, string?> listener) => null;
     }
 
+    [Theory]
+    [InlineData("1my9xeouvb48", "1my9xeouvb48", true)]
+    [InlineData("a1; 1my9xeouvb48 ,b2", "1my9xeouvb48", true)]
+    [InlineData("1my9xeouvb48", "1MY9XEOUVB48", false)]
+    [InlineData("1my9xeouvb48", "other", false)]
+    [InlineData("", "1my9xeouvb48", false)]
+    [InlineData("1my9xeouvb48", null, false)]
+    public void AdminSubjects_MatchExactLogtoSubjects(string configured, string? sub, bool expected)
+    {
+        new Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions { AdminSubjects = configured }.IsAdminSubject(sub).Should().Be(expected);
+    }
+
     [Fact]
     public async Task SecurityHeaders_AreSetAndServerHeaderRemoved()
     {
