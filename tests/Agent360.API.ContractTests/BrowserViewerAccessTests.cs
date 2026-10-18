@@ -78,3 +78,20 @@ public sealed class BrowserViewerAccessTests
         public IDisposable? OnChange(Action<Agent360SecurityOptions, string?> listener) => null;
     }
 }
+
+public sealed class BrowserProfileMapParsingTests
+{
+    [Fact]
+    public void ParsesPlainAndBase64JsonAndRejectsGarbage()
+    {
+        const string json = "{\"mons\":\"Default\",\"ken\":\"Profile 1\"}";
+        var plain = Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ParseProfileMap(json);
+        plain!["MONS"].Should().Be("Default");
+        var b64 = Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ParseProfileMap(
+            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json)));
+        b64!["ken"].Should().Be("Profile 1");
+        Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ParseProfileMap("not-json").Should().BeNull();
+        Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ParseProfileMap("{}").Should().BeNull();
+        Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ParseProfileMap(null).Should().BeNull();
+    }
+}

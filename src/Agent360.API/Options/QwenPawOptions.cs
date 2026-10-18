@@ -30,4 +30,14 @@ public sealed class QwenPawInstanceCredentials
     /// <summary>Internal (tailnet/private) Chromium CDP endpoint for this instance's browser service.
     /// Public hostnames are rejected; the browser is never reached through a public route.</summary>
     public string? BrowserCdpUrl { get; set; }
+
+    /// <summary>Coolify service name of the browser (e.g. chromium-browser-q4yu); overrides the built-in map.</summary>
+    public string? BrowserService { get; set; }
+
+    /// <summary>Public Selkies desktop origin (https only); overrides the built-in map.</summary>
+    public string? BrowserViewerUrl { get; set; }
+
+    /// <summary>Agent id -> Chromium --profile-directory, as the browser template's QWENPAW_AGENT_PROFILE_MAP_B64
+    /// (plain JSON or base64 JSON). Overrides the built-in map so the template stays the single source.</summary>
+    public string? BrowserProfileMap { get; set; }
 }

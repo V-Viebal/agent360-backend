@@ -71,7 +71,7 @@ public sealed class AgentBrowserDirectory(
         target = routing.ResolveTarget(agentId);
         service = viewerUrl = cdpUrl = "";
         profile = null;
-        if (target.Instance is null || !Services.TryGetValue(target.Instance.Key, out var svc))
+        if (target.Instance is null || ResolveService(target.Instance.Key) is not { } svc)
         {
             return false;
         }
@@ -80,6 +80,49 @@ public sealed class AgentBrowserDirectory(
         cdpUrl = InternalCdpUrl(target.Instance.Key, svc.CdpUrl);
         profile = svc.Profiles.TryGetValue(target.TargetAgentProfile, out var p) ? p : null;
         return true;
+    }
+
+    /// <summary>Built-in browser map, overridden field by field by QwenPaw:Instances:{key}:Browser*.</summary>
+    private BrowserService? ResolveService(string key)
+    {
+        Services.TryGetValue(key, out var builtIn);
+        _options.Instances.TryGetValue(key, out var cfg);
+        var service = Nonblank(cfg?.BrowserService) ?? builtIn?.Service;
+        var viewer = Nonblank(cfg?.BrowserViewerUrl) is { } v && v.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? v.TrimEnd('/') : builtIn?.ViewerUrl;
+        var profiles = ParseProfileMap(cfg?.BrowserProfileMap) ?? builtIn?.Profiles;
+        if (service is null || viewer is null || profiles is null)
+        {
+            return null;
+        }
+        return new BrowserService(service, viewer, builtIn?.CdpUrl ?? "", profiles);
+    }
+
+    private static string? Nonblank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    internal static IReadOnlyDictionary<string, string>? ParseProfileMap(string? raw)
+    {
+        raw = Nonblank(raw);
+        if (raw is null)
+        {
+            return null;
+        }
+        try
+        {
+            if (!raw.StartsWith('{'))
+            {
+                raw = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(raw));
+            }
+            var map = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(raw);
+            if (map is null || map.Count == 0)
+            {
+                return null;
+            }
+            return new Dictionary<string, string>(map.Where(kv => !string.IsNullOrWhiteSpace(kv.Value)), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is FormatException or System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     public async Task<AgentBrowserInfo?> GetAsync(string agentId, CancellationToken ct)
