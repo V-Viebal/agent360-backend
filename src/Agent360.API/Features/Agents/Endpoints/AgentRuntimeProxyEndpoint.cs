@@ -18,8 +18,6 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         "agent-status",
         "config/channels",
         "config/heartbeat",
-        "config/loop-mode",
-        "loop-mode",
         "cron/jobs",
         "mcp",
         "tools",

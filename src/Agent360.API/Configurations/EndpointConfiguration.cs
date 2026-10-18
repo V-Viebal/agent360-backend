@@ -88,6 +88,7 @@ public static class EndpointConfiguration
             });
             webAppBuilder.Services.AddOptions<SubAgentOptions>().BindConfiguration(SubAgentOptions.Section);
             webAppBuilder.Services.AddSingleton<SubAgentStore>();
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Endpoints.AgentLoopModeStore>();
             webAppBuilder.Services.AddScoped<SubAgentService>();
             webAppBuilder.Services.AddSingleton<SubAgentSkillSyncQueue>();
             webAppBuilder.Services.AddSingleton<ISubAgentSkillSyncQueue>(sp => sp.GetRequiredService<SubAgentSkillSyncQueue>());
