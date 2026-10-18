@@ -1,34 +1,65 @@
-using System.Text.Json;
 using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.SubAgents;
 
 /// <summary>
-/// Durable JSON-file store for SubAgentBinding registry and DelegationTask ledger.
-/// Writes are serialized and atomic (temp file + replace).
+/// SubAgentBinding registry and DelegationTask ledger: an in-memory working set with serialized write-through to
+/// <see cref="ISubAgentPersistence"/> (PostgreSQL tables in deployed environments, JSON files for local/tests).
 /// </summary>
 public sealed class SubAgentStore
 {
-    private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
     private readonly SemaphoreSlim _lock = new(1, 1);
-    private readonly string _bindingsPath;
-    private readonly string _ledgerPath;
+    private readonly ISubAgentPersistence _persistence;
     private List<SubAgentBinding> _bindings;
     private List<DelegationTask> _tasks;
+
+    /// <summary>"postgres" or "file".</summary>
+    public string PersistenceKind => _persistence.Kind;
 
     /// <summary>In-process record of the last skill content fingerprint pushed per parent agent.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, string> SyncedSkillFingerprints { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public SubAgentStore(IOptions<SubAgentOptions> options, IHostEnvironment env)
+        : this(new FileSubAgentPersistence(ResolveDir(options.Value, env)))
     {
-        var dir = Path.IsPathRooted(options.Value.StoragePath)
-            ? options.Value.StoragePath
-            : Path.Combine(env.ContentRootPath, options.Value.StoragePath);
+    }
+
+    [Microsoft.Extensions.DependencyInjection.ActivatorUtilitiesConstructor]
+    public SubAgentStore(IOptions<SubAgentOptions> options, IHostEnvironment env, IConfiguration configuration, ILogger<SubAgentStore> logger)
+        : this(CreatePersistence(options.Value, env, configuration, logger))
+    {
+    }
+
+    public SubAgentStore(ISubAgentPersistence persistence)
+    {
+        _persistence = persistence;
+        (_bindings, _tasks) = persistence.Load();
+    }
+
+    private static string ResolveDir(SubAgentOptions options, IHostEnvironment env)
+    {
+        var dir = Path.IsPathRooted(options.StoragePath) ? options.StoragePath : Path.Combine(env.ContentRootPath, options.StoragePath);
         Directory.CreateDirectory(dir);
-        _bindingsPath = Path.Combine(dir, "subagent_bindings.json");
-        _ledgerPath = Path.Combine(dir, "delegation_tasks.json");
-        _bindings = Load<SubAgentBinding>(_bindingsPath);
-        _tasks = Load<DelegationTask>(_ledgerPath);
+        return dir;
+    }
+
+    private static ISubAgentPersistence CreatePersistence(SubAgentOptions options, IHostEnvironment env, IConfiguration configuration, ILogger logger)
+    {
+        var dir = ResolveDir(options, env);
+        if (!string.Equals(options.Storage, "postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            return new FileSubAgentPersistence(dir);
+        }
+        var cs = configuration.GetConnectionString(options.ConnectionStringName)
+            ?? throw new InvalidOperationException($"Agent360:SubAgents:Storage=postgres requires ConnectionStrings:{options.ConnectionStringName}");
+        var pg = new PostgresSubAgentPersistence(cs, options.Schema);
+        pg.EnsureSchema();
+        var (b, t) = pg.ImportLegacyFiles(dir);
+        if (b + t > 0)
+        {
+            logger.LogWarning("Imported legacy sub-agent JSON into PostgreSQL schema {Schema}: {Bindings} bindings, {Tasks} tasks", options.Schema, b, t);
+        }
+        return pg;
     }
 
     public async Task<IReadOnlyList<SubAgentBinding>> GetBindingsAsync(string parentAgentId)
@@ -78,13 +109,9 @@ public sealed class SubAgentStore
             }
             if (archive.Count == 0) return 0;
 
-            foreach (var group in archive.GroupBy(t => t.UpdatedAt.UtcDateTime.ToString("yyyy-MM")))
-            {
-                var path = Path.Combine(Path.GetDirectoryName(_ledgerPath)!, $"delegation_tasks.archive-{group.Key}.jsonl");
-                await File.AppendAllLinesAsync(path, group.Select(t => JsonSerializer.Serialize(t)));
-            }
-            _tasks.RemoveAll(archive.Contains);
-            await SaveAsync(_ledgerPath, _tasks);
+            var remaining = _tasks.Where(t => !archive.Contains(t)).ToList();
+            await _persistence.ArchiveTasksAsync(archive, remaining);
+            _tasks = remaining;
             return archive.Count;
         }
         finally
@@ -111,9 +138,9 @@ public sealed class SubAgentStore
         await _lock.WaitAsync();
         try
         {
-            _bindings.RemoveAll(b => b.ParentAgentId == binding.ParentAgentId && b.ChildAgentId == binding.ChildAgentId);
-            _bindings.Add(binding);
-            await SaveAsync(_bindingsPath, _bindings);
+            var next = _bindings.Where(b => !(b.ParentAgentId == binding.ParentAgentId && b.ChildAgentId == binding.ChildAgentId)).Append(binding).ToList();
+            await _persistence.UpsertBindingAsync(binding, next);
+            _bindings = next;
             return binding;
         }
         finally
@@ -127,9 +154,11 @@ public sealed class SubAgentStore
         await _lock.WaitAsync();
         try
         {
-            var removed = _bindings.RemoveAll(b => b.ParentAgentId == parentAgentId && b.ChildAgentId == childAgentId) > 0;
-            if (removed) await SaveAsync(_bindingsPath, _bindings);
-            return removed;
+            var next = _bindings.Where(b => !(b.ParentAgentId == parentAgentId && b.ChildAgentId == childAgentId)).ToList();
+            if (next.Count == _bindings.Count) return false;
+            await _persistence.DeleteBindingAsync(parentAgentId, childAgentId, next);
+            _bindings = next;
+            return true;
         }
         finally
         {
@@ -184,35 +213,14 @@ public sealed class SubAgentStore
         await _lock.WaitAsync();
         try
         {
-            _tasks.RemoveAll(t => t.Id == task.Id);
-            _tasks.Add(task);
-            await SaveAsync(_ledgerPath, _tasks);
+            var next = _tasks.Where(t => t.Id != task.Id).Append(task).ToList();
+            await _persistence.SaveTaskAsync(task, next);
+            _tasks = next;
             return task;
         }
         finally
         {
             _lock.Release();
         }
-    }
-
-    private static List<T> Load<T>(string path)
-    {
-        if (!File.Exists(path)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<List<T>>(File.ReadAllText(path)) ?? [];
-        }
-        catch (JsonException)
-        {
-            File.Copy(path, path + $".corrupt-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}", true);
-            return [];
-        }
-    }
-
-    private static async Task SaveAsync<T>(string path, List<T> items)
-    {
-        var tmp = path + ".tmp";
-        await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(items, JsonOpts));
-        File.Move(tmp, path, true);
     }
 }
