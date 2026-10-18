@@ -55,6 +55,18 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     : TypedResults.Problem("Failed to focus the agent's browser window", statusCode: StatusCodes.Status502BadGateway);
             })
             .MapToApiVersion(ApiVersion.Default)
+            // Cross-site pages must not raise windows on the shared desktop (CSRF-style abuse).
+            .AddEndpointFilter(async (ctx, next) =>
+            {
+                var http = ctx.HttpContext;
+                var origin = http.Request.Headers.Origin.FirstOrDefault();
+                var cors = http.RequestServices.GetRequiredService<IOptions<CorsOptions>>().Value;
+                if (!string.IsNullOrEmpty(origin) && !IsAllowedOrigin(http, cors.AllowedOrigins))
+                {
+                    return Results.Problem("Origin not allowed", statusCode: StatusCodes.Status403Forbidden);
+                }
+                return await next(ctx);
+            })
             .WithName("FocusAgentBrowser")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Bring the agent's own Chromium profile window to the front of the desktop")

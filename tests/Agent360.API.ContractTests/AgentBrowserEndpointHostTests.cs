@@ -90,6 +90,15 @@ public sealed class AgentBrowserEndpointHostTests : IAsyncLifetime
         (await HandshakeAsync("mons", origin)).Should().Be(HttpStatusCode.Forbidden);
 
     [Fact]
+    public async Task FocusRejectsCrossSiteOrigin()
+    {
+        using var http = new HttpClient { BaseAddress = _base };
+        var req = new HttpRequestMessage(HttpMethod.Post, "api/v1/agents/mons/browser/focus");
+        req.Headers.Add("Origin", "https://evil.example");
+        (await http.SendAsync(req, Ct)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
     public async Task BrowserIdentityHidesInternalEndpoint()
     {
         using var http = new HttpClient { BaseAddress = _base };
