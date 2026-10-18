@@ -61,4 +61,8 @@
 		to get metadata for ProblemDetails -->
 		</ItemGroup>
 	</Target>
+
+	<ItemGroup>
+		<Watch Remove="_logs\**\*" />
+	</ItemGroup>
 </Project>
