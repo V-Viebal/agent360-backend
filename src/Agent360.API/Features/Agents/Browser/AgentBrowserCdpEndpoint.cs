@@ -5,6 +5,7 @@ using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Agent360.API.Features.Agents.Browser;
 
@@ -94,16 +95,35 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
         routeBuilder.MapGet(
             "agents/{agentId}/browser/image.jpg",
-            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
             {
                 var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
                 {
                     return TypedResults.NotFound(new { message = error });
                 }
-                var data = await CaptureScreenshotAsync(cdp!, page.TargetId, ct);
+                http.Response.Headers.CacheControl = "no-store";
+                var key = $"agent360:browser-shot:{page.TargetId}";
+                string? data = null;
+                try
+                {
+                    data = await CaptureScreenshotAsync(cdp!, page.TargetId, ct);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && ex is OperationCanceledException or WebSocketException or HttpRequestException)
+                {
+                }
+                if (data is not null)
+                {
+                    cache.Set(key, data, TimeSpan.FromMinutes(5));
+                }
+                else if (cache.TryGetValue(key, out string? last) && last is not null)
+                {
+                    // A busy or background-throttled tab is common; a slightly stale frame beats a broken preview.
+                    http.Response.Headers["X-Agent360-Stale"] = "1";
+                    data = last;
+                }
                 return data is null
-                    ? TypedResults.Problem("Failed to capture screenshot", statusCode: StatusCodes.Status502BadGateway)
+                    ? TypedResults.Problem("Failed to capture screenshot", statusCode: StatusCodes.Status503ServiceUnavailable)
                     : TypedResults.File(Convert.FromBase64String(data), "image/jpeg");
             })
             .MapToApiVersion(ApiVersion.Default)
@@ -181,10 +201,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
     private static async Task<string?> CaptureScreenshotAsync(string cdpUrl, string targetId, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(15));
+        cts.CancelAfter(TimeSpan.FromSeconds(6));
         using var ws = new ClientWebSocket();
         await ws.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
-        await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 65 } }, cts.Token);
+        // fromSurface + optimizeForSpeed: take the composited surface instead of waiting for a fresh frame,
+        // which a background (throttled) tab may never produce.
+        await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 60, fromSurface = true, optimizeForSpeed = true } }, cts.Token);
         while (ws.State == WebSocketState.Open)
         {
             var bytes = await ReceiveAsync(ws, cts.Token);
