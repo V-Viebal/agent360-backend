@@ -10,3 +10,6 @@ deploy/backend.env
 .tmp/publish-linux/
 src/Agent360.API/_logs/
 __pycache__/
+publish-linux/
+publish-selfcontained/
+publish-framework-dep/

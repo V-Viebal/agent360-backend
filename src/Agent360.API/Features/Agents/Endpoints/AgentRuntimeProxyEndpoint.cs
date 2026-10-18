@@ -91,6 +91,14 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     return Results.NotFound(new { message = $"Route '{clean}' is not exposed for agents" });
                 }
 
+                var (proxyAllowed, proxyReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                    agentId, context, context.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                    context.RequestServices.GetRequiredService<IConfiguration>(), ct);
+                if (!proxyAllowed)
+                {
+                    return Results.Problem(proxyReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+                }
+
                 var target = routing.ResolveTarget(agentId);
                 if (!target.IsQwenPaw)
                 {

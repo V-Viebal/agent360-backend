@@ -183,6 +183,19 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         {
             logger.LogInformation("Received console chat request for agent '{AgentId}', session '{SessionId}', message length: {Len}", request.AgentId, request.SessionId, request.Message?.Length ?? 0);
             var agentTarget = request.AgentId ?? "default";
+            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                agentTarget, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
+            if (!accessAllowed)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "AGENT_ACCESS_DENIED",
+                    message = accessReason
+                }, ct);
+                return;
+            }
             if (!IamRevocationGuard.IsExecutionAllowed(agentTarget, out var revocationReason))
             {
                 httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
