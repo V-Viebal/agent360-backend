@@ -54,7 +54,7 @@ public static class EndpointConfiguration
                         http.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
                             ?? http.Request.Headers["X-Real-IP"].FirstOrDefault()
                             ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                        _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+                        _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 300, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
             });
             webAppBuilder.Services.AddOptions<SubAgentOptions>().BindConfiguration(SubAgentOptions.Section);
             webAppBuilder.Services.AddSingleton<SubAgentStore>();
