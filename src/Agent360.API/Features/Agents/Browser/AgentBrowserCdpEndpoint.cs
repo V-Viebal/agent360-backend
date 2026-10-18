@@ -225,6 +225,18 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .RequireRateLimiting(RateLimitPolicy);
     }
 
+    /// <summary>The tab worth showing by default: a real web page first, never a chrome:// internal page
+    /// (chrome://newtab renders out-of-process and Page.captureScreenshot hangs on it), else the profile anchor.</summary>
+    internal static AgentBrowserTab? DefaultTab(IReadOnlyList<AgentBrowserTab> tabs) =>
+        tabs.FirstOrDefault(t => !t.Anchor && IsCapturable(t.Url))
+        ?? tabs.FirstOrDefault(t => t.Anchor)
+        ?? tabs.FirstOrDefault(t => IsCapturable(t.Url));
+
+    internal static bool IsCapturable(string url) =>
+        !url.StartsWith("chrome://", StringComparison.OrdinalIgnoreCase)
+        && !url.StartsWith("chrome-untrusted://", StringComparison.OrdinalIgnoreCase)
+        && !url.StartsWith("devtools://", StringComparison.OrdinalIgnoreCase);
+
     internal static bool IsAllowedOrigin(HttpContext context, IReadOnlyCollection<string> allowed)
     {
         var origin = context.Request.Headers.Origin.FirstOrDefault();
@@ -286,7 +298,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         }
         // Only targets inside the agent's own browser context are eligible; a foreign pageId is rejected.
         var page = string.IsNullOrEmpty(pageId)
-            ? info.Tabs.FirstOrDefault(t => !t.Anchor) ?? info.Tabs.FirstOrDefault()
+            ? DefaultTab(info.Tabs)
             : info.Tabs.FirstOrDefault(t => t.TargetId == pageId);
         return page is null ? (null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, null);
     }

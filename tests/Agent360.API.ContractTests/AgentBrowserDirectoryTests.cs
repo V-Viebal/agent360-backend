@@ -162,6 +162,17 @@ public sealed class AgentBrowserDirectoryTests
         Agent360.API.Options.CorsOptions.Read(array).Should().Equal("https://a.example", "https://b.example");
     }
 
+    [Fact]
+    public void DefaultTabSkipsChromeInternalPages()
+    {
+        var anchor = new AgentBrowserTab("A", "", "data:text/html;charset=utf-8,<!--agent360-profile=Default-->", true);
+        var newtab = new AgentBrowserTab("N", "New Tab", "chrome://newtab/", false);
+        var web = new AgentBrowserTab("W", "Site", "https://example.com/", false);
+        AgentBrowserCdpEndpoint.DefaultTab([anchor, newtab]).Should().Be(anchor);
+        AgentBrowserCdpEndpoint.DefaultTab([anchor, newtab, web]).Should().Be(web);
+        AgentBrowserCdpEndpoint.DefaultTab([newtab]).Should().BeNull();
+    }
+
     private sealed class NoHttpFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();
