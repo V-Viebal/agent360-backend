@@ -9,3 +9,5 @@ OUT=/opt/agent360-a2a/registry.json
 "$HERE/export_registry.sh" "$OUT" >/dev/null
 scp -q -o BatchMode=yes "$OUT" "$CP_SSH:/opt/agent360-a2a/state/registry.json.new"
 ssh -o BatchMode=yes "$CP_SSH" 'mv /opt/agent360-a2a/state/registry.json.new /opt/agent360-a2a/state/registry.json'
+# Manager Matrix token guard: alert + self-heal a revoked token (never fails the registry sync).
+"$HERE/manager_matrix_guard.sh" || true
