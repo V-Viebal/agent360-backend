@@ -31,10 +31,31 @@ public static class EndpointConfiguration
                 });
 #pragma warning restore EXTEXP0001
             webAppBuilder.Services.AddHttpClient<IQwenPawClient, QwenPawClient>();
-            webAppBuilder.Services.AddHttpClient<IBrowserCdpService, BrowserCdpService>();
-            webAppBuilder.Services.AddHttpClient("agent360-browser-cdp", c => c.Timeout = TimeSpan.FromSeconds(8));
+            // Internal (tailnet) CDP only: fast connect failure, pooled sockets, no proxies, no redirects.
+            webAppBuilder.Services.AddHttpClient(Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(8))
+                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+                {
+                    ConnectTimeout = TimeSpan.FromSeconds(2),
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1),
+                    MaxConnectionsPerServer = 16,
+                    UseProxy = false,
+                    AllowAutoRedirect = false,
+                });
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Browser.AgentBrowserGate>();
             // Scoped: depends on the transient typed fleet client; its own cache is the shared IMemoryCache.
             webAppBuilder.Services.AddScoped<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
+            webAppBuilder.Services.AddRateLimiter(o =>
+            {
+                o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                // Per client IP: preview polling (1 req/5 s) and focus/pages calls fit far below this.
+                o.AddPolicy(Agent360.API.Features.Agents.Browser.AgentBrowserCdpEndpoint.RateLimitPolicy, http =>
+                    System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                        http.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+                            ?? http.Request.Headers["X-Real-IP"].FirstOrDefault()
+                            ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                        _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+            });
             webAppBuilder.Services.AddOptions<SubAgentOptions>().BindConfiguration(SubAgentOptions.Section);
             webAppBuilder.Services.AddSingleton<SubAgentStore>();
             webAppBuilder.Services.AddScoped<SubAgentService>();

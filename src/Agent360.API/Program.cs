@@ -173,6 +173,7 @@ try
     app.UseWebSockets();
     app.UseRouting(); // Noted: By default, it will run this middleware at the beginning of the pipeline
     app.UseCors();
+    app.UseRateLimiter();
 
     app.UseAuthentication();
     app.UseMiddleware<UserResolutionMiddleware>();

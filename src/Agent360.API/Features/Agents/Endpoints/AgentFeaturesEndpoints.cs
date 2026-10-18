@@ -274,48 +274,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .DisableAntiforgery()
         .AllowAnonymous();
 
-        group.MapGet("browser/stream", async (
-            [FromQuery] string? targetId,
-            [FromQuery] int fps,
-            HttpContext context,
-            IBrowserCdpService cdpService,
-            CancellationToken ct) =>
-        {
-            context.Response.ContentType = "multipart/x-mixed-replace; boundary=frame";
-            context.Response.Headers.CacheControl = "no-cache";
-            context.Response.Headers.Connection = "close";
-
-            var effectiveFps = Math.Clamp(fps <= 0 ? 5 : fps, 1, 15);
-            var delayMs = 1000 / effectiveFps;
-            var responseStream = context.Response.Body;
-
-            while (!ct.IsCancellationRequested)
-            {
-                try
-                {
-                    var imageBytes = await cdpService.CaptureScreenshotAsync(targetId, ct);
-                    var headerText = $"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {imageBytes.Length}\r\n\r\n";
-                    var headerBytes = Encoding.ASCII.GetBytes(headerText);
-
-                    await responseStream.WriteAsync(headerBytes, ct);
-                    await responseStream.WriteAsync(imageBytes, ct);
-                    await responseStream.WriteAsync(Encoding.ASCII.GetBytes("\r\n"), ct);
-                    await responseStream.FlushAsync(ct);
-
-                    await Task.Delay(delayMs, ct);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch
-                {
-                    await Task.Delay(500, ct);
-                }
-            }
-        })
+        // Legacy unscoped core-browser stream: removed (it streamed one shared browser to any caller).
+        group.MapGet("browser/stream", () => Results.Problem(
+            detail: "Use /agents/{agentId}/browser/image.jpg or the agent-scoped /agents/{agentId}/browser/stream websocket.",
+            statusCode: StatusCodes.Status410Gone, title: "Gone"))
         .WithName("GetBrowserCdpStream")
-        .WithSummary("Realtime MJPEG live stream of Chromium viewport for visual inspection")
+        .ExcludeFromDescription()
         .AllowAnonymous();
 
         // ==========================================

@@ -4,8 +4,10 @@ using System.Text.Json;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
+using Agent360.API.Options;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 
 namespace Agent360.API.Features.Agents.Browser;
 
@@ -15,6 +17,8 @@ namespace Agent360.API.Features.Agents.Browser;
 /// </summary>
 public sealed class AgentBrowserCdpEndpoint : IEndpoint
 {
+    public const string RateLimitPolicy = "agent360-browser";
+
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         // Browser identity for the viewer: Selkies URL, CDP endpoint, owned profile, live tabs.
@@ -31,20 +35,21 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .WithName("GetAgentBrowser")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Agent's browser service, owned Chromium profile and its live tabs")
+            .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
         // Bring the agent's own profile window to the front of the shared Selkies desktop
         // before the viewer opens it, so the user sees this agent's tabs, not the last agent's.
         routeBuilder.MapPost(
             "agents/{agentId}/browser/focus",
-            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            async Task<IResult> (string agentId, AgentBrowserDirectory directory, IHttpClientFactory httpFactory, CancellationToken ct) =>
             {
                 var (page, cdp, error) = await PickPageAsync(directory, agentId, null, ct);
                 if (page is null)
                 {
                     return TypedResults.Conflict(new { message = error });
                 }
-                var ok = await ActivateAsync(cdp!, page.TargetId, ct);
+                var ok = await ActivateAsync(httpFactory, cdp!, page.TargetId, ct);
                 return ok
                     ? TypedResults.Ok(new { agentId, targetId = page.TargetId, url = page.Url })
                     : TypedResults.Problem("Failed to focus the agent's browser window", statusCode: StatusCodes.Status502BadGateway);
@@ -53,6 +58,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .WithName("FocusAgentBrowser")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Bring the agent's own Chromium profile window to the front of the desktop")
+            .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
         routeBuilder.MapGet(
@@ -71,18 +77,19 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .WithName("GetAgentBrowserPages")
             .WithTags(EndpointTags.Agents)
             .WithSummary("List the agent's own browser tabs (its Chromium profile only)")
+            .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
         routeBuilder.MapGet(
             "agents/{agentId}/browser/screenshot",
-            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, CancellationToken ct) =>
             {
                 var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
                 {
                     return TypedResults.NotFound(new { message = error });
                 }
-                var data = await CaptureScreenshotAsync(cdp!, page.TargetId, ct);
+                var data = await CachedScreenshotAsync(gate, cache, cdp!, page.TargetId);
                 return data is null
                     ? TypedResults.Problem("Failed to capture screenshot from CDP target.", statusCode: StatusCodes.Status502BadGateway)
                     : TypedResults.Ok(new BrowserScreenshotResponse(agentId, page.TargetId, "jpeg", data, DateTimeOffset.UtcNow));
@@ -91,11 +98,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .WithName("GetAgentBrowserScreenshot")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Capture a screenshot of the agent's own browser tab")
+            .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
         routeBuilder.MapGet(
             "agents/{agentId}/browser/image.jpg",
-            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
             {
                 var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
@@ -104,14 +112,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 }
                 http.Response.Headers.CacheControl = "no-store";
                 var key = $"agent360:browser-shot:{page.TargetId}";
-                string? data = null;
-                try
-                {
-                    data = await CaptureScreenshotAsync(cdp!, page.TargetId, ct);
-                }
-                catch (Exception ex) when (!ct.IsCancellationRequested && ex is OperationCanceledException or WebSocketException or HttpRequestException)
-                {
-                }
+                var data = await CachedScreenshotAsync(gate, cache, cdp!, page.TargetId);
                 if (data is not null)
                 {
                     cache.Set(key, data, TimeSpan.FromMinutes(5));
@@ -130,12 +131,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .WithName("GetAgentBrowserRawImage")
             .WithTags(EndpointTags.Agents)
             .WithSummary("JPEG of the agent's own browser tab")
+            .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
         // Live screencast of the agent's tab (inspection only; interactive control is the Selkies viewer).
         routeBuilder.Map(
             "/api/v1/agents/{agentId}/browser/stream",
-            async (string agentId, HttpContext context, AgentBrowserDirectory directory) =>
+            async (string agentId, HttpContext context, AgentBrowserDirectory directory, AgentBrowserGate gate, IOptions<CorsOptions> cors) =>
             {
                 if (!context.WebSockets.IsWebSocketRequest)
                 {
@@ -143,21 +145,85 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     await context.Response.WriteAsync("WebSocket connection expected.");
                     return;
                 }
-                var ct = context.RequestAborted;
-                var (page, cdp, error) = await PickPageAsync(directory, agentId, context.Request.Query["pageId"], ct);
-                using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
-                if (page is null)
+                // Browsers always send Origin on a WebSocket handshake; only Agent360's own UI may watch.
+                if (!IsAllowedOrigin(context, cors.Value.AllowedOrigins))
                 {
-                    await clientWs.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, Truncate(error, 120), CancellationToken.None);
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
                     return;
                 }
-                var maxWidth = Math.Clamp(int.TryParse(context.Request.Query["maxWidth"], out var w) ? w : 1280, 320, 1920);
-                var quality = Math.Clamp(int.TryParse(context.Request.Query["quality"], out var q) ? q : 55, 20, 85);
-                await ScreencastAsync(cdp!, page.TargetId, clientWs, maxWidth, quality, ct);
-            });
+                var ct = context.RequestAborted;
+                var (page, cdp, error) = await PickPageAsync(directory, agentId, context.Request.Query["pageId"], ct);
+                if (page is null)
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await context.Response.WriteAsJsonAsync(new { message = error }, ct);
+                    return;
+                }
+                var info = await directory.GetAsync(agentId, ct);
+                var slots = gate.StreamSlots(info!.Instance);
+                if (!await slots.WaitAsync(0, ct))
+                {
+                    context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                    await context.Response.WriteAsJsonAsync(new { message = "Too many live viewers on this browser; use the preview." }, ct);
+                    return;
+                }
+                try
+                {
+                    using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
+                    var maxWidth = Math.Clamp(int.TryParse(context.Request.Query["maxWidth"], out var w) ? w : 1280, 320, 1920);
+                    var quality = Math.Clamp(int.TryParse(context.Request.Query["quality"], out var q) ? q : 55, 20, 85);
+                    await ScreencastAsync(cdp!, page.TargetId, clientWs, maxWidth, quality, ct);
+                }
+                finally
+                {
+                    slots.Release();
+                }
+            })
+            .RequireRateLimiting(RateLimitPolicy);
     }
 
-    private static string Truncate(string? s, int n) => string.IsNullOrEmpty(s) ? "" : s.Length <= n ? s : s[..n];
+    internal static bool IsAllowedOrigin(HttpContext context, IReadOnlyCollection<string> allowed)
+    {
+        var origin = context.Request.Headers.Origin.FirstOrDefault();
+        if (string.IsNullOrEmpty(origin))
+        {
+            return false;
+        }
+        if (allowed.Any(a => string.Equals(a.TrimEnd('/'), origin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+        // Same-origin (UI and API behind one host via the frontend nginx /api proxy).
+        return Uri.TryCreate(origin, UriKind.Absolute, out var o)
+            && string.Equals(o.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>One CDP capture per target per second, shared by every concurrent viewer.</summary>
+    private static async Task<string?> CachedScreenshotAsync(AgentBrowserGate gate, IMemoryCache cache, string cdpUrl, string targetId)
+    {
+        var key = $"agent360:browser:shot:{cdpUrl}:{targetId}";
+        if (cache.TryGetValue(key, out string? hit) && hit is not null)
+        {
+            return hit;
+        }
+        var data = await gate.Coalesce(key, async () =>
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+            try
+            {
+                return await CaptureScreenshotAsync(cdpUrl, targetId, cts.Token);
+            }
+            catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or JsonException or HttpRequestException)
+            {
+                return null;
+            }
+        });
+        if (data is not null)
+        {
+            cache.Set(key, data, TimeSpan.FromSeconds(1));
+        }
+        return data;
+    }
 
     private static async Task<(AgentBrowserTab? Page, string? Cdp, string? Error)> PickPageAsync(
         AgentBrowserDirectory directory, string agentId, string? pageId, CancellationToken ct)
@@ -182,11 +248,11 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         return page is null ? (null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, null);
     }
 
-    private static async Task<bool> ActivateAsync(string cdpUrl, string targetId, CancellationToken ct)
+    private static async Task<bool> ActivateAsync(IHttpClientFactory httpFactory, string cdpUrl, string targetId, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(8));
-        using var http = new HttpClient();
+        var http = httpFactory.CreateClient(AgentBrowserDirectory.HttpClientName);
         // /json/activate focuses the tab and raises its window (no browser-level websocket needed).
         using var res = await http.GetAsync($"{cdpUrl.TrimEnd('/')}/json/activate/{Uri.EscapeDataString(targetId)}", cts.Token);
         return res.IsSuccessStatusCode;
@@ -235,6 +301,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
         var fromClient = Task.Run(async () =>
         {
+            // View-only: client messages are drained and discarded, never forwarded to CDP.
             var buf = new byte[4096];
             while (clientWs.State == WebSocketState.Open && !cts.IsCancellationRequested)
             {
@@ -292,6 +359,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         }
     }
 
+    private const int MaxCdpMessageBytes = 16 * 1024 * 1024;
+
     private static Task SendAsync(WebSocket ws, object message, CancellationToken ct) =>
         ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message), WebSocketMessageType.Text, true, ct);
 
@@ -308,6 +377,10 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 return null;
             }
             ms.Write(buffer, 0, r.Count);
+            if (ms.Length > MaxCdpMessageBytes)
+            {
+                throw new WebSocketException("CDP message exceeds limit");
+            }
         } while (!r.EndOfMessage);
         return ms.ToArray();
     }

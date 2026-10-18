@@ -68,6 +68,82 @@ public sealed class AgentBrowserDirectoryTests
     public void UnmappedRuntimeHasNoBrowser() =>
         Create().TryResolve("llm360-inference-provider", out _, out _, out _, out _, out _).Should().BeFalse();
 
+    [Theory]
+    [InlineData("http://100.76.185.111:19222", true)]
+    [InlineData("http://10.0.1.7:9222", true)]
+    [InlineData("http://192.168.1.5:9222", true)]
+    [InlineData("http://browser-gm-21er:9223", true)]
+    [InlineData("http://cdp.internal:9222", true)]
+    [InlineData("https://cdp-browser.hmz.one", false)]
+    [InlineData("http://8.8.8.8:9222", false)]
+    [InlineData("http://user:pw@100.76.185.111:19222", false)]
+    [InlineData("file:///etc/passwd", false)]
+    public void OnlyInternalCdpEndpointsAreAccepted(string url, bool ok) =>
+        AgentBrowserDirectory.IsInternalEndpoint(url).Should().Be(ok);
+
+    [Fact]
+    public void PublicCdpOverrideIsIgnoredInternalOverrideIsUsed()
+    {
+        static AgentBrowserDirectory With(string url) => new(
+            new FleetInstanceRoutingService(new HttpClient(), NullLogger<FleetInstanceRoutingService>.Instance),
+            new NoHttpFactory(), new MemoryCache(new MemoryCacheOptions()), NullLogger<AgentBrowserDirectory>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new Agent360.API.Options.QwenPawOptions
+            {
+                Instances = { ["core"] = new Agent360.API.Options.QwenPawInstanceCredentials { BrowserCdpUrl = url } }
+            }));
+        With("https://cdp-browser.hmz.one").TryResolve("mons", out _, out _, out _, out var cdp1, out _);
+        cdp1.Should().Be("http://100.76.185.111:19222");
+        With("http://100.76.185.111:19333/").TryResolve("mons", out _, out _, out _, out var cdp2, out _);
+        cdp2.Should().Be("http://100.76.185.111:19333");
+    }
+
+    [Fact]
+    public void BrowserInfoNeverSerializesInternalEndpoint()
+    {
+        var info = new AgentBrowserInfo("mons", "core", "3rd", "svc", "https://browser.hmz.one", "http://100.76.185.111:19222",
+            "Default", "CTX-SECRET", true, true, [new AgentBrowserTab("T1", "t", "https://x", false)]);
+        var json = System.Text.Json.JsonSerializer.Serialize(info, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        json.Should().NotContain("100.76").And.NotContain("CTX-SECRET").And.NotContain("cdpUrl").And.NotContain("ws://");
+        json.Should().Contain("\"viewerUrl\"");
+    }
+
+    [Fact]
+    public async Task GateCoalescesConcurrentProbes()
+    {
+        var gate = new AgentBrowserGate();
+        var calls = 0;
+        var release = new TaskCompletionSource();
+        async Task<int> Probe() { Interlocked.Increment(ref calls); await release.Task; return 42; }
+        var tasks = Enumerable.Range(0, 10).Select(_ => gate.Coalesce("k", Probe)).ToArray();
+        release.SetResult();
+        (await Task.WhenAll(tasks)).Should().AllBeEquivalentTo(42);
+        calls.Should().Be(1);
+    }
+
+    [Fact]
+    public void StreamSlotsAreCappedPerInstance()
+    {
+        var gate = new AgentBrowserGate { MaxStreamsPerInstance = 2 };
+        var s = gate.StreamSlots("core");
+        s.Wait(0, TestContext.Current.CancellationToken).Should().BeTrue();
+        s.Wait(0, TestContext.Current.CancellationToken).Should().BeTrue();
+        s.Wait(0, TestContext.Current.CancellationToken).Should().BeFalse();
+        gate.StreamSlots("gm").Wait(0, TestContext.Current.CancellationToken).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("https://agent360.antares.vn", "api-agent360.antares.vn", true)]
+    [InlineData("https://agent360.hmz.one", "agent360.hmz.one", true)]
+    [InlineData("https://evil.example", "api-agent360.antares.vn", false)]
+    [InlineData(null, "api-agent360.antares.vn", false)]
+    public void StreamOriginIsRestricted(string? origin, string host, bool ok)
+    {
+        var ctx = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        ctx.Request.Host = new Microsoft.AspNetCore.Http.HostString(host);
+        if (origin is not null) ctx.Request.Headers.Origin = origin;
+        AgentBrowserCdpEndpoint.IsAllowedOrigin(ctx, ["https://agent360.antares.vn"]).Should().Be(ok);
+    }
+
     private sealed class NoHttpFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();

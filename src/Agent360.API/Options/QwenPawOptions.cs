@@ -10,8 +10,6 @@ public sealed class QwenPawOptions
 
     public int TimeoutSeconds { get; set; } = 30;
 
-    public string BrowserCdpUrl { get; set; } = "http://100.76.185.111:19223";
-
     /// <summary>Per-instance runtime settings (keys: core, gm, climax, planthy).
     /// Bound from QwenPaw__Instances__&lt;key&gt;__*; credentials come from Infisical.</summary>
     public Dictionary<string, QwenPawInstanceCredentials> Instances { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -28,4 +26,8 @@ public sealed class QwenPawInstanceCredentials
 
     /// <summary>Public endpoint, used only when the internal endpoint is unreachable.</summary>
     public string? PublicUrl { get; set; }
+
+    /// <summary>Internal (tailnet/private) Chromium CDP endpoint for this instance's browser service.
+    /// Public hostnames are rejected; the browser is never reached through a public route.</summary>
+    public string? BrowserCdpUrl { get; set; }
 }
