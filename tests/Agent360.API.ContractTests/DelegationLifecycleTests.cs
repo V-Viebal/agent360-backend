@@ -60,6 +60,25 @@ public sealed class DelegationLifecycleTests : IDisposable
     private static readonly IHostEnvironment Prod = new TestEnv("/") { EnvironmentName = "Production" };
     private static readonly IHostEnvironment Dev = new TestEnv("/") { EnvironmentName = "Development" };
 
+    private static HttpContext SignedIn(string sub, bool authenticated = true)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Method = "POST";
+        ctx.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+            [new System.Security.Claims.Claim("sub", sub)], authenticated ? "Bearer" : null));
+        return ctx;
+    }
+
+    [Fact]
+    public void SignedInAdminSubject_MayWrite_OthersMayNot()
+    {
+        var o = new Agent360SecurityOptions { OperatorToken = "s3cret", AdminSubjects = "1my9xeouvb48; other" };
+        OperatorAuthFilter.IsSignedInAdmin(SignedIn("1my9xeouvb48"), o).Should().BeTrue();
+        OperatorAuthFilter.IsSignedInAdmin(SignedIn("someone-else"), o).Should().BeFalse("only listed Logto subjects");
+        OperatorAuthFilter.IsSignedInAdmin(SignedIn("1my9xeouvb48", authenticated: false), o).Should().BeFalse("an unvalidated identity is not a session");
+        OperatorAuthFilter.IsSignedInAdmin(SignedIn("1my9xeouvb48"), new Agent360SecurityOptions { OperatorToken = "s3cret" }).Should().BeFalse("empty AdminSubjects grants nothing");
+    }
+
     [Fact]
     public void OperatorAuth_RejectsMissingOrWrongToken() =>
         new[] { Http("POST"), Http("POST", "wrong"), Http("PUT", header: "nope") }

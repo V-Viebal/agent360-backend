@@ -49,13 +49,21 @@ public sealed class OperatorAuthFilter(
         var http = context.HttpContext;
         if (HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method) || HttpMethods.IsOptions(http.Request.Method))
             return next(context);
-        return IsAuthorized(http, options.CurrentValue, env)
+        return IsAuthorized(http, options.CurrentValue, env) || IsSignedInAdmin(http, options.CurrentValue)
             ? next(context)
             : ValueTask.FromResult<object?>(Results.Problem(
                 detail: "Operator token required for this action (Authorization: Bearer <token> or X-Agent360-Operator-Token).",
                 statusCode: StatusCodes.Status401Unauthorized,
                 title: "Unauthorized"));
     }
+
+    /// <summary>
+    /// A validated Logto session (JwtBearer already ran) whose subject is listed in AdminSubjects: the same people
+    /// who hold the Admin policy may run sub-agent/delegation writes from the Skyer UI without an operator key.
+    /// </summary>
+    public static bool IsSignedInAdmin(HttpContext http, Agent360SecurityOptions opt) =>
+        http.User.Identity?.IsAuthenticated == true && opt.IsAdminSubject(http.User.FindFirst("sub")?.Value
+            ?? http.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value);
 
     /// <summary>True only when a configured operator token is presented (never true by configuration alone).</summary>
     public static bool PresentsOperatorToken(HttpContext http, Agent360SecurityOptions opt)
