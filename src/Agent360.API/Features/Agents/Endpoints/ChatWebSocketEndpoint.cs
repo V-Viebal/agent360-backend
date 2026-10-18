@@ -61,6 +61,17 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
 
                     // Handle normal chat message
                     var messageText = doc.RootElement.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
+
+                    var (accessAllowed, accessReason) = await AgentOwnershipGuard.CheckAccessAsync(
+                        agentId, context, context.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                        context.RequestServices.GetRequiredService<IConfiguration>(), ct);
+                    if (!accessAllowed)
+                    {
+                        var errPayload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "error", error = "AGENT_ACCESS_DENIED", message = accessReason }));
+                        await webSocket.SendAsync(new ArraySegment<byte>(errPayload), WebSocketMessageType.Text, true, ct);
+                        continue;
+                    }
+
                     if (!IamRevocationGuard.IsExecutionAllowed(agentId, out var reason))
                     {
                         var errPayload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "error", error = "IAM_REVOKED", message = reason }));

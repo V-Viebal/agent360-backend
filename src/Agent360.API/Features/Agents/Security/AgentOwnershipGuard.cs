@@ -72,7 +72,7 @@ public static class AgentOwnershipGuard
 
         if (string.IsNullOrWhiteSpace(connStr))
         {
-            return (true, null); // Fallback open if db is missing
+            return (false, "Database connection is not configured to verify agent ownership");
         }
 
         try
@@ -93,10 +93,10 @@ public static class AgentOwnershipGuard
                 return (true, null);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Fallback allow if error executing check
-            return (true, null);
+            // Fail-closed on database check error
+            return (false, $"Unable to verify agent ownership due to access check error: {ex.Message}");
         }
 
         return (false, $"You are not assigned as owner or operator for agent '{cleanSlug}'. Contact an administrator to grant access.");

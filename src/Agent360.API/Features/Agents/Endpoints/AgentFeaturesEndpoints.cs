@@ -155,6 +155,31 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             CancellationToken ct) =>
         {
             logger.LogInformation("Root console chat request for agent '{AgentId}', session '{SessionId}'", request.AgentId, request.SessionId);
+            var agentTarget = request.AgentId ?? "default";
+            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                agentTarget, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
+            if (!accessAllowed)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "AGENT_ACCESS_DENIED",
+                    message = accessReason
+                }, ct);
+                return;
+            }
+            if (!IamRevocationGuard.IsExecutionAllowed(agentTarget, out var revocationReason))
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "IAM_REVOKED",
+                    message = revocationReason
+                }, ct);
+                return;
+            }
+
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
