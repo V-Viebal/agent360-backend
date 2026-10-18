@@ -32,6 +32,9 @@ public static class EndpointConfiguration
 #pragma warning restore EXTEXP0001
             webAppBuilder.Services.AddHttpClient<IQwenPawClient, QwenPawClient>();
             webAppBuilder.Services.AddHttpClient<IBrowserCdpService, BrowserCdpService>();
+            webAppBuilder.Services.AddHttpClient("agent360-browser-cdp", c => c.Timeout = TimeSpan.FromSeconds(8));
+            // Scoped: depends on the transient typed fleet client; its own cache is the shared IMemoryCache.
+            webAppBuilder.Services.AddScoped<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
             webAppBuilder.Services.AddOptions<SubAgentOptions>().BindConfiguration(SubAgentOptions.Section);
             webAppBuilder.Services.AddSingleton<SubAgentStore>();
             webAppBuilder.Services.AddScoped<SubAgentService>();

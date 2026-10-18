@@ -174,7 +174,9 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             instance.RequiresLogin ? "/" + LoginPath : null,
             user,
             password,
-            agentId.Equals("mons", StringComparison.OrdinalIgnoreCase) ? "http://100.81.66.42:19222" : instance.CdpUrl)
+            // Each instance has exactly one browser service; agents differ by Chromium profile,
+            // never by host (mons used to be pinned to the GM browser on 6th).
+            instance.CdpUrl)
         {
             Instance = instance,
             AgentId = agentId

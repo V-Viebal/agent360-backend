@@ -1,9 +1,6 @@
-using Agent360.API.Features.Agents.Services;
-using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
@@ -11,114 +8,92 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Agent360.API.Features.Agents.Browser;
 
+/// <summary>
+/// Agent-scoped browser surface. Every call is confined to the agent's own Chromium profile
+/// (browser context): pages, screenshots and the screencast never show another agent's tabs.
+/// </summary>
 public sealed class AgentBrowserCdpEndpoint : IEndpoint
 {
-    private const string DefaultCdpHttpHost = "http://100.76.185.111:19223";
-
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
-        // 1. List active browser pages for an agent (routed to node CDP endpoint)
+        // Browser identity for the viewer: Selkies URL, CDP endpoint, owned profile, live tabs.
+        routeBuilder.MapGet(
+            "agents/{agentId}/browser",
+            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            {
+                var info = await directory.GetAsync(agentId, ct);
+                return info is null
+                    ? TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser profile" })
+                    : TypedResults.Ok(info);
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("GetAgentBrowser")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Agent's browser service, owned Chromium profile and its live tabs")
+            .AllowAnonymous();
+
         routeBuilder.MapGet(
             "agents/{agentId}/browser/pages",
-            async Task<IResult> (
-                string agentId,
-                IHttpClientFactory httpClientFactory,
-                IFleetInstanceRoutingService routingService,
-                CancellationToken cancellationToken) =>
+            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
             {
-                var target = routingService.ResolveTarget(agentId);
-                using var httpClient = httpClientFactory.CreateClient();
-                var pages = await GetBrowserPagesAsync(httpClient, target.CdpUrl, cancellationToken);
-                return TypedResults.Ok(pages);
+                var info = await directory.GetAsync(agentId, ct);
+                if (info is null)
+                {
+                    return TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser profile" });
+                }
+                return TypedResults.Ok(info.Tabs.Where(t => !t.Anchor)
+                    .Select(t => new BrowserPageSummary(t.TargetId, t.Title, t.Url, "page", null)).ToList());
             })
             .MapToApiVersion(ApiVersion.Default)
             .WithName("GetAgentBrowserPages")
             .WithTags(EndpointTags.Agents)
-            .WithSummary("List active browser pages for agent")
+            .WithSummary("List the agent's own browser tabs (its Chromium profile only)")
             .AllowAnonymous();
 
-        // 2. Snapshot screenshot for quick inspection
         routeBuilder.MapGet(
             "agents/{agentId}/browser/screenshot",
-            async Task<IResult> (
-                string agentId,
-                IHttpClientFactory httpClientFactory,
-                IFleetInstanceRoutingService routingService,
-                [FromQuery] string? pageId,
-                CancellationToken cancellationToken) =>
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, CancellationToken ct) =>
             {
-                var target = routingService.ResolveTarget(agentId);
-                using var httpClient = httpClientFactory.CreateClient();
-                var pages = await GetBrowserPagesAsync(httpClient, target.CdpUrl, cancellationToken);
-                var targetPage = string.IsNullOrEmpty(pageId)
-                    ? pages.FirstOrDefault(p => p.Type == "page")
-                    : pages.FirstOrDefault(p => p.Id == pageId);
-
-                if (targetPage is null)
+                var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
+                if (page is null)
                 {
-                    return TypedResults.NotFound(new { message = $"No open browser page found for agent {agentId}" });
+                    return TypedResults.NotFound(new { message = error });
                 }
-
-                var screenshotBase64 = await CaptureScreenshotAsync(targetPage.Id, target.CdpUrl, cancellationToken);
-                if (screenshotBase64 is null)
-                {
-                    return TypedResults.Problem("Failed to capture screenshot from CDP target.");
-                }
-
-                return TypedResults.Ok(new BrowserScreenshotResponse(
-                    AgentId: agentId,
-                    PageId: targetPage.Id,
-                    Format: "jpeg",
-                    Base64Data: screenshotBase64,
-                    CapturedAt: DateTimeOffset.UtcNow));
+                var data = await CaptureScreenshotAsync(cdp!, page.TargetId, ct);
+                return data is null
+                    ? TypedResults.Problem("Failed to capture screenshot from CDP target.", statusCode: StatusCodes.Status502BadGateway)
+                    : TypedResults.Ok(new BrowserScreenshotResponse(agentId, page.TargetId, "jpeg", data, DateTimeOffset.UtcNow));
             })
             .MapToApiVersion(ApiVersion.Default)
             .WithName("GetAgentBrowserScreenshot")
             .WithTags(EndpointTags.Agents)
-            .WithSummary("Capture live screenshot of agent browser")
+            .WithSummary("Capture a screenshot of the agent's own browser tab")
             .AllowAnonymous();
 
-        // 3. Raw JPEG image endpoint
         routeBuilder.MapGet(
             "agents/{agentId}/browser/image.jpg",
-            async Task<IResult> (
-                string agentId,
-                IHttpClientFactory httpClientFactory,
-                IFleetInstanceRoutingService routingService,
-                [FromQuery] string? pageId,
-                CancellationToken cancellationToken) =>
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, CancellationToken ct) =>
             {
-                var target = routingService.ResolveTarget(agentId);
-                using var httpClient = httpClientFactory.CreateClient();
-                var pages = await GetBrowserPagesAsync(httpClient, target.CdpUrl, cancellationToken);
-                var targetPage = string.IsNullOrEmpty(pageId)
-                    ? pages.FirstOrDefault(p => p.Type == "page")
-                    : pages.FirstOrDefault(p => p.Id == pageId);
-
-                if (targetPage is null)
+                var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
+                if (page is null)
                 {
-                    return TypedResults.NotFound(new { message = "No browser page available" });
+                    return TypedResults.NotFound(new { message = error });
                 }
-
-                var screenshotBase64 = await CaptureScreenshotAsync(targetPage.Id, target.CdpUrl, cancellationToken);
-                if (screenshotBase64 is null)
-                {
-                    return TypedResults.Problem("Failed to capture screenshot");
-                }
-
-                var imageBytes = Convert.FromBase64String(screenshotBase64);
-                return TypedResults.File(imageBytes, "image/jpeg");
+                var data = await CaptureScreenshotAsync(cdp!, page.TargetId, ct);
+                return data is null
+                    ? TypedResults.Problem("Failed to capture screenshot", statusCode: StatusCodes.Status502BadGateway)
+                    : TypedResults.File(Convert.FromBase64String(data), "image/jpeg");
             })
             .MapToApiVersion(ApiVersion.Default)
             .WithName("GetAgentBrowserRawImage")
             .WithTags(EndpointTags.Agents)
-            .WithSummary("Get direct image JPEG of agent browser viewport")
+            .WithSummary("JPEG of the agent's own browser tab")
             .AllowAnonymous();
 
-        // 4. Real-time WebSocket Screencast Bridge
+        // Live screencast of the agent's tab (inspection only; interactive control is the Selkies viewer).
         routeBuilder.Map(
             "/api/v1/agents/{agentId}/browser/stream",
-            async (string agentId, HttpContext context) =>
+            async (string agentId, HttpContext context, AgentBrowserDirectory directory) =>
             {
                 if (!context.WebSockets.IsWebSocketRequest)
                 {
@@ -126,166 +101,160 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     await context.Response.WriteAsync("WebSocket connection expected.");
                     return;
                 }
-
+                var ct = context.RequestAborted;
+                var (page, cdp, error) = await PickPageAsync(directory, agentId, context.Request.Query["pageId"], ct);
                 using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
-
-                // Get target page
-                var routingService = context.RequestServices.GetRequiredService<IFleetInstanceRoutingService>();
-                var target = routingService.ResolveTarget(agentId);
-                using var http = new HttpClient();
-                var pages = await GetBrowserPagesAsync(http, target.CdpUrl, context.RequestAborted);
-                var page = pages.FirstOrDefault(p => p.Type == "page");
                 if (page is null)
                 {
-                    await clientWs.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, "No browser page available", CancellationToken.None);
+                    await clientWs.CloseAsync(WebSocketCloseStatus.EndpointUnavailable, Truncate(error, 120), CancellationToken.None);
                     return;
                 }
-
-                using var cdpWs = new ClientWebSocket();
-                var wsHost = new Uri(target.CdpUrl).Authority;
-                var cdpUri = new Uri($"ws://{wsHost}/devtools/page/{page.Id}");
-                await cdpWs.ConnectAsync(cdpUri, context.RequestAborted);
-
-                // Start Screencast on CDP
-                var startMsg = JsonSerializer.Serialize(new
-                {
-                    id = 1001,
-                    method = "Page.startScreencast",
-                    @params = new { format = "jpeg", quality = 70, everyNthFrame = 1 }
-                });
-                var startBytes = Encoding.UTF8.GetBytes(startMsg);
-                await cdpWs.SendAsync(new ArraySegment<byte>(startBytes), WebSocketMessageType.Text, true, context.RequestAborted);
-
-                // Bi-directional pump
-                var cts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
-                var cdpToClient = PumpCdpToClientAsync(cdpWs, clientWs, cts.Token);
-                var clientToCdp = PumpClientToCdpAsync(clientWs, cdpWs, cts.Token);
-
-                await Task.WhenAny(cdpToClient, clientToCdp);
-                cts.Cancel();
+                var maxWidth = Math.Clamp(int.TryParse(context.Request.Query["maxWidth"], out var w) ? w : 1280, 320, 1920);
+                var quality = Math.Clamp(int.TryParse(context.Request.Query["quality"], out var q) ? q : 55, 20, 85);
+                await ScreencastAsync(cdp!, page.TargetId, clientWs, maxWidth, quality, ct);
             });
     }
 
-    private static async Task<IReadOnlyList<BrowserPageSummary>> GetBrowserPagesAsync(HttpClient httpClient, string? cdpHost, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var host = !string.IsNullOrWhiteSpace(cdpHost) ? cdpHost : DefaultCdpHttpHost;
-            var url = $"{host.TrimEnd('/')}/json/list";
-            var nodes = await httpClient.GetFromJsonAsync<JsonArray>(url, cancellationToken);
-            if (nodes is null) return Array.Empty<BrowserPageSummary>();
+    private static string Truncate(string? s, int n) => string.IsNullOrEmpty(s) ? "" : s.Length <= n ? s : s[..n];
 
-            var list = new List<BrowserPageSummary>();
-            foreach (var node in nodes)
-            {
-                if (node is JsonObject obj)
-                {
-                    list.Add(new BrowserPageSummary(
-                        Id: obj["id"]?.ToString() ?? "",
-                        Title: obj["title"]?.ToString() ?? "",
-                        Url: obj["url"]?.ToString() ?? "",
-                        Type: obj["type"]?.ToString() ?? "page",
-                        WebSocketDebuggerUrl: obj["webSocketDebuggerUrl"]?.ToString()));
-                }
-            }
-            return list;
-        }
-        catch
+    private static async Task<(AgentBrowserTab? Page, string? Cdp, string? Error)> PickPageAsync(
+        AgentBrowserDirectory directory, string agentId, string? pageId, CancellationToken ct)
+    {
+        var info = await directory.GetAsync(agentId, ct);
+        if (info is null)
         {
-            return Array.Empty<BrowserPageSummary>();
+            return (null, null, $"Agent '{agentId}' has no mapped browser profile");
         }
+        if (!info.CdpReachable)
+        {
+            return (null, null, $"Browser {info.Service} is not reachable");
+        }
+        if (!info.ProfileWindowOpen)
+        {
+            return (null, null, $"Profile '{info.Profile}' window is not open yet");
+        }
+        // Only targets inside the agent's own browser context are eligible; a foreign pageId is rejected.
+        var page = string.IsNullOrEmpty(pageId)
+            ? info.Tabs.FirstOrDefault(t => !t.Anchor) ?? info.Tabs.FirstOrDefault()
+            : info.Tabs.FirstOrDefault(t => t.TargetId == pageId);
+        return page is null ? (null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, null);
     }
 
-    private static async Task<string?> CaptureScreenshotAsync(string pageId, string? cdpHost, CancellationToken cancellationToken)
+    private static Uri PageSocket(string cdpUrl, string targetId)
     {
+        var cdp = new Uri(cdpUrl);
+        return new Uri($"ws://{cdp.Authority}/devtools/page/{Uri.EscapeDataString(targetId)}");
+    }
+
+    private static async Task<string?> CaptureScreenshotAsync(string cdpUrl, string targetId, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(15));
         using var ws = new ClientWebSocket();
-        var host = !string.IsNullOrWhiteSpace(cdpHost) ? new Uri(cdpHost).Authority : "100.76.185.111:19223";
-        var uri = new Uri($"ws://{host}/devtools/page/{pageId}");
-        await ws.ConnectAsync(uri, cancellationToken);
-
-        var req = JsonSerializer.Serialize(new
-        {
-            id = 1,
-            method = "Page.captureScreenshot",
-            @params = new { format = "jpeg", quality = 65 }
-        });
-        var bytes = Encoding.UTF8.GetBytes(req);
-        await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cancellationToken);
-
-        var buffer = new byte[1024 * 64];
-        using var ms = new MemoryStream();
+        await ws.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
+        await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 65 } }, cts.Token);
         while (ws.State == WebSocketState.Open)
         {
-            var res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
-            ms.Write(buffer, 0, res.Count);
-            if (res.EndOfMessage)
+            var bytes = await ReceiveAsync(ws, cts.Token);
+            if (bytes is null)
             {
-                var json = Encoding.UTF8.GetString(ms.ToArray());
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("result", out var resultEl) &&
-                    resultEl.TryGetProperty("data", out var dataEl))
-                {
-                    return dataEl.GetString();
-                }
                 break;
+            }
+            using var doc = JsonDocument.Parse(bytes);
+            if (doc.RootElement.TryGetProperty("id", out var id) && id.GetInt32() == 1)
+            {
+                return doc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("data", out var d) ? d.GetString() : null;
             }
         }
         return null;
     }
 
-    private static async Task PumpCdpToClientAsync(ClientWebSocket cdpWs, WebSocket clientWs, CancellationToken ct)
+    private static async Task ScreencastAsync(string cdpUrl, string targetId, WebSocket clientWs, int maxWidth, int quality, CancellationToken ct)
     {
-        var buffer = new byte[1024 * 128];
-        while (!ct.IsCancellationRequested && cdpWs.State == WebSocketState.Open && clientWs.State == WebSocketState.Open)
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var cdpWs = new ClientWebSocket();
+        cdpWs.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        await cdpWs.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
+        // everyNthFrame=2 + maxWidth keeps phones and slow links smooth; frames are ACKed only after the
+        // client accepted the previous one, so a slow viewer gets fewer frames instead of a growing queue.
+        await SendAsync(cdpWs, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality, maxWidth, maxHeight = maxWidth, everyNthFrame = 2 } }, cts.Token);
+
+        var fromClient = Task.Run(async () =>
         {
-            using var ms = new MemoryStream();
-            WebSocketReceiveResult res;
-            do
+            var buf = new byte[4096];
+            while (clientWs.State == WebSocketState.Open && !cts.IsCancellationRequested)
             {
-                res = await cdpWs.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                ms.Write(buffer, 0, res.Count);
-            } while (!res.EndOfMessage);
-
-            var rawBytes = ms.ToArray();
-            var text = Encoding.UTF8.GetString(rawBytes);
-
-            // If it's a screencast frame, ACK it automatically back to CDP to sustain smooth stream
-            if (text.Contains("Page.screencastFrame"))
-            {
-                try
+                var r = await clientWs.ReceiveAsync(buf, cts.Token);
+                if (r.MessageType == WebSocketMessageType.Close)
                 {
-                    using var doc = JsonDocument.Parse(text);
-                    if (doc.RootElement.TryGetProperty("params", out var p) &&
-                        p.TryGetProperty("sessionId", out var sId))
-                    {
-                        var ack = JsonSerializer.Serialize(new
-                        {
-                            id = 2002,
-                            method = "Page.screencastFrameAck",
-                            @params = new { sessionId = sId.GetInt32() }
-                        });
-                        var ackBytes = Encoding.UTF8.GetBytes(ack);
-                        await cdpWs.SendAsync(new ArraySegment<byte>(ackBytes), WebSocketMessageType.Text, true, ct);
-                    }
+                    break;
                 }
-                catch { }
             }
+        }, cts.Token);
 
-            // Forward text frame to client
-            await clientWs.SendAsync(new ArraySegment<byte>(rawBytes), WebSocketMessageType.Text, true, ct);
+        try
+        {
+            while (cdpWs.State == WebSocketState.Open && clientWs.State == WebSocketState.Open && !cts.IsCancellationRequested)
+            {
+                var receive = ReceiveAsync(cdpWs, cts.Token);
+                if (await Task.WhenAny(receive, fromClient) == fromClient)
+                {
+                    break;
+                }
+                var bytes = await receive;
+                if (bytes is null)
+                {
+                    break;
+                }
+                using var doc = JsonDocument.Parse(bytes);
+                if (!doc.RootElement.TryGetProperty("method", out var method) || method.GetString() != "Page.screencastFrame")
+                {
+                    continue;
+                }
+                var p = doc.RootElement.GetProperty("params");
+                var frame = JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = p.GetProperty("data").GetString() } });
+                using (var sendCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+                {
+                    sendCts.CancelAfter(TimeSpan.FromSeconds(10));
+                    await clientWs.SendAsync(frame, WebSocketMessageType.Text, true, sendCts.Token);
+                }
+                await SendAsync(cdpWs, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = p.GetProperty("sessionId").GetInt32() } }, cts.Token);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or WebSocketException)
+        {
+        }
+        finally
+        {
+            cts.Cancel();
+            if (cdpWs.State == WebSocketState.Open)
+            {
+                try { await SendAsync(cdpWs, new { id = 3, method = "Page.stopScreencast" }, CancellationToken.None); } catch { }
+            }
+            if (clientWs.State == WebSocketState.Open)
+            {
+                try { await clientWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
+            }
         }
     }
 
-    private static async Task PumpClientToCdpAsync(WebSocket clientWs, ClientWebSocket cdpWs, CancellationToken ct)
-    {
-        var buffer = new byte[1024 * 32];
-        while (!ct.IsCancellationRequested && clientWs.State == WebSocketState.Open && cdpWs.State == WebSocketState.Open)
-        {
-            var res = await clientWs.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-            if (res.MessageType == WebSocketMessageType.Close) break;
+    private static Task SendAsync(WebSocket ws, object message, CancellationToken ct) =>
+        ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message), WebSocketMessageType.Text, true, ct);
 
-            // Forward input / commands from client to CDP (e.g. Mouse/Key events)
-            await cdpWs.SendAsync(new ArraySegment<byte>(buffer, 0, res.Count), res.MessageType, res.EndOfMessage, ct);
-        }
+    private static async Task<byte[]?> ReceiveAsync(WebSocket ws, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        using var ms = new MemoryStream();
+        WebSocketReceiveResult r;
+        do
+        {
+            r = await ws.ReceiveAsync(buffer, ct);
+            if (r.MessageType == WebSocketMessageType.Close)
+            {
+                return null;
+            }
+            ms.Write(buffer, 0, r.Count);
+        } while (!r.EndOfMessage);
+        return ms.ToArray();
     }
 }
