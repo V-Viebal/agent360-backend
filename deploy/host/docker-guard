@@ -1,0 +1,35 @@
+#!/bin/bash
+# Agent360 guard (node 2nd): restarting/stopping agent360-* containers by hand cuts every live SSE chat stream.
+# - frontend: static assets are bind-mounted and served fresh; nothing needs a restart.
+#             `agent360-restart frontend` reloads nginx only when the conf changed.
+# - backend : `agent360-restart backend|backend-staging` applies env, waits for readiness, and is flock-serialized with CI.
+# Emergency override: AGENT360_ALLOW_DOCKER_RESTART=1 docker restart agent360-...
+REAL=/usr/bin/docker
+cmd="${1:-}"
+case "$cmd" in
+  restart|stop|kill|rm|pause)
+    if [ "${AGENT360_ALLOW_DOCKER_RESTART:-0}" != "1" ]; then
+      for a in "${@:2}"; do
+        surface="${a#agent360-}"
+        case "$a" in
+          agent360-frontend|agent360-frontend-staging)
+            logger -t agent360-guard "blocked: docker $cmd $a (ssh=${SSH_CONNECTION:-local})"
+            echo "agent360-guard: 'docker $cmd $a' is blocked because it cuts live chat streams. Assets are served fresh from the bind mount." >&2
+            if [ "$cmd" = restart ]; then
+              echo "agent360-guard: running 'agent360-restart $surface' instead (reloads nginx only if its config changed)." >&2
+              exec /usr/local/sbin/agent360-restart "$surface"
+            fi
+            exit 3 ;;
+          agent360-backend|agent360-backend-staging)
+            logger -t agent360-guard "redirected: docker $cmd $a (ssh=${SSH_CONNECTION:-local})"
+            if [ "$cmd" = restart ]; then
+              echo "agent360-guard: running 'agent360-restart $surface' instead (serialized with CI, waits for readiness)." >&2
+              exec /usr/local/sbin/agent360-restart "$surface"
+            fi
+            echo "agent360-guard: 'docker $cmd $a' is blocked. Set AGENT360_ALLOW_DOCKER_RESTART=1 for an emergency." >&2
+            exit 3 ;;
+        esac
+      done
+    fi ;;
+esac
+exec "$REAL" "$@"

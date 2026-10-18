@@ -3,9 +3,12 @@
 #   backend | backend-staging   -> recreate when backend.env changed, else restart; wait for "Now listening"
 #   frontend | frontend-staging -> install nginx conf from the CI checkout when given, nginx -t, reload only on change
 set -euo pipefail
+# Call the real docker: /usr/local/bin/docker is a guard that redirects agent360 restarts back to this hook
+# (re-entering would self-deadlock on the deploy flock).
+DOCKER=/usr/bin/docker
 wait_backend() {
   local c=$1
-  for i in $(seq 1 60); do sleep 2; docker exec "$c" sh -c "exit 0" 2>/dev/null && docker logs --since 2m "$c" 2>&1 | grep -q "Now listening" && { echo "$c up"; return 0; }; done
+  for i in $(seq 1 60); do sleep 2; $DOCKER exec "$c" sh -c "exit 0" 2>/dev/null && $DOCKER logs --since 2m "$c" 2>&1 | grep -q "Now listening" && { echo "$c up"; return 0; }; done
   echo "$c not ready" >&2; return 1
 }
 apply_backend() { # $1 container $2 compose dir $3 compose file $4 env file
@@ -13,11 +16,11 @@ apply_backend() { # $1 container $2 compose dir $3 compose file $4 env file
   local envsum; envsum=$(sha256sum "$env" | cut -c1-16)
   if [ "$(cat "$stamp" 2>/dev/null)" != "$envsum" ]; then
     # Code is bind-mounted at /app; the image is only the .NET runtime, so never pull (pull_policy: never).
-    (cd "$dir" && docker compose -f "$file" up -d --no-deps --force-recreate --pull never "$c") \
+    (cd "$dir" && $DOCKER compose -f "$file" up -d --no-deps --force-recreate --pull never "$c") \
       || { echo "recreate of $c failed; env NOT applied" >&2; exit 1; }
     echo "$envsum" > "$stamp"; echo "$c recreated (env changed)"
   else
-    docker restart "$c" >/dev/null
+    $DOCKER restart "$c" >/dev/null
   fi
   wait_backend "$c"
 }
@@ -32,7 +35,7 @@ apply_frontend() { # $1 container $2 conf dir $3 optional conf source from the C
     cp -p "$dir/default.conf" "$dir/.default.conf.prev"
     install -m 0644 "$src" "$dir/default.conf.next"
     mv -f "$dir/default.conf.next" "$dir/default.conf"   # directory is mounted, so a rename is picked up
-    if ! docker exec "$c" nginx -t; then
+    if ! $DOCKER exec "$c" nginx -t; then
       mv -f "$dir/.default.conf.prev" "$dir/default.conf"
       echo "nginx -t rejected the new conf; previous conf restored, nothing reloaded" >&2; exit 1
     fi
@@ -40,8 +43,8 @@ apply_frontend() { # $1 container $2 conf dir $3 optional conf source from the C
   local confsum; confsum=$(sha256sum "$dir/default.conf" | cut -c1-16)
   # Static assets are bind-mounted and served fresh. Reloading drains workers and cuts SSE chats: only on change.
   if [ "$(cat "$stamp" 2>/dev/null)" != "$confsum" ]; then
-    docker exec "$c" nginx -t
-    docker exec "$c" nginx -s reload
+    $DOCKER exec "$c" nginx -t
+    $DOCKER exec "$c" nginx -s reload
     echo "$confsum" > "$stamp"; echo "$c reloaded (config changed)"
   else
     echo "$c assets published (no reload needed)"
