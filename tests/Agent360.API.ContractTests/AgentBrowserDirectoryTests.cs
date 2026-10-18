@@ -178,3 +178,24 @@ public sealed class AgentBrowserDirectoryTests
         public HttpClient CreateClient(string name) => new();
     }
 }
+
+public sealed class AgentBrowserContextMemoryTests
+{
+    private static AgentBrowserDirectory.CdpTarget Page(string id, string url, string ctx) => new(id, "page", "t", url, ctx);
+
+    [Fact]
+    public void ContextStaysMappedAfterTheAnchorTabIsNavigatedAway_UntilTheWindowCloses()
+    {
+        var key = "test:" + Guid.NewGuid();
+        var anchor = AgentBrowserDirectory.AnchorPrefix + "Profile%209--><title>x</title>";
+        AgentBrowserDirectory.ResolveContext(key, "Profile 9", [Page("a", anchor, "C9"), Page("b", "https://x", "C1")]).Should().Be("C9");
+        // Agent navigated its anchor tab: same context, no anchor left.
+        AgentBrowserDirectory.ResolveContext(key, "Profile 9", [Page("a", "https://erp.example", "C9"), Page("b", "https://x", "C1")]).Should().Be("C9");
+        // Window closed: no page in C9 any more.
+        AgentBrowserDirectory.ResolveContext(key, "Profile 9", [Page("b", "https://x", "C1")]).Should().BeNull();
+    }
+
+    [Fact]
+    public void NeverSeenProfileWithoutAnchorIsUnmapped() =>
+        AgentBrowserDirectory.ResolveContext("test:" + Guid.NewGuid(), "Profile 8", [Page("b", "https://x", "C1")]).Should().BeNull();
+}

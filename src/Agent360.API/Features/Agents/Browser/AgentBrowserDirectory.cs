@@ -153,7 +153,7 @@ public sealed class AgentBrowserDirectory(
         {
             var all = await ListTargetsAsync(cdp, ct);
             reachable = true;
-            ctx = all.FirstOrDefault(t => t.Type == "page" && ProfileOf(t.Url) == profile)?.BrowserContextId;
+            ctx = ResolveContext(key, profile, all);
             if (ctx is not null)
             {
                 tabs.AddRange(all.Where(t => t.Type == "page" && t.BrowserContextId == ctx)
@@ -169,6 +169,24 @@ public sealed class AgentBrowserDirectory(
         // An unreachable browser is negatively cached longer: a dead node is not re-dialled on every poll.
         cache.Set(key, info, TimeSpan.FromSeconds(reachable ? 5 : 15));
         return info;
+    }
+
+    // profile key -> last browserContextId seen with that profile's anchor tab. Agents navigate or close the anchor
+    // while working; the context stays theirs as long as any page of it is open, so the browser watchdog no longer
+    // has to push a fresh anchor tab in front of the agent's work.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> KnownContexts = new();
+
+    internal static string? ResolveContext(string key, string profile, IReadOnlyCollection<CdpTarget> all)
+    {
+        var anchored = all.FirstOrDefault(t => t.Type == "page" && ProfileOf(t.Url) == profile)?.BrowserContextId;
+        if (anchored is not null)
+        {
+            KnownContexts[key] = anchored;
+            return anchored;
+        }
+        return KnownContexts.TryGetValue(key, out var known) && all.Any(t => t.Type == "page" && t.BrowserContextId == known)
+            ? known
+            : null;
     }
 
     /// <summary>The agent's own pages only (never another profile's), most useful first.</summary>
