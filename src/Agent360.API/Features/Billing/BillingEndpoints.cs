@@ -349,6 +349,8 @@ public sealed class BillingEndpoints : IEndpoint
         .RequireAuthorization();
 
         // 4. Payment Sync & Verification Endpoint (Accepts query or body orderCode)
+        routeBuilder.MapAdminBillingEndpoints();
+
         group.MapPost("sync-order", async (
             HttpContext context,
             IConfiguration config,
@@ -490,5 +492,88 @@ public sealed class BillingEndpoints : IEndpoint
         .WithName("SyncPaymentOrder")
         .WithSummary("Confirm and credit PayOS token order with ledger history")
         .AllowAnonymous();
+    }
+}
+
+// Super Admin Directory & Adjustment Endpoints
+public sealed record AdjustWalletRequest(string TenantId, decimal Amount, string Description);
+
+public static class AdminBillingExtensions
+{
+    public static void MapAdminBillingEndpoints(this IEndpointRouteBuilder routeBuilder)
+    {
+        var group = routeBuilder.MapGroup("admin/billings")
+            .MapToApiVersion(ApiVersion.Default)
+            .WithTags("Admin.Billings")
+            .RequireAuthorization("Admin");
+
+        // 1. Get all wallets directory across all tenants
+        group.MapGet("wallets", async (IConfiguration config, CancellationToken ct) =>
+        {
+            var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+            if (string.IsNullOrWhiteSpace(connStr)) return Results.Problem("Database not configured");
+
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+
+            var list = new List<object>();
+            await using (var cmd = new NpgsqlCommand(@"
+                SELECT w.""TenantId"", w.""BalanceTokens"", w.""Status"", w.""UpdatedAt"",
+                       COALESCE(u.""Email"", w.""TenantId"") as Email,
+                       COALESCE(u.""DisplayName"", u.""FirstName"", w.""TenantId"") as DisplayName
+                FROM user_management.""Wallets"" w
+                LEFT JOIN user_management.""Users"" u ON w.""TenantId"" = u.""LogtoUserId""
+                ORDER BY w.""UpdatedAt"" DESC
+                LIMIT 100;
+            ", conn))
+            {
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var balance = reader.GetDecimal(1);
+                    list.Add(new
+                    {
+                        tenant_id = reader.GetString(0),
+                        balance_tokens = balance,
+                        status = reader.GetString(2),
+                        updated_at = reader.GetDateTime(3),
+                        email = reader.GetString(4),
+                        display_name = reader.GetString(5),
+                        runway_days = balance > 0 ? (int)(balance / 25000) : 0
+                    });
+                }
+            }
+
+            return Results.Ok(list);
+        })
+        .WithName("AdminGetWalletsDirectory")
+        .WithSummary("List all tenant wallets across the platform (Admin only)");
+
+        // 2. Adjust or grant bonus tokens to a tenant
+        group.MapPost("wallets/adjust", async (
+            AdjustWalletRequest request,
+            WalletService walletService,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.TenantId)) return Results.BadRequest(new { message = "tenantId is required" });
+
+            var newBalance = await walletService.AdjustTokensAsync(
+                request.TenantId,
+                request.Amount,
+                request.Amount >= 0 ? "ADMIN_GRANT" : "ADMIN_DEDUCT",
+                request.Description ?? "Admin manual balance adjustment",
+                $"admin_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+                ct);
+
+            return Results.Ok(new
+            {
+                success = true,
+                tenant_id = request.TenantId,
+                amount_adjusted = request.Amount,
+                new_balance = newBalance
+            });
+        })
+        .WithName("AdminAdjustWallet")
+        .WithSummary("Grant bonus or deduct tokens manually for a tenant (Admin only)");
     }
 }

@@ -36,6 +36,7 @@ public static class EndpointConfiguration
                 });
 #pragma warning restore EXTEXP0001
             webAppBuilder.Services.AddHttpClient<Agent360.API.Features.Billing.PayOSService>();
+            webAppBuilder.Services.AddScoped<Agent360.API.Features.Billing.WalletService>();
             webAppBuilder.Services.AddHttpClient<IQwenPawClient, QwenPawClient>();
             // Internal (tailnet) CDP only: fast connect failure, pooled sockets, no proxies, no redirects.
             webAppBuilder.Services.AddHttpClient(Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(8))

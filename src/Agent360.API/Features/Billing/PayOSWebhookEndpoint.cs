@@ -2,8 +2,6 @@ using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
 using Npgsql;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 
 namespace Agent360.API.Features.Billing;
@@ -74,11 +72,13 @@ public sealed class PayOSWebhookEndpoint : IEndpoint
                         string? tenantId = null;
                         string? pkgId = null;
                         string status = "pending";
+                        decimal tokenYield = 0;
 
                         await using (var cmd = new NpgsqlCommand(@"
-                            SELECT ""TenantId"", ""PackageId"", ""Status"" 
-                            FROM user_management.""PaymentTransactions"" 
-                            WHERE ""OrderCode"" = $1 
+                            SELECT t.""TenantId"", t.""PackageId"", t.""Status"", COALESCE(p.""TokenYield"", 0)
+                            FROM user_management.""PaymentTransactions"" t
+                            LEFT JOIN user_management.""TopupPackages"" p ON t.""PackageId"" = p.""Id""
+                            WHERE t.""OrderCode"" = $1 
                             FOR UPDATE;
                         ", conn, tx))
                         {
@@ -89,32 +89,68 @@ public sealed class PayOSWebhookEndpoint : IEndpoint
                                 tenantId = reader.GetString(0);
                                 pkgId = reader.GetString(1);
                                 status = reader.GetString(2);
+                                tokenYield = reader.GetDecimal(3);
                             }
                         }
 
                         if (tenantId != null && status != "paid" && status != "success")
                         {
-                            await using (var updateCmd = new NpgsqlCommand(@"
+                            decimal currentBalance = 0;
+                            await using (var bCmd = new NpgsqlCommand(@"
+                                SELECT ""BalanceTokens"" FROM user_management.""Wallets"" WHERE ""TenantId"" = $1 FOR UPDATE;
+                            ", conn, tx))
+                            {
+                                bCmd.Parameters.AddWithValue(tenantId);
+                                var obj = await bCmd.ExecuteScalarAsync(ct);
+                                if (obj != null && obj != DBNull.Value)
+                                {
+                                    currentBalance = Convert.ToDecimal(obj);
+                                }
+                            }
+
+                            var newBalance = currentBalance + tokenYield;
+
+                            // 1. Update Payment Transaction
+                            await using (var updateTxCmd = new NpgsqlCommand(@"
                                 UPDATE user_management.""PaymentTransactions""
                                 SET ""Status"" = 'paid', ""CompletedAt"" = NOW()
                                 WHERE ""OrderCode"" = $1;
-
-                                UPDATE user_management.""Wallets""
-                                SET ""BalanceTokens"" = ""BalanceTokens"" + (
-                                    SELECT ""TokenYield"" FROM user_management.""TopupPackages"" WHERE ""Id"" = $2
-                                ),
-                                ""UpdatedAt"" = NOW()
-                                WHERE ""TenantId"" = $3;
                             ", conn, tx))
                             {
-                                updateCmd.Parameters.AddWithValue(orderCode);
-                                updateCmd.Parameters.AddWithValue(pkgId!);
-                                updateCmd.Parameters.AddWithValue(tenantId);
-                                await updateCmd.ExecuteNonQueryAsync(ct);
+                                updateTxCmd.Parameters.AddWithValue(orderCode);
+                                await updateTxCmd.ExecuteNonQueryAsync(ct);
+                            }
+
+                            // 2. Update Wallet balance
+                            await using (var updateWalletCmd = new NpgsqlCommand(@"
+                                UPDATE user_management.""Wallets""
+                                SET ""BalanceTokens"" = $1, ""UpdatedAt"" = NOW()
+                                WHERE ""TenantId"" = $2;
+                            ", conn, tx))
+                            {
+                                updateWalletCmd.Parameters.AddWithValue(newBalance);
+                                updateWalletCmd.Parameters.AddWithValue(tenantId);
+                                await updateWalletCmd.ExecuteNonQueryAsync(ct);
+                            }
+
+                            // 3. Insert Ledger Transaction record (App360 parity)
+                            await using (var insertLedgerCmd = new NpgsqlCommand(@"
+                                INSERT INTO user_management.""LedgerTransactions""
+                                (""TenantId"", ""Amount"", ""BalanceAfter"", ""Type"", ""ReferenceId"", ""Description"", ""CreatedAt"")
+                                VALUES ($1, $2, $3, 'TOPUP', $4, $5, NOW());
+                            ", conn, tx))
+                            {
+                                insertLedgerCmd.Parameters.AddWithValue(tenantId);
+                                insertLedgerCmd.Parameters.AddWithValue(tokenYield);
+                                insertLedgerCmd.Parameters.AddWithValue(newBalance);
+                                insertLedgerCmd.Parameters.AddWithValue($"order_{orderCode}");
+                                insertLedgerCmd.Parameters.AddWithValue($"PayOS IPN Topup (+{tokenYield:#,##0} tokens)");
+                                await insertLedgerCmd.ExecuteNonQueryAsync(ct);
                             }
 
                             await tx.CommitAsync(ct);
-                            logger.LogInformation("Successfully credited tokens for order {OrderCode} to tenant {TenantId}", orderCode, tenantId);
+                            logger.LogInformation("Successfully credited tokens for order {OrderCode} to tenant {TenantId}. New balance: {NewBalance}", 
+                                orderCode, tenantId, newBalance);
                         }
                         else
                         {

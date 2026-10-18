@@ -1,3 +1,4 @@
+using Agent360.API.Features.Billing;
 using System.Text;
 using Asp.Versioning;
 using Agent360.API.Abstractions;
@@ -180,6 +181,23 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 return;
             }
 
+            var currentUser = httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>();
+            var walletService = httpContext.RequestServices.GetRequiredService<WalletService>();
+            var tenantId = currentUser.ExternalUserId ?? "default";
+
+            var (walletOk, currentTokens, balanceReason) = await walletService.AssertSufficientBalanceAsync(tenantId, 100, ct);
+            if (!walletOk)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status402PaymentRequired;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "INSUFFICIENT_TOKENS",
+                    message = balanceReason,
+                    balance = currentTokens
+                }, ct);
+                return;
+            }
+
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
@@ -189,6 +207,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 httpContext.Response.StatusCode = (int)response.StatusCode;
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
                 await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
+                _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
             }
             finally
             {
@@ -232,6 +251,23 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 return;
             }
 
+            var currentUser = httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>();
+            var walletService = httpContext.RequestServices.GetRequiredService<WalletService>();
+            var tenantId = currentUser.ExternalUserId ?? "default";
+
+            var (walletOk, currentTokens, balanceReason) = await walletService.AssertSufficientBalanceAsync(tenantId, 100, ct);
+            if (!walletOk)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status402PaymentRequired;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "INSUFFICIENT_TOKENS",
+                    message = balanceReason,
+                    balance = currentTokens
+                }, ct);
+                return;
+            }
+
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             queueManager.SetSessionTurnActive(effectiveSessionId, true);
             try
@@ -242,6 +278,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
                 await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
+                _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
             }
             finally
             {
