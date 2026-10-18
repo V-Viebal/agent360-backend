@@ -35,7 +35,7 @@ public static class DevelopmentExperienceConfiguration
                 });
             }
 
-            if (!SupportsInteractiveApiDocumentation(app.Environment))
+            if (!SupportsInteractiveApiDocumentation(app.Environment, app.Configuration))
             {
                 return;
             }
@@ -57,8 +57,10 @@ public static class DevelopmentExperienceConfiguration
         }
     }
 
-    private static bool SupportsInteractiveApiDocumentation(IHostEnvironment environment) =>
-        environment.IsDevelopment() || environment.IsStaging();
+    // The OpenAPI document maps every route (incl. operator-guarded writes): only Development exposes it by default.
+    // Staging/Production can opt in with Agent360:Security:ExposeApiReference=true.
+    internal static bool SupportsInteractiveApiDocumentation(IHostEnvironment environment, IConfiguration configuration) =>
+        environment.IsDevelopment() || configuration.GetValue("Agent360:Security:ExposeApiReference", false);
 
     private static void ConfigureDocuments(WebApplication app, ScalarOptions options)
     {

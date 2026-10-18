@@ -12,14 +12,26 @@ namespace Agent360.API.ContractTests;
 public class ContextAndToolResilienceTests
 {
     [Fact]
-    public void Infisical_ResolvesAgentScopedComposioToken_Correctly()
+    public void Infisical_ResolvesAgentScopedComposioToken_AgentKeyFirst_ThenGlobal_ElseNull()
     {
-        // Act
-        var token = InfisicalCredentialAuditService.ResolveAgentComposioToken("mons");
+        var agentKey = "COMPOSIO_API_KEY_ZZTESTAGENT";
+        try
+        {
+            Environment.SetEnvironmentVariable(agentKey, null);
+            Environment.SetEnvironmentVariable("COMPOSIO_API_KEY", null);
+            InfisicalCredentialAuditService.ResolveAgentComposioToken("zztestagent").Should().BeNull("no hardcoded fallback key");
 
-        // Assert
-        token.Should().NotBeNullOrWhiteSpace();
-        token.Should().StartWith("ck_");
+            Environment.SetEnvironmentVariable("COMPOSIO_API_KEY", "ck_global_test");
+            InfisicalCredentialAuditService.ResolveAgentComposioToken("zztestagent").Should().Be("ck_global_test");
+
+            Environment.SetEnvironmentVariable(agentKey, "ck_agent_test");
+            InfisicalCredentialAuditService.ResolveAgentComposioToken("bot:agent360:zztestagent").Should().Be("ck_agent_test");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(agentKey, null);
+            Environment.SetEnvironmentVariable("COMPOSIO_API_KEY", null);
+        }
     }
 
     [Fact]

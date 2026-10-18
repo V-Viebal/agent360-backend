@@ -15,6 +15,12 @@ public sealed class Agent360SecurityOptions
 
     /// <summary>Also protect POST/PUT/PATCH/DELETE on the agent runtime passthrough proxy.</summary>
     public bool ProtectRuntimeProxyWrites { get; set; }
+
+    /// <summary>Require a Logto session (or operator token) for workspace file and chat-history reads.</summary>
+    public bool RequireAuthForSensitiveReads { get; set; }
+
+    /// <summary>Expose Scalar/OpenAPI outside Development (default off).</summary>
+    public bool ExposeApiReference { get; set; }
 }
 
 /// <summary>

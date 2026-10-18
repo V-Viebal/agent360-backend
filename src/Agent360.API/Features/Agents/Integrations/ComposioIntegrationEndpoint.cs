@@ -104,6 +104,12 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
 
                 // Resolve per-agent isolated credential from Infisical / process environment
                 var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent);
+                if (string.IsNullOrWhiteSpace(effectiveToken))
+                {
+                    return Results.Problem(
+                        detail: "Composio is not configured for this agent (COMPOSIO_API_KEY or COMPOSIO_API_KEY_<AGENT> missing).",
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Integration not configured");
+                }
                 var target = routing.ResolveTarget(targetAgent);
 
                 var clientKey = $"composio_{request.AppSlug.ToLowerInvariant().Trim()}";
@@ -258,6 +264,12 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 }
 
                 var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent);
+                if (string.IsNullOrWhiteSpace(effectiveToken))
+                {
+                    return Results.Problem(
+                        detail: "Composio is not configured for this agent (COMPOSIO_API_KEY or COMPOSIO_API_KEY_<AGENT> missing).",
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Integration not configured");
+                }
                 var target = routing.ResolveTarget(targetAgent);
 
                 var clientKey = $"composio_{request.AppSlug.ToLowerInvariant().Trim()}";
