@@ -107,10 +107,17 @@ public sealed class BrowserViewerAccessEndpoint : IEndpoint
         // potential controller. Non-operators keep the screenshot preview.
         routeBuilder.MapPost(
             "agents/{agentId}/browser/viewer",
-            IResult (string agentId, HttpContext http, AgentBrowserDirectory directory, BrowserViewerAccess access,
-                IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment env) =>
+            async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, BrowserViewerAccess access,
+                IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment env,
+                Microsoft.AspNetCore.Authorization.IAuthorizationService authorization) =>
             {
-                if (!OperatorAuthFilter.IsAuthorized(http, security.CurrentValue, env))
+                // Operator key, or a signed-in admin (Logto admin role/scope, AdminSubjects) — the Skyer UI has no
+                // operator key once the user signs in, and previously fell back to a frozen screenshot.
+                var allowed = OperatorAuthFilter.IsAuthorized(http, security.CurrentValue, env)
+                    || OperatorAuthFilter.IsSignedInAdmin(http, security.CurrentValue)
+                    || (http.User.Identity?.IsAuthenticated == true
+                        && (await authorization.AuthorizeAsync(http.User, http, "Admin")).Succeeded);
+                if (!allowed)
                 {
                     return Results.Problem(detail: "Operator token required to open the agent desktop.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
                 }

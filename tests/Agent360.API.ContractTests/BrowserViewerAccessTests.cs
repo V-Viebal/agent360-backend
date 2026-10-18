@@ -68,8 +68,9 @@ public sealed class BrowserViewerAccessTests
     }
 
     [Fact]
-    public void ViewerIssueIsOperatorGuarded() =>
-        Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware.IsProtected("agents/mons/browser/viewer").Should().BeTrue();
+    public void ViewerIssueIsGuardedByTheEndpointNotTheOperatorOnlyMiddleware() =>
+        // The endpoint authorizes operator key OR signed-in admin itself; the operator-only middleware would 401 admins.
+        Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware.IsProtected("agents/mons/browser/viewer").Should().BeFalse();
 
     private sealed class StaticMonitor(Agent360SecurityOptions value) : IOptionsMonitor<Agent360SecurityOptions>
     {
