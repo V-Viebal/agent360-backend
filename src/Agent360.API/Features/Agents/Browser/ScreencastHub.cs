@@ -18,6 +18,17 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
     public int ActiveSessions => _sessions.Count;
 
+    /// <summary>Most recent base64 JPEG any live session produced for this tab (any size), or null.</summary>
+    public string? LatestFrame(string cdpUrl, string targetId)
+    {
+        var prefix = $"{cdpUrl}|{targetId}|";
+        foreach (var (k, s) in _sessions)
+        {
+            if (k.StartsWith(prefix, StringComparison.Ordinal) && s.LastFrameBase64 is { } f) return f;
+        }
+        return null;
+    }
+
     public int ViewerCount(string cdpUrl, string targetId, int maxWidth, int quality) =>
         _sessions.TryGetValue(Key(cdpUrl, targetId, maxWidth, quality), out var s) ? s.ViewerCount : 0;
 
@@ -116,6 +127,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
         public string Key { get; }
         public byte[]? LastFrame { get; private set; }
+        public string? LastFrameBase64 { get; private set; }
         public int ViewerCount { get { lock (_viewers) return _viewers.Count; } }
 
         public void Add(Channel<byte[]> v)
@@ -178,7 +190,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     using var doc = JsonDocument.Parse(ms.GetBuffer().AsMemory(0, (int)ms.Length));
                     if (!doc.RootElement.TryGetProperty("method", out var m) || m.GetString() != "Page.screencastFrame") continue;
                     var p = doc.RootElement.GetProperty("params");
-                    Broadcast(Frame(p.GetProperty("data").GetString() ?? ""));
+                    var data = p.GetProperty("data").GetString() ?? "";
+                    LastFrameBase64 = data;
+                    Broadcast(Frame(data));
                     // ACK at once: per-viewer queues absorb slow clients, the shared session never waits on one.
                     await SendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = p.GetProperty("sessionId").GetInt32() } }, ct);
                 }

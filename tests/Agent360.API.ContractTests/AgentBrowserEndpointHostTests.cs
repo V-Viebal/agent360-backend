@@ -91,6 +91,14 @@ public sealed class AgentBrowserEndpointHostTests : IAsyncLifetime
         (await HandshakeAsync("mons", origin)).Should().Be(HttpStatusCode.Forbidden);
 
     [Fact]
+    public async Task HealthIsValueFree()
+    {
+        using var http = new HttpClient { BaseAddress = _base };
+        var json = await (await http.GetAsync("api/v1/agents/gm-boc/browser/health", Ct)).Content.ReadAsStringAsync(Ct);
+        json.Should().Contain("cdpReachable").And.NotContain("tabs").And.NotContain("viewerUrl").And.NotContain("a360-test-no-such-browser");
+    }
+
+    [Fact]
     public async Task FocusRejectsCrossSiteOrigin()
     {
         using var http = new HttpClient { BaseAddress = _base };

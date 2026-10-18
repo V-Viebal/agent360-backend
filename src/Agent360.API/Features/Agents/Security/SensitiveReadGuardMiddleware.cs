@@ -5,7 +5,7 @@ namespace Agent360.API.Features.Agents.Security;
 
 /// <summary>
 /// When Agent360:Security:RequireAuthForSensitiveReads is on, reads of workspace files/trees, chat lists and chat
-/// histories need a valid Logto access token (JwtBearer, audience = API resource) or the operator token.
+/// histories, and the agent browser (tabs, screenshots, screencast) need a valid Logto access token (JwtBearer, audience = API resource) or the operator token.
 /// Fleet listing, status, health, models and capability lists stay public.
 /// </summary>
 public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
@@ -43,6 +43,9 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
             if (sub == "chats") return true;
             if (sub == "workspace" && parts.Length >= 4 && parts[3] is "tree" or "file-content" or "code-files" or "system-prompt-files") return true;
             if (sub == "memory") return true;
+            // The agent's browser: tab titles/URLs, screenshots and the live screencast. Only the value-free
+            // health probe (cdpReachable/profileWindowOpen) stays public for monitoring.
+            if (sub == "browser") return !(parts.Length == 4 && parts[3] == "health");
         }
         return parts[0] == "chats";
     }

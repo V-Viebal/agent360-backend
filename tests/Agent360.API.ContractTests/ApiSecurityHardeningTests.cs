@@ -116,6 +116,12 @@ public sealed class ApiSecurityHardeningTests
     [InlineData("agents/mons/mcp", false)]
     [InlineData("agents/models", false)]
     [InlineData("agents/mons/workspace/checkpoints/status", false)]
+    [InlineData("agents/mons/browser", true)]
+    [InlineData("agents/mons/browser/pages", true)]
+    [InlineData("agents/mons/browser/image.jpg", true)]
+    [InlineData("agents/mons/browser/screenshot", true)]
+    [InlineData("agents/mons/browser/stream", true)]
+    [InlineData("agents/mons/browser/health", false)]
     public void SensitiveReadGuard_CoversWorkspaceAndChatReads_Only(string rel, bool sensitive)
     {
         SensitiveReadGuardMiddleware.IsSensitive(rel).Should().Be(sensitive);

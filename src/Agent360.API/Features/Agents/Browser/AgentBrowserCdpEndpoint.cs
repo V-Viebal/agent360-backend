@@ -38,6 +38,24 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
+        // Value-free health for monitoring (no tabs, URLs or endpoints): stays public while the rest of
+        // /browser requires sign-in (SensitiveReadGuardMiddleware).
+        routeBuilder.MapGet(
+            "agents/{agentId}/browser/health",
+            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            {
+                var info = await directory.GetAsync(agentId, ct);
+                return info is null
+                    ? TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser profile" })
+                    : TypedResults.Ok(new { agentId, info.Service, info.Profile, info.CdpReachable, info.ProfileWindowOpen });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("GetAgentBrowserHealth")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Whether the agent's browser and profile window are up (no tab data)")
+            .RequireRateLimiting(RateLimitPolicy)
+            .AllowAnonymous();
+
         // Bring the agent's own profile window to the front of the shared Selkies desktop
         // before the viewer opens it, so the user sees this agent's tabs, not the last agent's.
         routeBuilder.MapPost(
@@ -135,6 +153,11 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     http.Response.Headers["X-Agent360-Stale"] = "1";
                     data = last;
                 }
+                else if (http.RequestServices.GetService<ScreencastHub>()?.LatestFrame(cdp!, page.TargetId) is { } live)
+                {
+                    http.Response.Headers["X-Agent360-Stale"] = "1";
+                    data = live;
+                }
                 return data is null
                     ? TypedResults.Problem("Failed to capture screenshot", statusCode: StatusCodes.Status503ServiceUnavailable)
                     : TypedResults.File(Convert.FromBase64String(data), "image/jpeg");
@@ -228,7 +251,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         }
         var data = await gate.Coalesce(key, async () =>
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(7));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
                 return await CaptureScreenshotAsync(cdpUrl, targetId, cts.Token);
@@ -287,11 +310,15 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
     private static async Task<string?> CaptureScreenshotAsync(string cdpUrl, string targetId, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(6));
+        cts.CancelAfter(TimeSpan.FromSeconds(4));
         using var ws = new ClientWebSocket();
         await ws.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
-        // fromSurface + optimizeForSpeed: take the composited surface instead of waiting for a fresh frame,
-        // which a background (throttled) tab may never produce.
+        // A tab behind another profile's window on the shared desktop is "hidden": Chromium throttles it and a
+        // capture can wait seconds for a frame. Emulating focus/active lifecycle for this session makes the
+        // renderer produce a frame now; both are per-session and end when this socket closes.
+        await SendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, cts.Token);
+        await SendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, cts.Token);
+        // fromSurface + optimizeForSpeed: take the composited surface instead of waiting for a fresh frame.
         await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 60, fromSurface = true, optimizeForSpeed = true } }, cts.Token);
         while (ws.State == WebSocketState.Open)
         {
