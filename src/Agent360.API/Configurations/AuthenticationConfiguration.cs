@@ -47,9 +47,9 @@ public static class AuthenticationConfiguration
                         ClockSkew = TimeSpan.Zero
                     };
                 }
-                else
+                else if (webAppBuilder.Environment.IsDevelopment())
                 {
-                    // Fallback configuration when Logto is not configured on this environment
+                    // Local development without Logto: accept unsigned tokens so the dev UI can exercise auth paths.
                     opts.RequireHttpsMetadata = false;
                     opts.TokenValidationParameters = new TokenValidationParameters
                     {
@@ -58,6 +58,23 @@ public static class AuthenticationConfiguration
                         ValidateLifetime = false,
                         ValidateIssuerSigningKey = false,
                         SignatureValidator = (token, parameters) => new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(token)
+                    };
+                }
+                else
+                {
+                    // Fail closed outside Development: without an authority no bearer token can ever authenticate
+                    // (previously any forged/unsigned JWT was accepted when Logto was not configured).
+                    opts.RequireHttpsMetadata = true;
+                    opts.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuer = true,
+                        ValidateAudience = true,
+                        ValidateLifetime = true,
+                        ValidateIssuerSigningKey = true,
+                        RequireSignedTokens = true,
+                        IssuerSigningKeys = [],
+                        ValidIssuer = "urn:agent360:logto-not-configured",
+                        ValidAudience = "urn:agent360:logto-not-configured",
                     };
                 }
             });
