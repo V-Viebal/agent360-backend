@@ -354,4 +354,17 @@ public sealed class SubAgentTests : IDisposable
         var reopened = new SubAgentStore(MsOptions.Create(new SubAgentOptions { StoragePath = _dir }), new TestEnv(_dir));
         (await reopened.GetBindingsAsync("mons")).Should().ContainSingle(b => b.ChildAgentId == "ken");
     }
+
+    [Fact]
+    public async Task UpsertSkill_UnchangedContent_DoesNotWriteOrReloadAgent()
+    {
+        var client = new QwenPawA2AClient(new HttpClient(_fake), MsOptions.Create(new QwenPawOptions { BaseUrl = "http://fake" }));
+        _fake.Routes["GET /api/skills/agent360-subagents"] = _ => FakeQwenPaw.Json(new { name = "agent360-subagents", content = "SAME", enabled = true });
+        (await client.UpsertSkillAsync("mons", "agent360-subagents", "SAME", Ct)).Should().BeTrue();
+        _fake.Calls.Should().NotContain(c => c.Method != "GET");
+
+        _fake.Routes["PUT /api/skills/save"] = _ => FakeQwenPaw.Json(new { saved = true });
+        (await client.UpsertSkillAsync("mons", "agent360-subagents", "NEW", Ct)).Should().BeTrue();
+        _fake.Calls.Where(c => c.Method != "GET").Select(c => $"{c.Method} {c.Path}").Should().Equal("PUT /api/skills/save");
+    }
 }

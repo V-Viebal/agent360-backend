@@ -272,6 +272,32 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
     public async Task<bool> UpsertSkillAsync(string agentId, string skillName, string content, CancellationToken ct)
     {
         using var cts = Linked(ct, 60);
+        // Every skill write (create / save / enable) makes QwenPaw hot-reload the whole agent, which restarts all
+        // of its stdio MCP servers. Read first and only write what actually differs.
+        var current = await TryGetSkillAsync(agentId, skillName, cts.Token);
+        if (current is { } cur && cur.Content == content)
+        {
+            if (cur.Enabled) return true;
+            using var enableOnly = new HttpRequestMessage(HttpMethod.Post, $"api/skills/{Uri.EscapeDataString(skillName)}/enable");
+            enableOnly.Headers.Add(AgentHeader, agentId);
+            using var enableOnlyResp = await _http.SendAsync(enableOnly, cts.Token);
+            return enableOnlyResp.IsSuccessStatusCode;
+        }
+        if (current is not null)
+        {
+            using var update = new HttpRequestMessage(HttpMethod.Put, "api/skills/save")
+            {
+                Content = JsonContent.Create(new { name = skillName, content, overwrite = true })
+            };
+            update.Headers.Add(AgentHeader, agentId);
+            using var updateResp = await _http.SendAsync(update, cts.Token);
+            if (!updateResp.IsSuccessStatusCode) return false;
+            if (current.Value.Enabled) return true;
+            using var enableAfter = new HttpRequestMessage(HttpMethod.Post, $"api/skills/{Uri.EscapeDataString(skillName)}/enable");
+            enableAfter.Headers.Add(AgentHeader, agentId);
+            using var __ = await _http.SendAsync(enableAfter, cts.Token);
+            return true;
+        }
         using var create = new HttpRequestMessage(HttpMethod.Post, "api/skills")
         {
             Content = JsonContent.Create(new { name = skillName, content, enable = true })
@@ -293,6 +319,26 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         enable.Headers.Add(AgentHeader, agentId);
         using var _ = await _http.SendAsync(enable, cts.Token);
         return true;
+    }
+
+    private async Task<(string Content, bool Enabled)?> TryGetSkillAsync(string agentId, string skillName, CancellationToken ct)
+    {
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"api/skills/{Uri.EscapeDataString(skillName)}");
+            req.Headers.Add(AgentHeader, agentId);
+            using var resp = await _http.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var root = doc.RootElement;
+            var content = root.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() ?? "" : "";
+            var enabled = root.TryGetProperty("enabled", out var e) && e.ValueKind == JsonValueKind.True;
+            return (content, enabled);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return null;
+        }
     }
 
     public async Task<IReadOnlyList<DetectedNativeDelegation>> ScanAgentDelegationsAsync(string agentId, int maxChats, CancellationToken ct)
