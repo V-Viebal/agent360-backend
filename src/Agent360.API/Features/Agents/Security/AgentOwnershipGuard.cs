@@ -23,6 +23,15 @@ public static class AgentOwnershipGuard
             return (false, "Agent identifier is missing");
         }
 
+        // The Admin policy is the single definition of a platform admin: operator token, Logto admin role/scope,
+        // M2M service token and configured AdminSubjects. Without this the operator console / A2A control plane
+        // (operator token, no Logto session) got 403 on every per-agent route.
+        var authz = context.RequestServices.GetService<Microsoft.AspNetCore.Authorization.IAuthorizationService>();
+        if (authz is not null && (await authz.AuthorizeAsync(context.User, context, "Admin")).Succeeded)
+        {
+            return (true, null);
+        }
+
         var user = context.User;
         // 1. Check if caller is Admin / System
         var roles = user.FindAll("roles")
