@@ -32,6 +32,8 @@ public sealed class ApprovalManagementEndpoint : IEndpoint
                 context.Response.ContentType = "text/event-stream";
                 context.Response.Headers.CacheControl = "no-cache";
                 context.Response.Headers.Connection = "keep-alive";
+                string? lastPayload = null;
+                var idleTicks = 0;
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
@@ -39,9 +41,18 @@ public sealed class ApprovalManagementEndpoint : IEndpoint
                     {
                         var response = await client.GetApprovalsAsync(sessionId, cancellationToken);
                         var payload = System.Text.Json.JsonSerializer.Serialize(response);
-                        await context.Response.WriteAsync($"event: approvals_update\ndata: {payload}\n\n", cancellationToken);
+                        // Only push when the snapshot changed; otherwise a comment keeps proxies from idling out.
+                        if (payload != lastPayload)
+                        {
+                            await context.Response.WriteAsync($"event: approvals_update\ndata: {payload}\n\n", cancellationToken);
+                            lastPayload = payload;
+                        }
+                        else if (++idleTicks % 5 == 0)
+                        {
+                            await context.Response.WriteAsync(": ping\n\n", cancellationToken);
+                        }
                         await context.Response.Body.FlushAsync(cancellationToken);
-                        await Task.Delay(2000, cancellationToken);
+                        await Task.Delay(3000, cancellationToken);
                     }
                     catch (OperationCanceledException)
                     {

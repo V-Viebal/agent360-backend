@@ -21,7 +21,9 @@ public sealed class AgentCacheWarmer(
         {
             return;
         }
-        var interval = TimeSpan.FromSeconds(Math.Max(10, configuration.GetValue("Agent360:CacheWarmer:IntervalSeconds", 40)));
+        // Runtime capability lists change rarely; the proxy serves last-good on a miss. Warming every agent's
+        // mcp/skills/tools every 40 s from two backends kept the core QwenPaw busy (mcp listing costs 8-12 s there).
+        var interval = TimeSpan.FromSeconds(Math.Max(30, configuration.GetValue("Agent360:CacheWarmer:IntervalSeconds", 120)));
         await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
 
         using var timer = new PeriodicTimer(interval);
@@ -53,7 +55,17 @@ public sealed class AgentCacheWarmer(
             .SelectMany(x => WarmRoutes.Select(r => (x.Slug, x.Target, Route: r)))
             .ToList();
 
-        await Parallel.ForEachAsync(targets, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (t, token) =>
+        // At most one warm request in flight per runtime instance so a slow runtime is never stacked up.
+        var perInstance = targets.GroupBy(t => t.Target.Instance?.Key ?? "").ToList();
+        await Parallel.ForEachAsync(perInstance, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, perInstance.Count), CancellationToken = ct }, async (group, gtoken) =>
+        {
+            foreach (var t in group)
+            {
+                await WarmOneAsync(t, gtoken);
+            }
+        });
+
+        async Task WarmOneAsync((string Slug, ResolvedInstanceTarget Target, string Route) t, CancellationToken token)
         {
             try
             {
@@ -63,6 +75,6 @@ public sealed class AgentCacheWarmer(
             {
                 logger.LogDebug(ex, "Warm {Route} for {Agent} failed", t.Route, t.Slug);
             }
-        });
+        }
     }
 }

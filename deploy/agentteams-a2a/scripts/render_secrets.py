@@ -65,6 +65,8 @@ elif A.role == "backend":
     # Non-secret routing: agentteams-manager binds 127.0.0.1:18888 on node 4th; a tailnet-only socat
     # (systemd agentteams-manager-tailnet.service) exposes it at 100.77.205.126:18889 for Agent360.
     vals["QwenPaw__Instances__agentteams__InternalUrl"] = "http://100.77.205.126:18889"
+    # Sub-agent registry/ledger lives in PostgreSQL (schema agent360_subagents) next to the app DB.
+    vals["Agent360__SubAgents__Storage"] = "postgres"
     content = "".join(f"{k}={v}\n" for k, v in vals.items())
     target = "/opt/agent360/deploy/backend.env"
     want = {k: digest(v) for k, v in vals.items()}

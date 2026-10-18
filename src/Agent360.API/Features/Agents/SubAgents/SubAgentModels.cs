@@ -10,6 +10,13 @@ public sealed class SubAgentOptions
 
     public string StoragePath { get; set; } = "_storage/subagents";
 
+    /// <summary>"file" (JSON under StoragePath) or "postgres" (tables in <see cref="Schema"/>).</summary>
+    public string Storage { get; set; } = "file";
+
+    public string ConnectionStringName { get; set; } = "DefaultConnection";
+
+    public string Schema { get; set; } = "agent360_subagents";
+
     public string RuntimeInstanceId { get; set; } = "qwenpaw-core-3rd";
 
     public int MaxDepth { get; set; } = 1;
