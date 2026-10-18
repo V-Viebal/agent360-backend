@@ -136,7 +136,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
         // Live screencast of the agent's tab (inspection only; interactive control is the Selkies viewer).
         routeBuilder.Map(
-            "/api/v1/agents/{agentId}/browser/stream",
+            "agents/{agentId}/browser/stream",
             async (string agentId, HttpContext context, AgentBrowserDirectory directory, AgentBrowserGate gate, IOptions<CorsOptions> cors) =>
             {
                 if (!context.WebSockets.IsWebSocketRequest)
@@ -179,6 +179,10 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     slots.Release();
                 }
             })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("StreamAgentBrowser")
+            .WithTags(EndpointTags.Agents)
+            .ExcludeFromDescription()
             .RequireRateLimiting(RateLimitPolicy);
     }
 
