@@ -180,6 +180,46 @@ public sealed class FleetRoutingTests
         logins.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Locked)]
+    public async Task RejectedLogin_IsNotRetriedPerRequest(HttpStatusCode status)
+    {
+        // QwenPaw locks the admin account after 5 failed logins/minute; a burst of requests with a bad password
+        // must produce one login attempt, not one per request.
+        var logins = 0;
+        var state = new FleetRoutingState();
+        var options = new QwenPawOptions();
+        options.Instances["gm"] = new QwenPawInstanceCredentials { Username = "admin", Password = "wrong" };
+        HttpResponseMessage Handler(HttpRequestMessage req)
+        {
+            if (req.RequestUri!.AbsolutePath == "/api/auth/login")
+            {
+                Interlocked.Increment(ref logins);
+                return new HttpResponseMessage(status);
+            }
+            return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+        }
+        var routing = new FleetInstanceRoutingService(new HttpClient(new StubHandler(Handler)), NullLogger<FleetInstanceRoutingService>.Instance,
+            Microsoft.Extensions.Options.Options.Create(options), state);
+        var gm = routing.Instances.Single(x => x.Key == "gm");
+        for (var i = 0; i < 20; i++)
+        {
+            using var _ = await routing.SendAsync(gm, HttpMethod.Get, "agents/team/chats", ct: TestContext.Current.CancellationToken);
+        }
+
+        logins.Should().Be(1);
+        state.LoginBlockedUntil.Should().ContainKey("gm");
+    }
+
+    [Fact]
+    public void LoginBackoff_KeepsUnderTheLockoutThreshold()
+    {
+        FleetInstanceRoutingService.LoginBackoff(HttpStatusCode.Unauthorized).Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(60));
+        FleetInstanceRoutingService.LoginBackoff(HttpStatusCode.Locked).Should().BeGreaterThanOrEqualTo(TimeSpan.FromMinutes(5));
+        FleetInstanceRoutingService.LoginBackoff(HttpStatusCode.BadGateway).Should().Be(TimeSpan.Zero);
+    }
+
     [Fact]
     public void ConnectFailureClassifier_DistinguishesNeverSentFromSlow()
     {

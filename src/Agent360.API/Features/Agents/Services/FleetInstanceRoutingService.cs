@@ -323,6 +323,17 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         }
     }
 
+    /// <summary>Pause after a failed login: wrong credentials 60 s (stays well under 5 failures/min), locked
+    /// account 5 min (QwenPaw locks for 15 min; probing sooner only re-arms nothing but costs nothing either),
+    /// rate limited 60 s; transient server errors retry immediately.</summary>
+    internal static TimeSpan LoginBackoff(System.Net.HttpStatusCode status) => (int)status switch
+    {
+        401 or 403 => TimeSpan.FromSeconds(60),
+        423 => TimeSpan.FromMinutes(5),
+        429 => TimeSpan.FromSeconds(60),
+        _ => TimeSpan.Zero,
+    };
+
     private async Task<string?> GetOrRefreshTokenAsync(QwenPawInstance instance, string baseUrl, bool forceRefresh, CancellationToken ct)
     {
         var (user, password) = Credentials(instance.Key);
@@ -337,6 +348,13 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             return cached.Token;
         }
 
+        // A rejected login is not retried per request: QwenPaw locks the (shared) admin account after 5 failures
+        // a minute for 15 min, so a wrong password in any one deployment would lock production out as well.
+        if (_state.LoginBlockedUntil.TryGetValue(instance.Key, out var blockedUntil) && DateTime.UtcNow < blockedUntil)
+        {
+            return null;
+        }
+
         var gate = _loginLocks.GetOrAdd(instance.Key, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try
@@ -345,13 +363,24 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             {
                 return cached.Token;
             }
+            if (_state.LoginBlockedUntil.TryGetValue(instance.Key, out blockedUntil) && DateTime.UtcNow < blockedUntil)
+            {
+                return null;
+            }
 
             using var resp = await _httpClient.PostAsJsonAsync(new Uri(new Uri(baseUrl + "/"), LoginPath), new { username = user, password }, ct);
             if (!resp.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed login to instance {Instance} at {Url}. Status: {Status}", instance.Key, baseUrl, resp.StatusCode);
+                var pause = LoginBackoff(resp.StatusCode);
+                if (pause > TimeSpan.Zero)
+                {
+                    _state.LoginBlockedUntil[instance.Key] = DateTime.UtcNow.Add(pause);
+                }
+                _logger.LogWarning("Failed login to instance {Instance} at {Url}. Status: {Status}; next login attempt in {Pause}",
+                    instance.Key, baseUrl, resp.StatusCode, pause);
                 return null;
             }
+            _state.LoginBlockedUntil.TryRemove(instance.Key, out _);
 
             var node = await resp.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: ct);
             var token = node?["token"]?.ToString();
@@ -372,6 +401,9 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
 /// so this must live in a singleton or every request re-logs in and forgets which internal endpoint is down.</summary>
 public sealed class FleetRoutingState
 {
+    /// <summary>No login attempts to an instance before this time (after a rejected/locked login).</summary>
+    public ConcurrentDictionary<string, DateTime> LoginBlockedUntil { get; } = new();
+
     public ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> Tokens { get; } = new();
     public ConcurrentDictionary<string, SemaphoreSlim> LoginLocks { get; } = new();
     public ConcurrentDictionary<string, DateTime> InternalDownUntil { get; } = new();
