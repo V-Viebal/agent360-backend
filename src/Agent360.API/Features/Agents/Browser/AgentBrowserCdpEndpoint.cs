@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -62,12 +63,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             "agents/{agentId}/browser/focus",
             async Task<IResult> (string agentId, AgentBrowserDirectory directory, IHttpClientFactory httpFactory, CancellationToken ct) =>
             {
-                var (page, cdp, error) = await PickPageAsync(directory, agentId, null, ct);
+                var (page, cdp, contextId, error) = await PickPageAsync(directory, agentId, null, ct);
                 if (page is null)
                 {
                     return TypedResults.Conflict(new { message = error });
                 }
-                var ok = await ActivateAsync(httpFactory, cdp!, page.TargetId, ct);
+                var ok = await ActivateAsync(httpFactory, cdp!, page.TargetId, contextId, ct);
                 return ok
                     ? TypedResults.Ok(new { agentId, targetId = page.TargetId, url = page.Url })
                     : TypedResults.Problem("Failed to focus the agent's browser window", statusCode: StatusCodes.Status502BadGateway);
@@ -114,7 +115,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             "agents/{agentId}/browser/screenshot",
             async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, CancellationToken ct) =>
             {
-                var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
+                var (page, cdp, _, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
                 {
                     return TypedResults.NotFound(new { message = error });
@@ -135,7 +136,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             "agents/{agentId}/browser/image.jpg",
             async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
             {
-                var (page, cdp, error) = await PickPageAsync(directory, agentId, pageId, ct);
+                var (page, cdp, _, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
                 {
                     return TypedResults.NotFound(new { message = error });
@@ -187,7 +188,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     return;
                 }
                 var ct = context.RequestAborted;
-                var (page, cdp, error) = await PickPageAsync(directory, agentId, context.Request.Query["pageId"], ct);
+                var (page, cdp, _, error) = await PickPageAsync(directory, agentId, context.Request.Query["pageId"], ct);
                 if (page is null)
                 {
                     context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -280,35 +281,120 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         return data;
     }
 
-    private static async Task<(AgentBrowserTab? Page, string? Cdp, string? Error)> PickPageAsync(
+    private static async Task<(AgentBrowserTab? Page, string? Cdp, string? ContextId, string? Error)> PickPageAsync(
         AgentBrowserDirectory directory, string agentId, string? pageId, CancellationToken ct)
     {
         var info = await directory.GetAsync(agentId, ct);
         if (info is null)
         {
-            return (null, null, $"Agent '{agentId}' has no mapped browser profile");
+            return (null, null, null, $"Agent '{agentId}' has no mapped browser profile");
         }
         if (!info.CdpReachable)
         {
-            return (null, null, $"Browser {info.Service} is not reachable");
+            return (null, null, null, $"Browser {info.Service} is not reachable");
         }
         if (!info.ProfileWindowOpen)
         {
-            return (null, null, $"Profile '{info.Profile}' window is not open yet");
+            return (null, null, null, $"Profile '{info.Profile}' window is not open yet");
         }
         // Only targets inside the agent's own browser context are eligible; a foreign pageId is rejected.
         var page = string.IsNullOrEmpty(pageId)
             ? DefaultTab(info.Tabs)
             : info.Tabs.FirstOrDefault(t => t.TargetId == pageId);
-        return page is null ? (null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, null);
+        return page is null ? (null, null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, info.BrowserContextId, null);
     }
 
-    private static async Task<bool> ActivateAsync(IHttpClientFactory httpFactory, string cdpUrl, string targetId, CancellationToken ct)
+    private static async Task<bool> ActivateAsync(IHttpClientFactory httpFactory, string cdpUrl, string targetId, string? targetContextId, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(8));
         var http = httpFactory.CreateClient(AgentBrowserDirectory.HttpClientName);
-        // /json/activate focuses the tab and raises its window (no browser-level websocket needed).
+
+        // Under Wayland / labwc compositor, pure /json/activate only switches the active tab internally
+        // but labwc denies unseeded window activation ("Denying focus request, seat wasn't supplied").
+        // To guarantee the agent's profile window is brought on top of the shared desktop:
+        // 1. Connect to browser WebSocket debugger.
+        // 2. Find target windowId (by context or targetId).
+        // 3. Minimize other profile windows so labwc un-maps them.
+        // 4. Restore target window (normal -> maximized) to place it on top of the window stack.
+        // 5. Activate target tab. Fallback to /json/activate if browser WebSocket is unreachable.
+        try
+        {
+            var version = await http.GetFromJsonAsync<JsonObject>($"{cdpUrl.TrimEnd('/')}/json/version", cts.Token);
+            var browserWs = version?["webSocketDebuggerUrl"]?.GetValue<string>();
+            if (!string.IsNullOrEmpty(browserWs))
+            {
+                var wsUri = new UriBuilder(browserWs) { Host = new Uri(cdpUrl).Host, Port = new Uri(cdpUrl).Port }.Uri;
+                using var ws = new ClientWebSocket();
+                await ws.ConnectAsync(wsUri, cts.Token);
+
+                await SendAsync(ws, new { id = 101, method = "Target.getTargets" }, cts.Token);
+                var targetsBytes = await ReceiveByIdAsync(ws, 101, cts.Token);
+                if (targetsBytes is not null)
+                {
+                    using var doc = JsonDocument.Parse(targetsBytes);
+                    var pages = doc.RootElement.GetProperty("result").GetProperty("targetInfos").EnumerateArray()
+                        .Where(t => t.TryGetProperty("type", out var type) && type.GetString() == "page")
+                        .Select(t => (
+                            TargetId: t.GetProperty("targetId").GetString() ?? "",
+                            ContextId: t.TryGetProperty("browserContextId", out var c) ? c.GetString() : null))
+                        .ToList();
+
+                    int? targetWid = null;
+                    var otherWids = new HashSet<int>();
+                    int reqId = 200;
+                    foreach (var p in pages)
+                    {
+                        reqId++;
+                        await SendAsync(ws, new { id = reqId, method = "Browser.getWindowForTarget", @params = new { targetId = p.TargetId } }, cts.Token);
+                        var winBytes = await ReceiveByIdAsync(ws, reqId, cts.Token);
+                        if (winBytes is not null)
+                        {
+                            using var winDoc = JsonDocument.Parse(winBytes);
+                            if (winDoc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("windowId", out var widProp))
+                            {
+                                var wid = widProp.GetInt32();
+                                bool isTarget = (!string.IsNullOrEmpty(targetContextId) && p.ContextId == targetContextId) || p.TargetId == targetId;
+                                if (isTarget)
+                                {
+                                    targetWid = wid;
+                                }
+                                else
+                                {
+                                    otherWids.Add(wid);
+                                }
+                            }
+                        }
+                    }
+
+                    if (targetWid.HasValue)
+                    {
+                        otherWids.Remove(targetWid.Value);
+                        foreach (var wid in otherWids)
+                        {
+                            await SendAsync(ws, new { id = 301, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "minimized" } } }, cts.Token);
+                            await ReceiveByIdAsync(ws, 301, cts.Token);
+                        }
+
+                        await SendAsync(ws, new { id = 302, method = "Browser.setWindowBounds", @params = new { windowId = targetWid.Value, bounds = new { windowState = "normal" } } }, cts.Token);
+                        await ReceiveByIdAsync(ws, 302, cts.Token);
+
+                        await SendAsync(ws, new { id = 303, method = "Browser.setWindowBounds", @params = new { windowId = targetWid.Value, bounds = new { windowState = "maximized" } } }, cts.Token);
+                        await ReceiveByIdAsync(ws, 303, cts.Token);
+                    }
+                }
+
+                await SendAsync(ws, new { id = 304, method = "Target.activateTarget", @params = new { targetId } }, cts.Token);
+                await ReceiveByIdAsync(ws, 304, cts.Token);
+                await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                return true;
+            }
+        }
+        catch
+        {
+            // Fallback to HTTP /json/activate
+        }
+
         using var res = await http.GetAsync($"{cdpUrl.TrimEnd('/')}/json/activate/{Uri.EscapeDataString(targetId)}", cts.Token);
         return res.IsSuccessStatusCode;
     }
@@ -343,6 +429,21 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             if (doc.RootElement.TryGetProperty("id", out var id) && id.GetInt32() == 1)
             {
                 return doc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("data", out var d) ? d.GetString() : null;
+            }
+        }
+        return null;
+    }
+
+    private static async Task<byte[]?> ReceiveByIdAsync(WebSocket ws, int expectedId, CancellationToken ct)
+    {
+        while (ws.State == WebSocketState.Open)
+        {
+            var bytes = await ReceiveAsync(ws, ct);
+            if (bytes is null) return null;
+            using var doc = JsonDocument.Parse(bytes);
+            if (doc.RootElement.TryGetProperty("id", out var id) && id.GetInt32() == expectedId)
+            {
+                return bytes;
             }
         }
         return null;
