@@ -8,9 +8,7 @@ public static class CorsConfiguration
     {
         public WebApplicationBuilder ConfigureCors()
         {
-            var allowedOrigins =
-                builder.Configuration.GetSection(CorsOptions.Section).Get<CorsOptions>()?.AllowedOrigins
-                ?? [];
+            var allowedOrigins = CorsOptions.Read(builder.Configuration);
 
             builder.Services.AddCors(options =>
             {

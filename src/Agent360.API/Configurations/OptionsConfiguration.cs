@@ -36,7 +36,7 @@ public static class OptionsConfiguration
                 .ValidateOnStart();
 
             webApplicationBuilder.Services.AddOptions<CorsOptions>()
-                .BindConfiguration(CorsOptions.Section)
+                .Configure<IConfiguration>((o, cfg) => o.AllowedOrigins = CorsOptions.Read(cfg))
                 .Validate(
                     options =>
                         !validateRuntimeConfiguration

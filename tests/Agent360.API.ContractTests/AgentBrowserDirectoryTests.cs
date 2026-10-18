@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Agent360.API.Features.Agents.Browser;
 using Agent360.API.Features.Agents.Services;
 using AwesomeAssertions;
@@ -145,9 +146,19 @@ public sealed class AgentBrowserDirectoryTests
     }
 
     [Fact]
-    public void CorsOriginsFromOneEnvValueAreSplit() =>
-        new Agent360.API.Options.CorsOptions { AllowedOrigins = ["https://a.example;https://b.example, http://localhost:5173"] }
-            .AllowedOrigins.Should().Equal("https://a.example", "https://b.example", "http://localhost:5173");
+    public void CorsOriginsFromOneEnvValueAreSplit()
+    {
+        var scalar = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Cors:AllowedOrigins"] = "https://a.example;https://b.example, http://localhost:5173"
+        }).Build();
+        Agent360.API.Options.CorsOptions.Read(scalar).Should().Equal("https://a.example", "https://b.example", "http://localhost:5173");
+        var array = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Cors:AllowedOrigins:0"] = "https://a.example", ["Cors:AllowedOrigins:1"] = "https://b.example"
+        }).Build();
+        Agent360.API.Options.CorsOptions.Read(array).Should().Equal("https://a.example", "https://b.example");
+    }
 
     private sealed class NoHttpFactory : IHttpClientFactory
     {
