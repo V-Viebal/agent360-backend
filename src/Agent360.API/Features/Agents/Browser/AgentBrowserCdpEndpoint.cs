@@ -182,16 +182,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 try
                 {
                     using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
-                    var maxWidth = Math.Clamp(int.TryParse(context.Request.Query["maxWidth"], out var w) ? w : 1280, 320, 1920);
-                    var quality = Math.Clamp(int.TryParse(context.Request.Query["quality"], out var q) ? q : 55, 20, 85);
-                    // Screencast only emits on repaint; an idle/background tab would leave the viewer black.
-                    // Seed it with the shared latest capture so every viewer gets a frame immediately.
+                    // Fixed size/quality buckets so concurrent viewers of one tab share a single CDP screencast.
+                    var maxWidth = int.TryParse(context.Request.Query["maxWidth"], out var w) && w <= 800 ? 640 : 1280;
+                    var quality = 55;
+                    // Screencast only emits on repaint; an idle tab would leave a new viewer black until it changes.
                     var seed = await CachedScreenshotAsync(gate, context.RequestServices.GetRequiredService<IMemoryCache>(), cdp!, page.TargetId);
-                    if (seed is not null)
-                    {
-                        await SendAsync(clientWs, new { method = "Page.screencastFrame", @params = new { data = seed } }, ct);
-                    }
-                    await ScreencastAsync(cdp!, page.TargetId, clientWs, maxWidth, quality, ct);
+                    var hub = context.RequestServices.GetRequiredService<ScreencastHub>();
+                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct);
                 }
                 finally
                 {
@@ -310,76 +307,6 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             }
         }
         return null;
-    }
-
-    private static async Task ScreencastAsync(string cdpUrl, string targetId, WebSocket clientWs, int maxWidth, int quality, CancellationToken ct)
-    {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        using var cdpWs = new ClientWebSocket();
-        cdpWs.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
-        await cdpWs.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
-        // everyNthFrame=2 + maxWidth keeps phones and slow links smooth; frames are ACKed only after the
-        // client accepted the previous one, so a slow viewer gets fewer frames instead of a growing queue.
-        await SendAsync(cdpWs, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality, maxWidth, maxHeight = maxWidth, everyNthFrame = 2 } }, cts.Token);
-
-        var fromClient = Task.Run(async () =>
-        {
-            // View-only: client messages are drained and discarded, never forwarded to CDP.
-            var buf = new byte[4096];
-            while (clientWs.State == WebSocketState.Open && !cts.IsCancellationRequested)
-            {
-                var r = await clientWs.ReceiveAsync(buf, cts.Token);
-                if (r.MessageType == WebSocketMessageType.Close)
-                {
-                    break;
-                }
-            }
-        }, cts.Token);
-
-        try
-        {
-            while (cdpWs.State == WebSocketState.Open && clientWs.State == WebSocketState.Open && !cts.IsCancellationRequested)
-            {
-                var receive = ReceiveAsync(cdpWs, cts.Token);
-                if (await Task.WhenAny(receive, fromClient) == fromClient)
-                {
-                    break;
-                }
-                var bytes = await receive;
-                if (bytes is null)
-                {
-                    break;
-                }
-                using var doc = JsonDocument.Parse(bytes);
-                if (!doc.RootElement.TryGetProperty("method", out var method) || method.GetString() != "Page.screencastFrame")
-                {
-                    continue;
-                }
-                var p = doc.RootElement.GetProperty("params");
-                var frame = JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = p.GetProperty("data").GetString() } });
-                using (var sendCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
-                {
-                    sendCts.CancelAfter(TimeSpan.FromSeconds(10));
-                    await clientWs.SendAsync(frame, WebSocketMessageType.Text, true, sendCts.Token);
-                }
-                await SendAsync(cdpWs, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = p.GetProperty("sessionId").GetInt32() } }, cts.Token);
-            }
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or WebSocketException)
-        {
-        }
-        finally
-        {
-            cts.Cancel();
-            if (cdpWs.State == WebSocketState.Open)
-            {
-                try { await SendAsync(cdpWs, new { id = 3, method = "Page.stopScreencast" }, CancellationToken.None); } catch { }
-            }
-            if (clientWs.State == WebSocketState.Open)
-            {
-                try { await clientWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); } catch { }
-            }
-        }
     }
 
     private const int MaxCdpMessageBytes = 16 * 1024 * 1024;

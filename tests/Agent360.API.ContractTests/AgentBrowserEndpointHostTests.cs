@@ -40,6 +40,7 @@ public sealed class AgentBrowserEndpointHostTests : IAsyncLifetime
         b.Services.AddHttpClient<IFleetInstanceRoutingService, FleetInstanceRoutingService>();
         b.Services.AddHttpClient(AgentBrowserDirectory.HttpClientName);
         b.Services.AddSingleton<AgentBrowserGate>();
+        b.Services.AddSingleton<ScreencastHub>();
         b.Services.AddScoped<AgentBrowserDirectory>();
         b.Services.AddRateLimiter(o => o.AddFixedWindowLimiter(AgentBrowserCdpEndpoint.RateLimitPolicy, l => { l.PermitLimit = 1000; l.Window = TimeSpan.FromMinutes(1); }));
         _app = b.Build();

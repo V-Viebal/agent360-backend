@@ -244,7 +244,8 @@ public sealed class AgentBrowserGate
     private readonly ConcurrentDictionary<string, Lazy<Task<object?>>> _inflight = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _streams = new();
 
-    public int MaxStreamsPerInstance { get; init; } = 6;
+    /// <summary>Live viewers per instance. Viewers of one tab share a CDP screencast, so this only bounds sockets.</summary>
+    public int MaxStreamsPerInstance { get; init; } = 50;
 
     public async Task<T> Coalesce<T>(string key, Func<Task<T>> factory)
     {

@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Test hosts configure minimal API versioning on purpose; AV0015 is a perf hint only. -->
+    <NoWarn>$(NoWarn);AV0015</NoWarn>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsPublishable>false</IsPublishable>

@@ -43,6 +43,7 @@ public static class EndpointConfiguration
                     AllowAutoRedirect = false,
                 });
             webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Browser.AgentBrowserGate>();
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Browser.ScreencastHub>();
             // Scoped: depends on the transient typed fleet client; its own cache is the shared IMemoryCache.
             webAppBuilder.Services.AddScoped<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
             webAppBuilder.Services.AddRateLimiter(o =>
