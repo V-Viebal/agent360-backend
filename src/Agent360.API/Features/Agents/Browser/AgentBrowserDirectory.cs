@@ -36,7 +36,8 @@ public sealed class AgentBrowserDirectory(
     IMemoryCache cache,
     ILogger<AgentBrowserDirectory> logger)
 {
-    internal const string AnchorPrefix = "http://127.0.0.1:3000/agent360-profile?profile=";
+    internal const string AnchorPrefix = "data:text/html;charset=utf-8,<!--agent360-profile=";
+    internal const string LegacyAnchorPrefix = "http://127.0.0.1:3000/agent360-profile?profile=";
 
     private sealed record BrowserService(string Service, string ViewerUrl, string CdpUrl, IReadOnlyDictionary<string, string> Profiles);
 
@@ -116,13 +117,19 @@ public sealed class AgentBrowserDirectory(
 
     internal static string? ProfileOf(string url)
     {
-        if (!url.StartsWith(AnchorPrefix, StringComparison.Ordinal))
+        if (url.StartsWith(AnchorPrefix, StringComparison.Ordinal))
         {
-            return null;
+            var rest = url[AnchorPrefix.Length..];
+            var end = rest.IndexOf("-->", StringComparison.Ordinal);
+            return end > 0 ? Uri.UnescapeDataString(rest[..end]) : null;
         }
-        var raw = url[AnchorPrefix.Length..];
-        var amp = raw.IndexOf('&');
-        return Uri.UnescapeDataString((amp >= 0 ? raw[..amp] : raw).Replace('+', ' '));
+        if (url.StartsWith(LegacyAnchorPrefix, StringComparison.Ordinal))
+        {
+            var raw = url[LegacyAnchorPrefix.Length..];
+            var amp = raw.IndexOf('&');
+            return Uri.UnescapeDataString((amp >= 0 ? raw[..amp] : raw).Replace('+', ' '));
+        }
+        return null;
     }
 
     internal sealed record CdpTarget(string TargetId, string Type, string Title, string Url, string? BrowserContextId);

@@ -58,6 +58,9 @@ public sealed class AgentBrowserDirectoryTests
     [InlineData("http://127.0.0.1:3000/agent360-profile?profile=Default", "Default")]
     [InlineData("http://127.0.0.1:3000/agent360-profile?profile=Profile+3&x=1", "Profile 3")]
     [InlineData("https://example.com/?profile=Default", null)]
+    [InlineData("data:text/html;charset=utf-8,<!--agent360-profile=Profile%202--><title>Agent profile: Profile%202</title>", "Profile 2")]
+    [InlineData("data:text/html;charset=utf-8,<!--agent360-profile=Default--><body>x</body>", "Default")]
+    [InlineData("data:text/html,<title>x</title>", null)]
     public void AnchorUrlNamesTheProfile(string url, string? expected) =>
         AgentBrowserDirectory.ProfileOf(url).Should().Be(expected);
 
