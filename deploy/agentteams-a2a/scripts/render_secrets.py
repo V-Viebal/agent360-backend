@@ -13,6 +13,7 @@ Paths (canonical-service-paths-v1):
   backend       : core/prod:/agent360-backend/app/backend ConnectionStrings__DefaultConnection
                   + core/prod:/agent360-a2a/app/runtime A2A_OPERATOR_TOKEN -> Agent360__Security__OperatorToken
                   + QwenPaw__Instances__{gm,climax,planthy}__Username/Password from each instance runtime path
+                  + QwenPaw__Instances__{key}__BrowserProfileMap from chromium-template.py --agent360-env (run from the workspace root)
 Secret values never touch stdout or local disk; files are written 0600 over ssh stdin.
 """
 import argparse, hashlib, json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
@@ -67,6 +68,12 @@ elif A.role == "backend":
     vals["QwenPaw__Instances__agentteams__InternalUrl"] = "http://100.77.205.126:18889"
     # Sub-agent registry/ledger lives in PostgreSQL (schema agent360_subagents) next to the app DB.
     vals["Agent360__SubAgents__Storage"] = "postgres"
+    # Non-secret browser profile maps, single source = AGENT_PROFILE_MAPS in the workspace browser template
+    # (.agent/skills/core/browser_cdp/scripts/chromium-template.py --agent360-env).
+    tpl = os.path.join(os.getcwd(), ".agent/skills/core/browser_cdp/scripts/chromium-template.py")
+    if os.path.exists(tpl):
+        out = subprocess.run([sys.executable, tpl, "--agent360-env"], capture_output=True, text=True, timeout=60, check=True).stdout
+        vals.update(dict(line.split("=", 1) for line in out.splitlines() if "=" in line))
     content = "".join(f"{k}={v}\n" for k, v in vals.items())
     target = "/opt/agent360/deploy/backend.env"
     want = {k: digest(v) for k, v in vals.items()}
