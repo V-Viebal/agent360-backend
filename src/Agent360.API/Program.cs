@@ -211,6 +211,7 @@ try
     app.UseMiddleware<Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware>();
 
     app.UseAuthentication();
+    app.UseMiddleware<Agent360.API.Features.Agents.Security.SensitiveReadGuardMiddleware>();
     app.UseMiddleware<UserResolutionMiddleware>();
     app.UseAuthorization();
 

@@ -97,6 +97,71 @@ public sealed class ApiSecurityHardeningTests
         (rel is not null && OperatorWriteGuardMiddleware.IsProtected(rel)).Should().Be(protectedRoute);
     }
 
+    [Theory]
+    [InlineData("agents/mons/chats", true)]
+    [InlineData("agents/mons/chats/abc", true)]
+    [InlineData("agents/chats/abc", true)]
+    [InlineData("agents/workspace/tree", true)]
+    [InlineData("agents/workspace/file-content", true)]
+    [InlineData("agents/mons/workspace/file-content", true)]
+    [InlineData("agents/mons/workspace/tree", true)]
+    [InlineData("agents/mons/memory", true)]
+    [InlineData("agents/sessions/s1/tool-receipts", true)]
+    [InlineData("chats/s1", true)]
+    [InlineData("shared/share_abc", false)]
+    [InlineData("agents", false)]
+    [InlineData("agents/mons", false)]
+    [InlineData("agents/mons/agent-status", false)]
+    [InlineData("agents/mons/skills", false)]
+    [InlineData("agents/mons/mcp", false)]
+    [InlineData("agents/models", false)]
+    [InlineData("agents/mons/workspace/checkpoints/status", false)]
+    public void SensitiveReadGuard_CoversWorkspaceAndChatReads_Only(string rel, bool sensitive)
+    {
+        SensitiveReadGuardMiddleware.IsSensitive(rel).Should().Be(sensitive);
+    }
+
+    [Fact]
+    public async Task SensitiveReadGuard_RejectsAnonymous_AllowsOperatorOrAuthenticated()
+    {
+        var opts = new Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions { OperatorToken = "op-secret", RequireAuthForSensitiveReads = true };
+        var monitor = new StaticMonitor(opts);
+        var env = new Microsoft.Extensions.Hosting.Internal.HostingEnvironment { EnvironmentName = "Production" };
+        var reached = 0;
+        var mw = new SensitiveReadGuardMiddleware(_ => { reached++; return Task.CompletedTask; });
+
+        HttpContext Ctx(string path) { var c = new DefaultHttpContext(); c.Request.Method = "GET"; c.Request.Path = path; c.Response.Body = new MemoryStream(); return c; }
+
+        var anon = Ctx("/api/v1/agents/mons/chats");
+        await mw.InvokeAsync(anon, monitor, env);
+        anon.Response.StatusCode.Should().Be(401);
+
+        var op = Ctx("/api/v1/agents/mons/chats");
+        op.Request.Headers["X-Agent360-Operator-Token"] = "op-secret";
+        await mw.InvokeAsync(op, monitor, env);
+
+        var user = Ctx("/api/agents/mons/workspace/file-content");
+        user.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity([new System.Security.Claims.Claim("sub", "u1")], "Bearer"));
+        await mw.InvokeAsync(user, monitor, env);
+
+        var pub = Ctx("/api/v1/agents/mons/agent-status");
+        await mw.InvokeAsync(pub, monitor, env);
+
+        reached.Should().Be(3);
+        opts.RequireAuthForSensitiveReads = false;
+        var off = Ctx("/api/v1/agents/mons/chats");
+        await mw.InvokeAsync(off, monitor, env);
+        reached.Should().Be(4);
+    }
+
+    private sealed class StaticMonitor(Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions v)
+        : Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>
+    {
+        public Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions CurrentValue => v;
+        public Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions Get(string? name) => v;
+        public IDisposable? OnChange(Action<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions, string?> listener) => null;
+    }
+
     [Fact]
     public async Task SecurityHeaders_AreSetAndServerHeaderRemoved()
     {

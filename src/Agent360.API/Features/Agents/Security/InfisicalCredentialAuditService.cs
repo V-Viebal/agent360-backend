@@ -17,7 +17,8 @@ public static class InfisicalCredentialAuditService
         "LLM360_LOGTO_M2M_APP_SECRET"
     ];
 
-    public static string ResolveAgentComposioToken(string agentId)
+    /// <summary>Agent-scoped Composio key from configuration (Infisical-rendered env); null when none is configured.</summary>
+    public static string? ResolveAgentComposioToken(string agentId)
     {
         var cleanAgent = agentId.Replace("bot:agent360:", "").Trim().ToLowerInvariant();
         var agentEnvKey = $"COMPOSIO_API_KEY_{cleanAgent.Replace("-", "_").ToUpperInvariant()}";
@@ -34,7 +35,8 @@ public static class InfisicalCredentialAuditService
             return globalKey;
         }
 
-        return "ck_hRHd3TK_vE4wwTBlUaX3";
+        // Fail closed: no built-in fallback key (the previous literal was public and is revoked).
+        return null;
     }
 
     public static IReadOnlyList<CredentialAuditResult> AuditProviderCredentials(
