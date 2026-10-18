@@ -26,30 +26,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # A push to main deploys staging first, verifies it live, then production; a red staging gate stops
+  # production. Push to `staging` (or dispatch target=staging) deploys only staging.
+  plan:
     runs-on: [self-hosted, linux, 2nd]
+    outputs:
+      targets: ${{ steps.p.outputs.targets }}
+    steps:
+      - id: p
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.target_environment }}" = "staging" ]; then T='["staging"]'; else T='["staging","production"]'; fi
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            T='["staging"]'
+          else
+            T='["staging","production"]'
+          fi
+          echo "targets=$T" >> "$GITHUB_OUTPUT"
+          echo "Deploy targets: $T"
+
+  deploy:
+    needs: plan
+    runs-on: [self-hosted, linux, 2nd]
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve Environment Target
         id: env-target
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGET="${{ github.event.inputs.target_environment }}"
-          elif [ "${{ github.ref_name }}" = "staging" ]; then
-            TARGET="staging"
-          else
-            TARGET="production"
-          fi
-
+          TARGET="${{ matrix.target }}"
           if [ "$TARGET" = "staging" ]; then
             echo "app_root=/opt/agent360-staging/backend" >> $GITHUB_OUTPUT
-            echo "public_url=https://api-staging-agent360.antares.vn" >> $GITHUB_OUTPUT
-            echo "container_name=agent360-backend-staging" >> $GITHUB_OUTPUT
+            echo "public_url=https://staging-agent360.antares.vn/api" >> $GITHUB_OUTPUT
+            echo "restart=backend-staging" >> $GITHUB_OUTPUT
           else
             echo "app_root=/opt/agent360/backend" >> $GITHUB_OUTPUT
-            echo "public_url=https://api-agent360.antares.vn" >> $GITHUB_OUTPUT
-            echo "container_name=agent360-backend" >> $GITHUB_OUTPUT
+            echo "public_url=https://api-agent360.antares.vn/api/v1" >> $GITHUB_OUTPUT
+            echo "restart=backend" >> $GITHUB_OUTPUT
           fi
           echo "target_env=$TARGET" >> $GITHUB_OUTPUT
           echo "Target Environment: $TARGET"
@@ -63,6 +81,7 @@ jobs:
           echo "$HOME/.dotnet" >> "$GITHUB_PATH"
 
       - name: Test
+        if: matrix.target == 'staging'
         run: dotnet test tests/Agent360.API.ContractTests -c Release
 
       - name: Publish
@@ -75,18 +94,14 @@ jobs:
           rm -rf "${APP_ROOT}.prev" && cp -a "$APP_ROOT" "${APP_ROOT}.prev" || true
           cp -a --remove-destination "$RUNNER_TEMP/publish/." "$APP_ROOT/"
           
-          if [ "${{ steps.env-target.outputs.target_env }}" = "production" ]; then
-            sudo -n /usr/local/sbin/agent360-restart backend
-          else
-            sudo -n /usr/local/sbin/agent360-restart backend-staging
-          fi
+          sudo -n /usr/local/sbin/agent360-restart "${{ steps.env-target.outputs.restart }}"
 
       - name: Verify live API (rollback on failure)
         run: |
           PUBLIC_URL="${{ steps.env-target.outputs.public_url }}"
           APP_ROOT="${{ steps.env-target.outputs.app_root }}"
           for i in $(seq 1 20); do
-            code=$(curl -s -m 20 -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/v1/agents" || true)
+            code=$(curl -s -m 20 -A "Mozilla/5.0 agent360-ci" -o /dev/null -w '%{http_code}' "$PUBLIC_URL/agents" || true)
             if [ "$code" = 200 ]; then
               echo "API healthy (HTTP 200)"
               exit 0
@@ -95,9 +110,5 @@ jobs:
           done
           echo "::error::API health probe returned $code, restoring previous artifact"
           cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/" || true
-          if [ "${{ steps.env-target.outputs.target_env }}" = "production" ]; then
-            sudo -n /usr/local/sbin/agent360-restart backend || true
-          else
-            sudo -n /usr/local/sbin/agent360-restart backend-staging || true
-          fi
+          sudo -n /usr/local/sbin/agent360-restart "${{ steps.env-target.outputs.restart }}" || true
           exit 1
