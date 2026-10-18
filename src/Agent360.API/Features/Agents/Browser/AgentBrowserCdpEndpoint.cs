@@ -172,6 +172,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
                     var maxWidth = Math.Clamp(int.TryParse(context.Request.Query["maxWidth"], out var w) ? w : 1280, 320, 1920);
                     var quality = Math.Clamp(int.TryParse(context.Request.Query["quality"], out var q) ? q : 55, 20, 85);
+                    // Screencast only emits on repaint; an idle/background tab would leave the viewer black.
+                    // Seed it with the shared latest capture so every viewer gets a frame immediately.
+                    var seed = await CachedScreenshotAsync(gate, context.RequestServices.GetRequiredService<IMemoryCache>(), cdp!, page.TargetId);
+                    if (seed is not null)
+                    {
+                        await SendAsync(clientWs, new { method = "Page.screencastFrame", @params = new { data = seed } }, ct);
+                    }
                     await ScreencastAsync(cdp!, page.TargetId, clientWs, maxWidth, quality, ct);
                 }
                 finally
