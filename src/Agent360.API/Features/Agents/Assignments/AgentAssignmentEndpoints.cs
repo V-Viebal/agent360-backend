@@ -77,6 +77,9 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
             {
                 var id = reader.GetInt64(0);
                 var assignedAt = reader.GetFieldValue<DateTimeOffset>(1);
+                await Agent360.API.Features.Agents.Security.AuditLogger.LogAsync(
+                    config, currentUser.UserId, currentUser.ExternalUserId, "ASSIGN_AGENT", request.AgentSlug,
+                    new { target_user_id = request.UserId, role = request.Role, assignment_id = id }, ct: ct);
                 return Results.Ok(new AgentAssignmentDto(id, request.UserId, request.AgentSlug, request.Role, assignedAt));
             }
 
@@ -99,6 +102,11 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
             cmd.Parameters.AddWithValue(id);
             var rows = await cmd.ExecuteNonQueryAsync(ct);
 
+            if (rows > 0)
+            {
+                await Agent360.API.Features.Agents.Security.AuditLogger.LogAsync(
+                    config, null, "admin", "REMOVE_AGENT_ASSIGNMENT", id.ToString(), new { assignment_id = id }, ct: ct);
+            }
             return rows > 0 ? Results.Ok(new { success = true }) : Results.NotFound();
         })
         .WithName("RemoveAgentAssignment")
