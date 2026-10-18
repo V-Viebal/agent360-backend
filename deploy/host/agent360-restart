@@ -28,8 +28,14 @@ apply_frontend() { # $1 container $2 conf dir $3 optional conf source from the C
       /opt/actions-runner-shared-2nd/_work/agent360-frontend/*/deploy/nginx/*.conf) ;;
       *) echo "refusing conf outside the agent360-frontend CI checkout: $src" >&2; exit 2 ;;
     esac
+    # Validate the candidate before it replaces the live file: keep a copy, swap, nginx -t, roll back on failure.
+    cp -p "$dir/default.conf" "$dir/.default.conf.prev"
     install -m 0644 "$src" "$dir/default.conf.next"
     mv -f "$dir/default.conf.next" "$dir/default.conf"   # directory is mounted, so a rename is picked up
+    if ! docker exec "$c" nginx -t; then
+      mv -f "$dir/.default.conf.prev" "$dir/default.conf"
+      echo "nginx -t rejected the new conf; previous conf restored, nothing reloaded" >&2; exit 1
+    fi
   fi
   local confsum; confsum=$(sha256sum "$dir/default.conf" | cut -c1-16)
   # Static assets are bind-mounted and served fresh. Reloading drains workers and cuts SSE chats: only on change.
