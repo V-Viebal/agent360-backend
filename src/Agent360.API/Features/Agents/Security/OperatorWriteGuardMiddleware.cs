@@ -19,7 +19,7 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
     ];
 
     // Agent-scoped writes handled by dedicated endpoints (the runtime proxy already guards its own prefixes).
-    private static readonly string[] ProtectedAgentSuffixes = ["/compact-context", "/active-model", "/media/send"];
+    private static readonly string[] ProtectedAgentSuffixes = ["/compact-context", "/active-model", "/media/send", "/browser/viewer"];
 
     private static readonly string[] OpenWrites =
     [

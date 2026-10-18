@@ -46,6 +46,7 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Browser.ScreencastHub>();
             // Scoped: depends on the transient typed fleet client; its own cache is the shared IMemoryCache.
             webAppBuilder.Services.AddScoped<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Browser.BrowserViewerAccess>();
             webAppBuilder.Services.AddRateLimiter(o =>
             {
                 o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -59,7 +60,8 @@ public static class EndpointConfiguration
                 o.GlobalLimiter = System.Threading.RateLimiting.PartitionedRateLimiter.Create<HttpContext, string>(http =>
                 {
                     var path = http.Request.Path.Value ?? "";
-                    if (path is "/health" or "/alive" || !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                    // The desktop forward-auth arrives from each browser node's Traefik (one IP for every viewer asset).
+                    if (path is "/health" or "/alive" or Agent360.API.Features.Agents.Browser.BrowserViewerAccessEndpoint.VerifyPath || !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
                         return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter("exempt");
                     var ip = http.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
                         ?? http.Request.Headers["X-Real-IP"].FirstOrDefault()
