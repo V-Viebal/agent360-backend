@@ -56,7 +56,7 @@ public sealed class AgentBrowserDirectory(
     private static readonly IReadOnlyDictionary<string, BrowserService> Services = new Dictionary<string, BrowserService>(StringComparer.OrdinalIgnoreCase)
     {
         ["core"] = new("chromium-browser-q4yu", "https://browser.hmz.one", "http://100.76.185.111:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Default", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3" }),
         ["gm"] = new("browser-gm-21er", "https://browser-gm.antares.vn", "http://100.81.66.42:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4" }),
         // Planthy runs its own browser service (not the shared 5th climax browser); tailnet proxy on :19224.
@@ -154,6 +154,25 @@ public sealed class AgentBrowserDirectory(
             var all = await ListTargetsAsync(cdp, ct);
             reachable = true;
             ctx = ResolveContext(key, profile, all);
+
+            // Auto-open anchor tab if missing for the requested profile so window is never lost
+            if (ctx is null && !string.IsNullOrWhiteSpace(profile))
+            {
+                try
+                {
+                    var http = httpClientFactory.CreateClient(HttpClientName);
+                    var newAnchorUrl = $"{AnchorPrefix}{Uri.EscapeDataString(profile)}--><title>Agent profile: {Uri.EscapeDataString(profile)}</title>";
+                    using var putReq = new HttpRequestMessage(HttpMethod.Put, $"{cdp.TrimEnd('/')}/json/new?{Uri.EscapeDataString(newAnchorUrl)}");
+                    using var putRes = await http.SendAsync(putReq, ct);
+                    if (putRes.IsSuccessStatusCode)
+                    {
+                        all = await ListTargetsAsync(cdp, ct);
+                        ctx = ResolveContext(key, profile, all);
+                    }
+                }
+                catch { }
+            }
+
             if (ctx is not null)
             {
                 tabs.AddRange(all.Where(t => t.Type == "page" && t.BrowserContextId == ctx)
@@ -184,6 +203,17 @@ public sealed class AgentBrowserDirectory(
             KnownContexts[key] = anchored;
             return anchored;
         }
+
+        // For the 'Default' profile: if no explicit anchor tab exists, find the page target with null or empty contextId
+        if (string.Equals(profile, "Default", StringComparison.OrdinalIgnoreCase))
+        {
+            var defaultPage = all.FirstOrDefault(t => t.Type == "page" && string.IsNullOrEmpty(t.BrowserContextId));
+            if (defaultPage is not null)
+            {
+                return ""; // Represents the default unisolated browser context
+            }
+        }
+
         return KnownContexts.TryGetValue(key, out var known) && all.Any(t => t.Type == "page" && t.BrowserContextId == known)
             ? known
             : null;
