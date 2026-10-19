@@ -38,12 +38,24 @@ public static class AuthenticationConfiguration
                     opts.MetadataAddress = metadataAddress;
                     opts.RequireHttpsMetadata = !webAppBuilder.Environment.IsDevelopment();
                     opts.MapInboundClaims = false;
+
+                    // Allow both standard resource indicators and legacy/current aliases
+                    var validAudiences = new List<string> { audience };
+                    if (!validAudiences.Contains("https://api-agent360.antares.vn"))
+                    {
+                        validAudiences.Add("https://api-agent360.antares.vn");
+                    }
+                    if (!validAudiences.Contains("https://api-skyer.hmz.one"))
+                    {
+                        validAudiences.Add("https://api-skyer.hmz.one");
+                    }
+
                     opts.TokenValidationParameters = new TokenValidationParameters
                     {
                         ValidateIssuer = true,
                         ValidIssuer = authority.EndsWith("/oidc", StringComparison.OrdinalIgnoreCase) ? authority : $"{authority}/oidc",
                         ValidateAudience = true,
-                        ValidAudience = audience,
+                        ValidAudiences = validAudiences,
                         ValidateLifetime = true,
                         ValidateIssuerSigningKey = true,
                         ClockSkew = TimeSpan.FromSeconds(60),
