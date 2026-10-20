@@ -17,6 +17,7 @@ public static class EndpointConfiguration
                 client.Timeout = TimeSpan.FromSeconds(30);
             });
             webAppBuilder.Services.AddSingleton<SessionQueueManager>();
+            webAppBuilder.Services.AddSingleton<SessionMultiplexerHub>();
             webAppBuilder.Services.AddMemoryCache();
             webAppBuilder.Services.AddSingleton<FleetRoutingState>();
 #pragma warning disable EXTEXP0001 // Fleet calls stream long chat turns; hidden retries would duplicate POSTs and a shared breaker would cut every agent.

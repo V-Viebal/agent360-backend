@@ -18,6 +18,8 @@ public sealed class SessionQueueManager
     private readonly ConcurrentDictionary<string, Channel<QueuedChatTask>> _sessionChannels = new();
     private readonly ConcurrentDictionary<string, bool> _activeSessionTurns = new();
 
+    public event Action<string, bool>? OnSessionTurnChanged;
+
     public Channel<QueuedChatTask> GetOrCreateSessionChannel(string sessionId)
     {
         return _sessionChannels.GetOrAdd(sessionId, _ => Channel.CreateUnbounded<QueuedChatTask>(new UnboundedChannelOptions
@@ -38,6 +40,12 @@ public sealed class SessionQueueManager
         // Only active turns are tracked; finished sessions are removed so the map cannot grow without bound.
         if (active) _activeSessionTurns[sessionId] = true;
         else _activeSessionTurns.TryRemove(sessionId, out _);
+
+        try
+        {
+            OnSessionTurnChanged?.Invoke(sessionId, active);
+        }
+        catch {}
     }
 
     public IReadOnlyList<string> GetActiveSessionIds() => _activeSessionTurns.Keys.ToList();

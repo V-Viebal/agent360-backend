@@ -229,9 +229,10 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
     /// <summary>The tab worth showing by default: a real web page first, never a chrome:// internal page
     /// (chrome://newtab renders out-of-process and Page.captureScreenshot hangs on it), else the profile anchor.</summary>
     internal static AgentBrowserTab? DefaultTab(IReadOnlyList<AgentBrowserTab> tabs) =>
-        tabs.FirstOrDefault(t => !t.Anchor && IsCapturable(t.Url))
+        tabs.LastOrDefault(t => !t.Anchor && IsCapturable(t.Url))
+        ?? tabs.FirstOrDefault(t => !t.Anchor && IsCapturable(t.Url))
         ?? tabs.FirstOrDefault(t => t.Anchor)
-        ?? tabs.FirstOrDefault(t => IsCapturable(t.Url));
+        ?? tabs.LastOrDefault(t => IsCapturable(t.Url));
 
     internal static bool IsCapturable(string url) =>
         !url.StartsWith("chrome://", StringComparison.OrdinalIgnoreCase)

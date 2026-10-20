@@ -82,6 +82,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     agentId.Equals("models", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("skills", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("chats", StringComparison.OrdinalIgnoreCase) ||
+                    agentId.Equals("ws", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("approvals", StringComparison.OrdinalIgnoreCase))
                 {
                     return Results.NotFound(new { message = $"Literal route '{agentId}' is handled by dedicated endpoints" });

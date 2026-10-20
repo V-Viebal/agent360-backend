@@ -17,6 +17,9 @@ public static class ChannelResponseStore
     private static readonly ConcurrentQueue<ChannelResponseEvent> _records = new();
     private static readonly ConcurrentDictionary<string, bool> _unreadSessions = new(StringComparer.OrdinalIgnoreCase);
 
+    public static event Action<ChannelResponseEvent>? OnChannelResponseRecorded;
+    public static event Action<string, bool>? OnUnreadChanged;
+
     public static void Record(ChannelResponseEvent record)
     {
         _records.Enqueue(record);
@@ -31,6 +34,12 @@ public static class ChannelResponseStore
         {
             SetUnread(record.SessionId, true);
         }
+
+        try
+        {
+            OnChannelResponseRecorded?.Invoke(record);
+        }
+        catch {}
     }
 
     public static ChannelResponseEvent Record(
@@ -67,6 +76,12 @@ public static class ChannelResponseStore
         {
             _unreadSessions.TryRemove(sessionId, out _);
         }
+
+        try
+        {
+            OnUnreadChanged?.Invoke(sessionId, isUnread);
+        }
+        catch {}
     }
 
     public static bool IsUnread(string sessionId)
