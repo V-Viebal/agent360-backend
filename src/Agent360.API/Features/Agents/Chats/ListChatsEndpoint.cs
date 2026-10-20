@@ -110,9 +110,25 @@ public sealed class ListChatsEndpoint : IEndpoint
         // Mark session as read
         routeBuilder.MapPost(
             "chats/{chatId}/read",
-            ([FromRoute] string chatId) =>
+            async (string chatId, [FromQuery] string? agentId, IFleetInstanceRoutingService routing, CancellationToken ct) =>
             {
                 ChannelResponseStore.MarkRead(chatId);
+                try
+                {
+                    var target = routing.ResolveTarget(agentId);
+                    using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats", ct: ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var chats = await response.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(ct);
+                        var matched = chats?.FirstOrDefault(c => string.Equals(c.Id, chatId, StringComparison.OrdinalIgnoreCase) || string.Equals(c.SessionId, chatId, StringComparison.OrdinalIgnoreCase));
+                        if (matched is not null)
+                        {
+                            if (!string.IsNullOrWhiteSpace(matched.Id)) ChannelResponseStore.MarkRead(matched.Id);
+                            if (!string.IsNullOrWhiteSpace(matched.SessionId)) ChannelResponseStore.MarkRead(matched.SessionId);
+                        }
+                    }
+                }
+                catch {}
                 return TypedResults.Ok(new { success = true, chat_id = chatId, unread = false });
             })
             .MapToApiVersion(ApiVersion.Default)
@@ -123,9 +139,25 @@ public sealed class ListChatsEndpoint : IEndpoint
 
         routeBuilder.MapPost(
             "agents/{agentId}/chats/{chatId}/read",
-            ([FromRoute] string agentId, [FromRoute] string chatId) =>
+            async (string agentId, string chatId, IFleetInstanceRoutingService routing, CancellationToken ct) =>
             {
                 ChannelResponseStore.MarkRead(chatId);
+                try
+                {
+                    var target = routing.ResolveTarget(agentId);
+                    using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats", ct: ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var chats = await response.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(ct);
+                        var matched = chats?.FirstOrDefault(c => string.Equals(c.Id, chatId, StringComparison.OrdinalIgnoreCase) || string.Equals(c.SessionId, chatId, StringComparison.OrdinalIgnoreCase));
+                        if (matched is not null)
+                        {
+                            if (!string.IsNullOrWhiteSpace(matched.Id)) ChannelResponseStore.MarkRead(matched.Id);
+                            if (!string.IsNullOrWhiteSpace(matched.SessionId)) ChannelResponseStore.MarkRead(matched.SessionId);
+                        }
+                    }
+                }
+                catch {}
                 return TypedResults.Ok(new { success = true, agent_id = agentId, chat_id = chatId, unread = false });
             })
             .MapToApiVersion(ApiVersion.Default)

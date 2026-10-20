@@ -176,7 +176,7 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
                     ) RETURNING ""Id"";
                 ", conn);
                 insCmd.Parameters.AddWithValue(req.LogtoUserId);
-                insCmd.Parameters.AddWithValue(email);
+                insCmd.Parameters.AddWithValue((object?)email ?? DBNull.Value);
                 insCmd.Parameters.AddWithValue(firstName);
                 insCmd.Parameters.AddWithValue(lastName);
                 insCmd.Parameters.AddWithValue(displayName);
@@ -207,7 +207,7 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
                     WHERE ""Id"" = $4;
                 ", conn);
                 updCmd.Parameters.AddWithValue(req.LogtoUserId);
-                updCmd.Parameters.AddWithValue(email);
+                updCmd.Parameters.AddWithValue((object?)email ?? DBNull.Value);
                 updCmd.Parameters.AddWithValue(displayName);
                 updCmd.Parameters.AddWithValue(userId);
                 await updCmd.ExecuteNonQueryAsync(ct);
@@ -217,6 +217,153 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
         })
         .WithName("AdminSyncUser")
         .WithSummary("Sync or upsert user into database (Admin only)");
+
+        // Automatically pull and sync all users from Logto Management API into local PostgreSQL
+        group.MapPost("sync-from-logto", async (IConfiguration config, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
+        {
+            var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+            if (string.IsNullOrWhiteSpace(connStr)) return Results.Problem("Database not configured");
+
+            var endpoint = "https://auth-skyer.hmz.one";
+            var m2mId = "skyer-m2m-backend";
+            var m2mSecret = "7pPJ85w2sM3l7CtgxTVZdGz7WEtvBb9P";
+
+            var httpClient = httpClientFactory.CreateClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(15);
+
+            // 1. Get Logto M2M token for Management API
+            var tokenReq = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/oidc/token")
+            {
+                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["grant_type"] = "client_credentials",
+                    ["client_id"] = m2mId,
+                    ["client_secret"] = m2mSecret,
+                    ["resource"] = "https://default.logto.app/api",
+                    ["scope"] = "all"
+                })
+            };
+            tokenReq.Headers.Add("User-Agent", "Agent360/1.0");
+
+            var tokenResp = await httpClient.SendAsync(tokenReq, ct);
+            if (!tokenResp.IsSuccessStatusCode)
+            {
+                return Results.Problem($"Failed to authenticate with Logto Management API: {tokenResp.StatusCode}");
+            }
+
+            var tokenJson = await tokenResp.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonObject>(ct);
+            var mgmtToken = tokenJson?["access_token"]?.ToString();
+            if (string.IsNullOrWhiteSpace(mgmtToken))
+            {
+                return Results.Problem("No access_token returned by Logto Management API");
+            }
+
+            // 2. Fetch users list
+            var usersReq = new HttpRequestMessage(HttpMethod.Get, $"{endpoint}/api/users");
+            usersReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", mgmtToken);
+            usersReq.Headers.Add("User-Agent", "Agent360/1.0");
+
+            var usersResp = await httpClient.SendAsync(usersReq, ct);
+            if (!usersResp.IsSuccessStatusCode)
+            {
+                return Results.Problem($"Failed to fetch users from Logto Management API: {usersResp.StatusCode}");
+            }
+
+            var usersArray = await usersResp.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonArray>(ct);
+            if (usersArray is null or { Count: 0 })
+            {
+                return Results.Ok(new { synced = 0, message = "No users found in Logto" });
+            }
+
+            // 3. Connect to database and sync users
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+
+            int syncedCount = 0;
+            foreach (var item in usersArray)
+            {
+                if (item is not System.Text.Json.Nodes.JsonObject u) continue;
+                var sub = u["id"]?.ToString();
+                if (string.IsNullOrWhiteSpace(sub)) continue;
+
+                var identities = u["identities"] as System.Text.Json.Nodes.JsonObject;
+                var googleDetails = identities?["google"]?["details"] as System.Text.Json.Nodes.JsonObject;
+
+                var email = u["primaryEmail"]?.ToString() 
+                    ?? googleDetails?["email"]?.ToString() 
+                    ?? $"{sub}@skyer.hmz.one";
+
+                var name = u["name"]?.ToString() 
+                    ?? googleDetails?["name"]?.ToString() 
+                    ?? email.Split('@')[0];
+
+                var parts = name.Split(' ', 2);
+                var firstName = parts[0];
+                var lastName = parts.Length > 1 ? parts[1] : "Skyer";
+
+                // Check existing
+                long userId = 0;
+                await using (var checkCmd = new NpgsqlCommand(
+                    @"SELECT ""Id"" FROM user_management.""Users"" WHERE ""LogtoUserId"" = $1 OR (""Email"" IS NOT NULL AND ""Email"" = $2) LIMIT 1;",
+                    conn))
+                {
+                    checkCmd.Parameters.AddWithValue(sub);
+                    checkCmd.Parameters.AddWithValue((object?)email ?? DBNull.Value);
+                    var obj = await checkCmd.ExecuteScalarAsync(ct);
+                    if (obj is long lid) userId = lid;
+                    else if (obj is int iid) userId = iid;
+                }
+
+                if (userId == 0)
+                {
+                    await using var insCmd = new NpgsqlCommand(@"
+                        INSERT INTO user_management.""Users"" (
+                            ""LogtoUserId"", ""Email"", ""FirstName"", ""LastName"", ""DisplayName"", ""Status"", ""IsDeleted"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy""
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, 1, false, NOW(), 1, NOW(), 1
+                        ) RETURNING ""Id"";
+                    ", conn);
+                    insCmd.Parameters.AddWithValue(sub);
+                    insCmd.Parameters.AddWithValue((object?)email ?? DBNull.Value);
+                    insCmd.Parameters.AddWithValue(firstName);
+                    insCmd.Parameters.AddWithValue(lastName);
+                    insCmd.Parameters.AddWithValue(name);
+                    var newIdObj = await insCmd.ExecuteScalarAsync(ct);
+                    userId = Convert.ToInt64(newIdObj);
+
+                    await using var roleCmd = new NpgsqlCommand(@"
+                        INSERT INTO user_management.""UserRoles"" (""UserId"", ""RoleId"", ""Id"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy"")
+                        VALUES ($1, 1, $1, NOW(), 1, NOW(), 1)
+                        ON CONFLICT DO NOTHING;
+                    ", conn);
+                    roleCmd.Parameters.AddWithValue(userId);
+                    await roleCmd.ExecuteNonQueryAsync(ct);
+                }
+                else
+                {
+                    await using var updCmd = new NpgsqlCommand(@"
+                        UPDATE user_management.""Users""
+                        SET ""LogtoUserId"" = $1,
+                            ""Email"" = COALESCE(NULLIF($2, ''), ""Email""),
+                            ""DisplayName"" = COALESCE(NULLIF($3, ''), ""DisplayName""),
+                            ""ModifiedAt"" = NOW()
+                        WHERE ""Id"" = $4;
+                    ", conn);
+                    updCmd.Parameters.AddWithValue(sub);
+                    updCmd.Parameters.AddWithValue((object?)email ?? DBNull.Value);
+                    updCmd.Parameters.AddWithValue(name);
+                    updCmd.Parameters.AddWithValue(userId);
+                    await updCmd.ExecuteNonQueryAsync(ct);
+                }
+
+                syncedCount++;
+            }
+
+            return Results.Ok(new { success = true, synced = syncedCount, total = usersArray.Count });
+        })
+        .WithName("AdminSyncAllUsersFromLogto")
+        .WithSummary("Sync all users from Logto Management API (Admin only)");
+
 
     }
 }
