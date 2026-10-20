@@ -14,7 +14,8 @@ public sealed class SessionMultiplexerEndpoint : IEndpoint
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         // 1. WebSocket Multiplexer: /api/v1/agents/ws/sessions
-        routeBuilder.Map(
+        // WebSocket handshakes arrive as HTTP GET with Upgrade: websocket
+        routeBuilder.MapGet(
             "agents/ws/sessions",
             async (HttpContext context, SessionMultiplexerHub hub, CancellationToken ct) =>
             {
@@ -27,10 +28,14 @@ public sealed class SessionMultiplexerEndpoint : IEndpoint
 
                 using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
                 await hub.HandleWebSocketClientAsync(webSocket, ct);
-            });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("SessionMultiplexerWebSocket")
+            .WithTags(EndpointTags.Agents)
+            .AllowAnonymous();
 
         // Alias for convenience: /api/v1/chats/ws
-        routeBuilder.Map(
+        routeBuilder.MapGet(
             "chats/ws",
             async (HttpContext context, SessionMultiplexerHub hub, CancellationToken ct) =>
             {
@@ -43,7 +48,11 @@ public sealed class SessionMultiplexerEndpoint : IEndpoint
 
                 using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
                 await hub.HandleWebSocketClientAsync(webSocket, ct);
-            });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("ChatsWebSocket")
+            .WithTags(EndpointTags.Agents)
+            .AllowAnonymous();
 
         // 2. SSE Multiplexer: GET /api/v1/chats/stream
         // Provides single multiplexed server-sent events stream for all session turns across all agents

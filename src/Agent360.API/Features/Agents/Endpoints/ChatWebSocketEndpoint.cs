@@ -12,7 +12,7 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
 {
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
-        routeBuilder.Map("agents/ws/chat", async (
+        routeBuilder.MapGet("agents/ws/chat", async (
             HttpContext context,
             IQwenPawClient qwenPawClient,
             SessionQueueManager queueManager,
@@ -122,6 +122,8 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
             {
                 logger.LogWarning(ex, "WebSocket chat connection closed or encountered error");
             }
-        });
+        })
+        .MapToApiVersion(Asp.Versioning.ApiVersion.Default)
+        .AllowAnonymous();
     }
 }
