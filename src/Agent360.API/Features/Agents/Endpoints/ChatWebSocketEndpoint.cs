@@ -12,7 +12,7 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
 {
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
-        routeBuilder.Map("/api/v1/agents/ws/chat", async (
+        routeBuilder.Map("agents/ws/chat", async (
             HttpContext context,
             IQwenPawClient qwenPawClient,
             SessionQueueManager queueManager,

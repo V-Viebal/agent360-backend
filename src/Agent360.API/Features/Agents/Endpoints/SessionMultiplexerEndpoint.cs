@@ -15,7 +15,7 @@ public sealed class SessionMultiplexerEndpoint : IEndpoint
     {
         // 1. WebSocket Multiplexer: /api/v1/agents/ws/sessions
         routeBuilder.Map(
-            "/api/v1/agents/ws/sessions",
+            "agents/ws/sessions",
             async (HttpContext context, SessionMultiplexerHub hub, CancellationToken ct) =>
             {
                 if (!context.WebSockets.IsWebSocketRequest)
@@ -31,7 +31,7 @@ public sealed class SessionMultiplexerEndpoint : IEndpoint
 
         // Alias for convenience: /api/v1/chats/ws
         routeBuilder.Map(
-            "/api/v1/chats/ws",
+            "chats/ws",
             async (HttpContext context, SessionMultiplexerHub hub, CancellationToken ct) =>
             {
                 if (!context.WebSockets.IsWebSocketRequest)
