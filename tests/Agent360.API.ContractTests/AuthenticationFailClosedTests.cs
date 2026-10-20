@@ -24,6 +24,7 @@ public sealed class AuthenticationFailClosedTests
     public async Task ForgedBearer_WithoutLogtoAuthority_IsRejectedOutsideDevelopment(string environment, string token, bool expectAuthenticated)
     {
         var b = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = environment });
+        b.Configuration["Kestrel:Endpoints:Http:Url"] = "http://127.0.0.1:0";
         b.WebHost.UseUrls("http://127.0.0.1:0");
         b.Configuration["Logto:Authority"] = "";
         b.Configuration["Logto:Audience"] = "";
@@ -33,7 +34,7 @@ public sealed class AuthenticationFailClosedTests
         app.UseAuthentication();
         app.MapGet("/whoami", (HttpContext c) => Results.Ok(c.User.Identity?.IsAuthenticated == true));
         await app.StartAsync(TestContext.Current.CancellationToken);
-        using var http = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+        using var http = new HttpClient { BaseAddress = new Uri(app.Urls.First().Replace("0.0.0.0", "127.0.0.1")) };
         http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
 
         var res = await http.GetAsync("/whoami", TestContext.Current.CancellationToken);

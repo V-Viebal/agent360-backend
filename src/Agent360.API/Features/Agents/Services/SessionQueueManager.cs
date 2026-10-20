@@ -39,4 +39,6 @@ public sealed class SessionQueueManager
         if (active) _activeSessionTurns[sessionId] = true;
         else _activeSessionTurns.TryRemove(sessionId, out _);
     }
+
+    public IReadOnlyList<string> GetActiveSessionIds() => _activeSessionTurns.Keys.ToList();
 }

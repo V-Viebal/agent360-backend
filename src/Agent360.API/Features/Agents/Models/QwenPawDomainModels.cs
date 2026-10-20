@@ -71,7 +71,8 @@ public sealed record ConsoleChatSendRequestDto(
     [property: JsonPropertyName("message")] string? Message,
     [property: JsonPropertyName("agent_id")] string? AgentId,
     [property: JsonPropertyName("model_slot_override")] string? ModelSlotOverride,
-    [property: JsonPropertyName("input")] IReadOnlyList<ConsoleChatInputItem>? Input);
+    [property: JsonPropertyName("input")] IReadOnlyList<ConsoleChatInputItem>? Input,
+    [property: JsonPropertyName("channel")] string? Channel = null);
 
 public sealed record ConsoleChatStopRequestDto(
     [property: JsonPropertyName("session_id")] string SessionId,

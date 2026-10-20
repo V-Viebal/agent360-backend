@@ -86,6 +86,11 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 {
                     return Results.NotFound(new { message = $"Literal route '{agentId}' is handled by dedicated endpoints" });
                 }
+                // Dedicated endpoints like channels/responses or chats/{chatId}/stream handle their own traffic
+                if (clean.StartsWith("channels/responses", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("chats/", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.NotFound(new { message = $"Route '{clean}' is handled by dedicated endpoints" });
+                }
                 if (!AllowedPrefixes.Any(p => clean.Equals(p, StringComparison.OrdinalIgnoreCase) || clean.StartsWith(p + "/", StringComparison.OrdinalIgnoreCase)))
                 {
                     return Results.NotFound(new { message = $"Route '{clean}' is not exposed for agents" });

@@ -23,6 +23,21 @@ public static class AgentOwnershipGuard
             return (false, "Agent identifier is missing");
         }
 
+        var env = context.RequestServices.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>();
+        var secOpt = context.RequestServices.GetService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()?.CurrentValue;
+
+        // In Development mode, bypass ownership check for local testing
+        if (env is not null && env.IsDevelopment())
+        {
+            return (true, null);
+        }
+
+        // Check if caller presents operator token
+        if (secOpt is not null && Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.PresentsOperatorToken(context, secOpt))
+        {
+            return (true, null);
+        }
+
         // The Admin policy is the single definition of a platform admin: operator token, Logto admin role/scope,
         // M2M service token and configured AdminSubjects. Without this the operator console / A2A control plane
         // (operator token, no Logto session) got 403 on every per-agent route.

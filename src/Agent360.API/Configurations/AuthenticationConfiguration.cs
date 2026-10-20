@@ -24,6 +24,19 @@ public static class AuthenticationConfiguration
             // Always register JwtBearer handler to satisfy default challenge/authenticate schemes
             authenticationBuilder.AddJwtBearer(opts =>
             {
+                opts.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = ctx =>
+                    {
+                        var token = ctx.Request.Query["access_token"].FirstOrDefault()
+                            ?? ctx.Request.Query["token"].FirstOrDefault();
+                        if (!string.IsNullOrEmpty(token))
+                        {
+                            ctx.Token = token;
+                        }
+                        return Task.CompletedTask;
+                    }
+                };
                 if (!string.IsNullOrWhiteSpace(authority) && !string.IsNullOrWhiteSpace(audience))
                 {
                     var metadataAddress = authority.EndsWith(

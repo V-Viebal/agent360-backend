@@ -34,6 +34,8 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
         var p = rel.ToLowerInvariant();
         if (!p.StartsWith("agents/") && !p.StartsWith("chats/") && !p.StartsWith("shared/")) return false;
         if (p.StartsWith("shared/")) return false; // explicit share links are public by design
+        // Realtime SSE event streams and channel telemetry endpoints manage their own stream life-cycle
+        if ((p.Contains("/chats/") && p.EndsWith("/stream")) || p.Contains("/channels/responses")) return false;
         var parts = p.Split('/');
         // agents/workspace/..., agents/chats/{id}, agents/{id}/chats[/...], agents/{id}/workspace/(tree|file-content|...)
         if (parts.Length >= 2 && parts[0] == "agents" && (parts[1] == "workspace" || parts[1] == "chats" || parts[1] == "sessions")) return true;

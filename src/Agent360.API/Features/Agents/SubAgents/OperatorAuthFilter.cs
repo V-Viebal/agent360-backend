@@ -75,6 +75,14 @@ public sealed class OperatorAuthFilter(
             var auth = http.Request.Headers.Authorization.FirstOrDefault();
             if (auth is not null && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) presented = auth[7..].Trim();
         }
+        if (string.IsNullOrWhiteSpace(presented) && http.Request.Query.TryGetValue("operatorToken", out var qOp) && !string.IsNullOrWhiteSpace(qOp))
+        {
+            presented = qOp.ToString().Trim();
+        }
+        if (string.IsNullOrWhiteSpace(presented) && http.Request.Query.TryGetValue("operator_token", out var qOp2) && !string.IsNullOrWhiteSpace(qOp2))
+        {
+            presented = qOp2.ToString().Trim();
+        }
         if (string.IsNullOrEmpty(presented)) return false;
         var a = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
         var b = SHA256.HashData(Encoding.UTF8.GetBytes(opt.OperatorToken.Trim()));
@@ -90,6 +98,14 @@ public sealed class OperatorAuthFilter(
         {
             var auth = http.Request.Headers.Authorization.FirstOrDefault();
             if (auth is not null && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) presented = auth[7..].Trim();
+        }
+        if (string.IsNullOrWhiteSpace(presented) && http.Request.Query.TryGetValue("operatorToken", out var qOp) && !string.IsNullOrWhiteSpace(qOp))
+        {
+            presented = qOp.ToString().Trim();
+        }
+        if (string.IsNullOrWhiteSpace(presented) && http.Request.Query.TryGetValue("operator_token", out var qOp2) && !string.IsNullOrWhiteSpace(qOp2))
+        {
+            presented = qOp2.ToString().Trim();
         }
         if (string.IsNullOrEmpty(presented)) return false;
         var a = SHA256.HashData(Encoding.UTF8.GetBytes(presented));

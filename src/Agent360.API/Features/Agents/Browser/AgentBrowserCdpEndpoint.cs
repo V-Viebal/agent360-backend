@@ -249,9 +249,20 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         {
             return true;
         }
-        // Same-origin (UI and API behind one host via the frontend nginx /api proxy).
-        return Uri.TryCreate(origin, UriKind.Absolute, out var o)
-            && string.Equals(o.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase);
+        // Same-origin (UI and API behind one host via the frontend nginx /api proxy)
+        // or local development loopback (e.g. Vite dev server on localhost:3000 or 127.0.0.1:3000).
+        if (Uri.TryCreate(origin, UriKind.Absolute, out var o))
+        {
+            if (string.Equals(o.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (o.IsLoopback || o.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>One CDP capture per target per second, shared by every concurrent viewer.</summary>
@@ -314,9 +325,9 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         // but labwc denies unseeded window activation ("Denying focus request, seat wasn't supplied").
         // To guarantee the agent's profile window is brought on top of the shared desktop:
         // 1. Connect to browser WebSocket debugger.
-        // 2. Find target windowId (by context or targetId).
+        // 2. Find target windowIds (all windows matching the profile context or targetId).
         // 3. Minimize other profile windows so labwc un-maps them.
-        // 4. Restore target window (normal -> maximized) to place it on top of the window stack.
+        // 4. Restore target profile windows (normal -> maximized) to place them on top of the window stack.
         // 5. Activate target tab. Fallback to /json/activate if browser WebSocket is unreachable.
         try
         {
@@ -328,8 +339,9 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 using var ws = new ClientWebSocket();
                 await ws.ConnectAsync(wsUri, cts.Token);
 
-                await SendAsync(ws, new { id = 101, method = "Target.getTargets" }, cts.Token);
-                var targetsBytes = await ReceiveByIdAsync(ws, 101, cts.Token);
+                int reqId = 100;
+                await SendAsync(ws, new { id = ++reqId, method = "Target.getTargets" }, cts.Token);
+                var targetsBytes = await ReceiveByIdAsync(ws, reqId, cts.Token);
                 if (targetsBytes is not null)
                 {
                     using var doc = JsonDocument.Parse(targetsBytes);
@@ -340,24 +352,25 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                             ContextId: t.TryGetProperty("browserContextId", out var c) ? c.GetString() : null))
                         .ToList();
 
-                    int? targetWid = null;
+                    var targetWids = new HashSet<int>();
                     var otherWids = new HashSet<int>();
-                    int reqId = 200;
                     foreach (var p in pages)
                     {
-                        reqId++;
-                        await SendAsync(ws, new { id = reqId, method = "Browser.getWindowForTarget", @params = new { targetId = p.TargetId } }, cts.Token);
-                        var winBytes = await ReceiveByIdAsync(ws, reqId, cts.Token);
+                        var callId = ++reqId;
+                        await SendAsync(ws, new { id = callId, method = "Browser.getWindowForTarget", @params = new { targetId = p.TargetId } }, cts.Token);
+                        var winBytes = await ReceiveByIdAsync(ws, callId, cts.Token);
                         if (winBytes is not null)
                         {
                             using var winDoc = JsonDocument.Parse(winBytes);
                             if (winDoc.RootElement.TryGetProperty("result", out var r) && r.TryGetProperty("windowId", out var widProp))
                             {
                                 var wid = widProp.GetInt32();
-                                bool isTarget = (!string.IsNullOrEmpty(targetContextId) && p.ContextId == targetContextId) || p.TargetId == targetId;
+                                bool isTarget = p.TargetId == targetId
+                                    || (!string.IsNullOrEmpty(targetContextId) && p.ContextId == targetContextId)
+                                    || (string.IsNullOrEmpty(targetContextId) && string.IsNullOrEmpty(p.ContextId));
                                 if (isTarget)
                                 {
-                                    targetWid = wid;
+                                    targetWids.Add(wid);
                                 }
                                 else
                                 {
@@ -367,25 +380,41 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         }
                     }
 
-                    if (targetWid.HasValue)
+                    if (targetWids.Count > 0)
                     {
-                        otherWids.Remove(targetWid.Value);
+                        otherWids.ExceptWith(targetWids);
                         foreach (var wid in otherWids)
                         {
-                            await SendAsync(ws, new { id = 301, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "minimized" } } }, cts.Token);
-                            await ReceiveByIdAsync(ws, 301, cts.Token);
+                            var hideId = ++reqId;
+                            await SendAsync(ws, new { id = hideId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "minimized" } } }, cts.Token);
+                            await ReceiveByIdAsync(ws, hideId, cts.Token);
                         }
 
-                        await SendAsync(ws, new { id = 302, method = "Browser.setWindowBounds", @params = new { windowId = targetWid.Value, bounds = new { windowState = "normal" } } }, cts.Token);
-                        await ReceiveByIdAsync(ws, 302, cts.Token);
+                        // Auto-dismiss Lens overlay or hanging lens UI targets if present
+                        var lensTargets = pages.Where(p => p.TargetId != targetId && (p.TargetId.Contains("lens", StringComparison.OrdinalIgnoreCase))).ToList();
+                        foreach (var lt in lensTargets)
+                        {
+                            var closeId = ++reqId;
+                            await SendAsync(ws, new { id = closeId, method = "Target.closeTarget", @params = new { targetId = lt.TargetId } }, cts.Token);
+                            await ReceiveByIdAsync(ws, closeId, cts.Token);
+                        }
 
-                        await SendAsync(ws, new { id = 303, method = "Browser.setWindowBounds", @params = new { windowId = targetWid.Value, bounds = new { windowState = "maximized" } } }, cts.Token);
-                        await ReceiveByIdAsync(ws, 303, cts.Token);
+                        foreach (var wid in targetWids)
+                        {
+                            var normId = ++reqId;
+                            await SendAsync(ws, new { id = normId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, cts.Token);
+                            await ReceiveByIdAsync(ws, normId, cts.Token);
+
+                            var maxId = ++reqId;
+                            await SendAsync(ws, new { id = maxId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "maximized" } } }, cts.Token);
+                            await ReceiveByIdAsync(ws, maxId, cts.Token);
+                        }
                     }
                 }
 
-                await SendAsync(ws, new { id = 304, method = "Target.activateTarget", @params = new { targetId } }, cts.Token);
-                await ReceiveByIdAsync(ws, 304, cts.Token);
+                var actId = ++reqId;
+                await SendAsync(ws, new { id = actId, method = "Target.activateTarget", @params = new { targetId } }, cts.Token);
+                await ReceiveByIdAsync(ws, actId, cts.Token);
                 await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
                 return true;
             }

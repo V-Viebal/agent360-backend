@@ -26,7 +26,11 @@ public sealed record AgentSessionResponse(
     string? UpdatedAt,
     int MessageCount,
     string? LastMessageSnippet,
-    bool Unread);
+    bool Unread,
+    [property: JsonPropertyName("session_id")] string? SessionId = null,
+    [property: JsonPropertyName("channel")] string? Channel = null,
+    [property: JsonPropertyName("status")] string? Status = "idle",
+    [property: JsonPropertyName("is_running")] bool IsRunning = false);
 
 public sealed class ListChatsEndpoint : IEndpoint
 {
@@ -38,7 +42,9 @@ public sealed class ListChatsEndpoint : IEndpoint
             "chats",
             async Task<IResult> (
                 [FromQuery] string? agentId,
+                [FromQuery] string? channel,
                 IFleetInstanceRoutingService routing,
+                SessionQueueManager queueManager,
                 CancellationToken cancellationToken) =>
             {
                 IReadOnlyList<QwenPawChatDto>? chats;
@@ -59,14 +65,33 @@ public sealed class ListChatsEndpoint : IEndpoint
                     return TypedResults.Ok(Array.Empty<AgentSessionResponse>());
                 }
 
-                var result = chats.Select(c => new AgentSessionResponse(
-                    Id: !string.IsNullOrWhiteSpace(c.Id) ? c.Id : (c.SessionId ?? ""),
-                    Title: string.IsNullOrWhiteSpace(c.Name) ? "Session" : c.Name,
-                    UpdatedAt: c.UpdatedAt,
-                    MessageCount: 1,
-                    LastMessageSnippet: c.Name,
-                    Unread: false
-                )).ToList();
+                var query = chats.AsEnumerable();
+                if (!string.IsNullOrWhiteSpace(channel))
+                {
+                    query = query.Where(c => string.Equals(c.Channel, channel, StringComparison.OrdinalIgnoreCase));
+                }
+
+                var result = query.Select(c =>
+                {
+                    var id = !string.IsNullOrWhiteSpace(c.Id) ? c.Id : (c.SessionId ?? "");
+                    var isRunning = string.Equals(c.Status, "running", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(c.Status, "in_progress", StringComparison.OrdinalIgnoreCase)
+                        || queueManager.IsSessionTurnActive(id)
+                        || (!string.IsNullOrWhiteSpace(c.SessionId) && queueManager.IsSessionTurnActive(c.SessionId));
+
+                    return new AgentSessionResponse(
+                        Id: id,
+                        Title: string.IsNullOrWhiteSpace(c.Name) ? "Session" : c.Name,
+                        UpdatedAt: c.UpdatedAt,
+                        MessageCount: 1,
+                        LastMessageSnippet: c.Name,
+                        Unread: false,
+                        SessionId: c.SessionId,
+                        Channel: c.Channel,
+                        Status: isRunning ? "running" : (c.Status ?? "idle"),
+                        IsRunning: isRunning
+                    );
+                }).ToList();
 
                 return TypedResults.Ok(result);
             })

@@ -407,7 +407,7 @@ public sealed class QwenPawClient : IQwenPawClient
     {
         var target = Resolve(agentId);
         var payload = new SetActiveModelRequestDto("agent", target.TargetAgentProfile, providerId, model);
-        using var response = await SendAsync(target, HttpMethod.Put, "models/active", () => JsonContent.Create(payload), global: true, ct: cancellationToken);
+        using var response = await SendAsync(target, HttpMethod.Put, "models/active", () => JsonContent.Create(payload), global: true, timeout: SlowReadTimeout, ct: cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogError("Failed to update active model for agent {AgentId}. StatusCode: {StatusCode}", agentId, response.StatusCode);

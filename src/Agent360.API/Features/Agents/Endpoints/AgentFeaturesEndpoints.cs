@@ -199,19 +199,62 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-            queueManager.SetSessionTurnActive(effectiveSessionId, true);
+            string qwenPawSessionId = effectiveSessionId;
             try
             {
-                using var response = await client.StreamConsoleChatAsync(request, ct);
+                var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
+                if (!string.IsNullOrWhiteSpace(chatsRaw))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(chatsRaw);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var el in doc.RootElement.EnumerateArray())
+                        {
+                            var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                            var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                            if (string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(sid))
+                            {
+                                qwenPawSessionId = sid;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+
+            queueManager.SetSessionTurnActive(effectiveSessionId, true);
+            if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+            {
+                queueManager.SetSessionTurnActive(qwenPawSessionId, true);
+            }
+
+            Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
+
+            try
+            {
+                var effectiveRequest = !string.Equals(qwenPawSessionId, request.SessionId, StringComparison.OrdinalIgnoreCase)
+                    ? request with { SessionId = qwenPawSessionId }
+                    : request;
+
+                using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
                 httpContext.Response.StatusCode = (int)response.StatusCode;
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
                 await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
+
+                Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                    agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
             }
             finally
             {
                 queueManager.SetSessionTurnActive(effectiveSessionId, false);
+                if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, false);
+                }
             }
         })
         .MapToApiVersion(ApiVersion.Default)
@@ -269,20 +312,63 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-            queueManager.SetSessionTurnActive(effectiveSessionId, true);
+            string qwenPawSessionId = effectiveSessionId;
             try
             {
-                using var response = await client.StreamConsoleChatAsync(request, ct);
+                var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
+                if (!string.IsNullOrWhiteSpace(chatsRaw))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(chatsRaw);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var el in doc.RootElement.EnumerateArray())
+                        {
+                            var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                            var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                            if (string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(sid))
+                            {
+                                qwenPawSessionId = sid;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch {}
+
+            queueManager.SetSessionTurnActive(effectiveSessionId, true);
+            if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+            {
+                queueManager.SetSessionTurnActive(qwenPawSessionId, true);
+            }
+
+            Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
+
+            try
+            {
+                var effectiveRequest = !string.Equals(qwenPawSessionId, request.SessionId, StringComparison.OrdinalIgnoreCase)
+                    ? request with { SessionId = qwenPawSessionId }
+                    : request;
+
+                using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
                 httpContext.Response.StatusCode = (int)response.StatusCode;
 
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
                 await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
+
+                Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                    agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
             }
             finally
             {
                 queueManager.SetSessionTurnActive(effectiveSessionId, false);
+                if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, false);
+                }
             }
         })
         .WithName("ConsoleChatStream")
@@ -435,8 +521,22 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Read workspace file content for specific agent")
         .AllowAnonymous();
 
-        group.MapPut("{agentId}/active-model", async (string agentId, [FromBody] SetActiveModelRequestDto request, IQwenPawClient client, CancellationToken ct) =>
+        group.MapPut("{agentId}/active-model", async (
+            string agentId,
+            [FromBody] SetActiveModelRequestDto request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
         {
+            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
+            if (!accessAllowed)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+            }
+
             var res = await client.SetAgentActiveModelAsync(agentId, request.ProviderId, request.Model, ct);
             return res is null ? Results.Problem("Failed to switch model") : TypedResults.Ok(res);
         })
