@@ -81,6 +81,9 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 var isInitiallyRunning = queueManager.IsSessionTurnActive(effectiveChatId) ||
                     (!string.IsNullOrWhiteSpace(canonicalSessionId) && queueManager.IsSessionTurnActive(canonicalSessionId));
 
+                var isInitiallyUnread = ChannelResponseStore.IsUnread(effectiveChatId) ||
+                    (!string.IsNullOrWhiteSpace(canonicalSessionId) && ChannelResponseStore.IsUnread(canonicalSessionId));
+
                 // Send initial connected ping with detected channel context
                 var connectMeta = JsonSerializer.Serialize(new
                 {
@@ -89,7 +92,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     chat_id = effectiveChatId,
                     session_id = canonicalSessionId ?? chatId,
                     channel = detectedChannel,
-                    is_running = isInitiallyRunning
+                    is_running = isInitiallyRunning,
+                    is_unread = isInitiallyUnread
                 });
                 await httpContext.Response.WriteAsync($"event: connected\ndata: {connectMeta}\n\n", ct);
                 await httpContext.Response.Body.FlushAsync(ct);
@@ -184,6 +188,14 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                         RecordedAt: DateTime.UtcNow
                                     ));
 
+                                    var isUnreadTurn = !isTurnRunning && msgStatus == "completed";
+                                    if (isUnreadTurn)
+                                    {
+                                        ChannelResponseStore.SetUnread(effectiveChatId, true);
+                                        if (!string.IsNullOrWhiteSpace(canonicalSessionId))
+                                            ChannelResponseStore.SetUnread(canonicalSessionId, true);
+                                    }
+
                                     var payload = JsonSerializer.Serialize(new
                                     {
                                         type = "session_sync",
@@ -193,6 +205,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                         channel = detectedChannel,
                                         message_count = currentCount,
                                         is_running = isTurnRunning,
+                                        is_unread = isUnreadTurn,
                                         last_message = new
                                         {
                                             id = currentLastId,

@@ -45,6 +45,24 @@ public class AgentChatSyncStreamEndpointTests
     }
 
     [Fact]
+    public void ChannelResponseStore_TracksUnreadStateCorrectly()
+    {
+        const string sid = "telegram:unread_test_123";
+        ChannelResponseStore.MarkRead(sid);
+        ChannelResponseStore.IsUnread(sid).Should().BeFalse();
+
+        // Recording completed assistant response marks session unread
+        ChannelResponseStore.Record("mons", sid, "telegram", "assistant", "Turn finished", "completed");
+        ChannelResponseStore.IsUnread(sid).Should().BeTrue();
+        ChannelResponseStore.GetUnreadSessionIds().Should().Contain(sid);
+
+        // Marking as read clears unread state
+        ChannelResponseStore.MarkRead(sid);
+        ChannelResponseStore.IsUnread(sid).Should().BeFalse();
+        ChannelResponseStore.GetUnreadSessionIds().Should().NotContain(sid);
+    }
+
+    [Fact]
     public void AgentSessionResponse_PreservesChannelAndSessionId_AndIsRunning()
     {
         var resp = new AgentSessionResponse(
@@ -53,7 +71,7 @@ public class AgentChatSyncStreamEndpointTests
             UpdatedAt: DateTime.UtcNow.ToString("O"),
             MessageCount: 5,
             LastMessageSnippet: "Hello",
-            Unread: false,
+            Unread: true,
             SessionId: "telegram:1448508743",
             Channel: "telegram",
             Status: "running",
@@ -64,6 +82,7 @@ public class AgentChatSyncStreamEndpointTests
         resp.Channel.Should().Be("telegram");
         resp.Status.Should().Be("running");
         resp.IsRunning.Should().BeTrue();
+        resp.Unread.Should().BeTrue();
     }
 
     [Fact]

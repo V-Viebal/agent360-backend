@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
+using Agent360.API.Features.Agents.Analytics;
 using Agent360.API.Features.Agents.Services;
 using Microsoft.AspNetCore.Mvc;
 using System.Net.Http.Json;
@@ -79,13 +80,16 @@ public sealed class ListChatsEndpoint : IEndpoint
                         || queueManager.IsSessionTurnActive(id)
                         || (!string.IsNullOrWhiteSpace(c.SessionId) && queueManager.IsSessionTurnActive(c.SessionId));
 
+                    var isUnread = ChannelResponseStore.IsUnread(id)
+                        || (!string.IsNullOrWhiteSpace(c.SessionId) && ChannelResponseStore.IsUnread(c.SessionId));
+
                     return new AgentSessionResponse(
                         Id: id,
                         Title: string.IsNullOrWhiteSpace(c.Name) ? "Session" : c.Name,
                         UpdatedAt: c.UpdatedAt,
                         MessageCount: 1,
                         LastMessageSnippet: c.Name,
-                        Unread: false,
+                        Unread: isUnread,
                         SessionId: c.SessionId,
                         Channel: c.Channel,
                         Status: isRunning ? "running" : (c.Status ?? "idle"),
@@ -101,6 +105,33 @@ public sealed class ListChatsEndpoint : IEndpoint
             .WithSummary("List all agent chats/sessions")
             .WithDescription("Retrieves the sessions and recent chat threads mapped from QwenPaw /api/chats.")
             .Produces<IReadOnlyList<AgentSessionResponse>>()
+            .AllowAnonymous();
+
+        // Mark session as read
+        routeBuilder.MapPost(
+            "chats/{chatId}/read",
+            ([FromRoute] string chatId) =>
+            {
+                ChannelResponseStore.MarkRead(chatId);
+                return TypedResults.Ok(new { success = true, chat_id = chatId, unread = false });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("MarkChatAsRead")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Mark chat session as read")
+            .AllowAnonymous();
+
+        routeBuilder.MapPost(
+            "agents/{agentId}/chats/{chatId}/read",
+            ([FromRoute] string agentId, [FromRoute] string chatId) =>
+            {
+                ChannelResponseStore.MarkRead(chatId);
+                return TypedResults.Ok(new { success = true, agent_id = agentId, chat_id = chatId, unread = false });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("MarkAgentChatAsRead")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Mark specific agent chat session as read")
             .AllowAnonymous();
     }
 }

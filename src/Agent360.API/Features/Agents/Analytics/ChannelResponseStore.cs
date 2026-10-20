@@ -15,6 +15,7 @@ public sealed record ChannelResponseEvent(
 public static class ChannelResponseStore
 {
     private static readonly ConcurrentQueue<ChannelResponseEvent> _records = new();
+    private static readonly ConcurrentDictionary<string, bool> _unreadSessions = new(StringComparer.OrdinalIgnoreCase);
 
     public static void Record(ChannelResponseEvent record)
     {
@@ -22,6 +23,13 @@ public static class ChannelResponseStore
         while (_records.Count > 1000)
         {
             _records.TryDequeue(out _);
+        }
+
+        // If turn completed from assistant or external channel, mark session unread until viewed
+        if (string.Equals(record.Status, "completed", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(record.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+        {
+            SetUnread(record.SessionId, true);
         }
     }
 
@@ -46,6 +54,35 @@ public static class ChannelResponseStore
         );
         Record(ev);
         return ev;
+    }
+
+    public static void SetUnread(string sessionId, bool isUnread)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return;
+        if (isUnread)
+        {
+            _unreadSessions[sessionId] = true;
+        }
+        else
+        {
+            _unreadSessions.TryRemove(sessionId, out _);
+        }
+    }
+
+    public static bool IsUnread(string sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        return _unreadSessions.TryGetValue(sessionId, out var unread) && unread;
+    }
+
+    public static IReadOnlyList<string> GetUnreadSessionIds()
+    {
+        return _unreadSessions.Where(kvp => kvp.Value).Select(kvp => kvp.Key).ToList();
+    }
+
+    public static void MarkRead(string sessionId)
+    {
+        SetUnread(sessionId, false);
     }
 
     public static IReadOnlyList<ChannelResponseEvent> GetRecent(string? agentId = null, string? channel = null, int limit = 50)
