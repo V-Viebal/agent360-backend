@@ -104,7 +104,13 @@ public sealed class SessionSyncBackgroundService(
             {
                 _activeTrackedSessions.TryRemove(trackedId, out _);
                 queueManager.SetSessionTurnActive(trackedId, false);
-                ChannelResponseStore.SetUnread(trackedId, true);
+                // Only mark the specific chat UUID as unread, avoid marking shared session identifiers
+                // across multiple chat history branches unless it is an explicit chat UUID
+                if (!trackedId.StartsWith("telegram:", StringComparison.OrdinalIgnoreCase) &&
+                    !trackedId.StartsWith("zalo:", StringComparison.OrdinalIgnoreCase))
+                {
+                    ChannelResponseStore.SetUnread(trackedId, true);
+                }
             }
         }
     }
