@@ -668,11 +668,25 @@ public sealed class QwenPawClient : IQwenPawClient
             textContent = request.Input[0].Content?.FirstOrDefault()?.Text ?? "";
         }
 
+        var sess = request.SessionId ?? "";
+        var effectiveChannel = !string.IsNullOrWhiteSpace(request.Channel)
+            ? request.Channel
+            : sess.StartsWith("telegram:", StringComparison.OrdinalIgnoreCase) || sess.Contains("telegram", StringComparison.OrdinalIgnoreCase)
+                ? "telegram"
+                : sess.StartsWith("zalo:", StringComparison.OrdinalIgnoreCase) || sess.Contains("zalo", StringComparison.OrdinalIgnoreCase)
+                    ? "zalo"
+                    : sess.StartsWith("discord:", StringComparison.OrdinalIgnoreCase)
+                        ? "discord"
+                        : sess.StartsWith("slack:", StringComparison.OrdinalIgnoreCase)
+                            ? "slack"
+                            : "console";
+
         var payload = new
         {
             user_id = "default",
             session_id = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
-            channel = "console",
+            channel = effectiveChannel,
+            loop_mode = request.LoopMode ?? "default",
             input = new[]
             {
                 new { role = "user", type = "message", content = new[] { new { type = "text", text = textContent ?? "" } } }

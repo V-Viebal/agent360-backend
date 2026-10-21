@@ -56,6 +56,10 @@ public sealed class SessionMultiplexerHub : IDisposable
             role = ev.Role,
             status = ev.Status,
             is_running = isRunning,
+            tool = ev.Tool,
+            arguments = ev.Arguments,
+            result = ev.Result,
+            metadata = ev.Metadata,
             content_snippet = !string.IsNullOrWhiteSpace(ev.Content) && ev.Content.Length > 80 ? ev.Content[..80] : ev.Content,
             timestamp = ev.RecordedAt.ToString("O")
         });

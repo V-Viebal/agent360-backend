@@ -200,6 +200,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             string qwenPawSessionId = effectiveSessionId;
+            string? detectedChatChannel = request.Channel;
             try
             {
                 var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
@@ -212,9 +213,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         {
                             var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
                             var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
-                            if (string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(sid))
+                            var ch = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                            if ((string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase)))
                             {
-                                qwenPawSessionId = sid;
+                                if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
+                                if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
                                 break;
                             }
                         }
@@ -234,9 +238,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             try
             {
-                var effectiveRequest = !string.Equals(qwenPawSessionId, request.SessionId, StringComparison.OrdinalIgnoreCase)
-                    ? request with { SessionId = qwenPawSessionId }
-                    : request;
+                var effectiveRequest = request with
+                {
+                    SessionId = qwenPawSessionId,
+                    Channel = detectedChatChannel ?? request.Channel ?? "console"
+                };
 
                 using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
@@ -313,6 +319,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             string qwenPawSessionId = effectiveSessionId;
+            string? detectedChatChannel = request.Channel;
             try
             {
                 var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
@@ -325,9 +332,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         {
                             var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
                             var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
-                            if (string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(sid))
+                            var ch = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                            if ((string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase)))
                             {
-                                qwenPawSessionId = sid;
+                                if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
+                                if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
                                 break;
                             }
                         }
@@ -347,9 +357,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             try
             {
-                var effectiveRequest = !string.Equals(qwenPawSessionId, request.SessionId, StringComparison.OrdinalIgnoreCase)
-                    ? request with { SessionId = qwenPawSessionId }
-                    : request;
+                var effectiveRequest = request with
+                {
+                    SessionId = qwenPawSessionId,
+                    Channel = detectedChatChannel ?? request.Channel ?? "console"
+                };
 
                 using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
@@ -456,12 +468,49 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // 2. Dynamic Agent-Scoped Sub-routes
         // ==========================================
 
-        group.MapGet("{agentId}/chats", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("{agentId}/chats", async (string agentId, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
             try
             {
                 var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
-                return Results.Content(chatsJson, "application/json");
+                if (string.IsNullOrWhiteSpace(chatsJson))
+                {
+                    var fallbackChats = await client.GetChatsAsync(ct);
+                    return TypedResults.Ok(fallbackChats);
+                }
+
+                using var doc = System.Text.Json.JsonDocument.Parse(chatsJson);
+                if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+                {
+                    return Results.Content(chatsJson, "application/json");
+                }
+
+                var list = new List<System.Text.Json.Nodes.JsonObject>();
+                foreach (var el in doc.RootElement.EnumerateArray())
+                {
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(el.GetRawText()) as System.Text.Json.Nodes.JsonObject;
+                    if (node is not null)
+                    {
+                        var id = node["id"]?.ToString() ?? "";
+                        var sid = node["session_id"]?.ToString() ?? "";
+                        var rawStatus = node["status"]?.ToString() ?? "idle";
+                        var isRunning = string.Equals(rawStatus, "running", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(rawStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                            || queueManager.IsSessionTurnActive(id)
+                            || (!string.IsNullOrWhiteSpace(sid) && queueManager.IsSessionTurnActive(sid));
+
+                        var isUnread = Agent360.API.Features.Agents.Analytics.ChannelResponseStore.IsUnread(id)
+                            || (!string.IsNullOrWhiteSpace(sid) && Agent360.API.Features.Agents.Analytics.ChannelResponseStore.IsUnread(sid));
+
+                        node["is_running"] = isRunning;
+                        node["isRunning"] = isRunning;
+                        node["unread"] = isUnread;
+                        if (isRunning) node["status"] = "running";
+                        list.Add(node);
+                    }
+                }
+
+                return Results.Ok(list);
             }
             catch (Exception)
             {

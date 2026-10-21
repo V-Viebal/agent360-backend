@@ -13,11 +13,17 @@ namespace Agent360.API.Features.Agents.Endpoints;
 
 public sealed record IngestChannelResponseDto(
     [property: JsonPropertyName("session_id")] string SessionId,
-    [property: JsonPropertyName("channel")] string Channel,
-    [property: JsonPropertyName("role")] string Role,
-    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("channel")] string? Channel = "console",
+    [property: JsonPropertyName("role")] string? Role = "assistant",
+    [property: JsonPropertyName("content")] string? Content = "",
     [property: JsonPropertyName("status")] string? Status = "completed",
-    [property: JsonPropertyName("id")] string? Id = null);
+    [property: JsonPropertyName("id")] string? Id = null,
+    [property: JsonPropertyName("agent_id")] string? AgentId = null,
+    [property: JsonPropertyName("chat_id")] string? ChatId = null,
+    [property: JsonPropertyName("tool")] string? Tool = null,
+    [property: JsonPropertyName("arguments")] string? Arguments = null,
+    [property: JsonPropertyName("result")] string? Result = null,
+    [property: JsonPropertyName("metadata")] string? Metadata = null);
 
 public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 {
@@ -60,6 +66,9 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 
                 int lastKnownCount = -1;
                 string? lastKnownMessageId = null;
+                string? lastKnownMsgStatus = null;
+                string? lastKnownChatStatus = null;
+                int lastKnownContentLen = -1;
                 string effectiveChatId = chatId;
                 string detectedChannel = channel ?? "unknown";
                 string? canonicalSessionId = null;
@@ -122,29 +131,53 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     }
                                 }
 
-                                if (lastKnownCount == -1)
-                                {
-                                    lastKnownCount = currentCount;
-                                    lastKnownMessageId = currentLastId;
+                                string? rootChatStatus = doc.RootElement.TryGetProperty("status", out var rStatProp) ? rStatProp.GetString() : null;
+                                string? msgStatus = "completed";
+                                string role = "assistant";
+                                string extractedContent = "";
 
-                                    // Check if active turn is in-progress
-                                    if (lastEl.HasValue)
+                                if (lastEl.HasValue)
+                                {
+                                    var el = lastEl.Value;
+                                    if (el.TryGetProperty("status", out var sProp)) msgStatus = sProp.GetString();
+                                    if (el.TryGetProperty("role", out var rProp)) role = rProp.GetString() ?? "assistant";
+                                    if (el.TryGetProperty("content", out var cProp))
                                     {
-                                        var el = lastEl.Value;
-                                        var curStatus = el.TryGetProperty("status", out var sP) ? sP.GetString() : "completed";
-                                        if (curStatus is "in_progress" or "running")
+                                        if (cProp.ValueKind == JsonValueKind.String)
                                         {
-                                            queueManager.SetSessionTurnActive(effectiveChatId, true);
-                                            if (!string.IsNullOrWhiteSpace(canonicalSessionId))
-                                                queueManager.SetSessionTurnActive(canonicalSessionId, true);
+                                            extractedContent = cProp.GetString() ?? "";
+                                        }
+                                        else if (cProp.ValueKind == JsonValueKind.Array)
+                                        {
+                                            foreach (var part in cProp.EnumerateArray())
+                                            {
+                                                if (part.TryGetProperty("text", out var tProp))
+                                                {
+                                                    extractedContent += tProp.GetString();
+                                                }
+                                                else if (part.TryGetProperty("data", out var dProp))
+                                                {
+                                                    extractedContent += dProp.ToString();
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                else if (currentCount != lastKnownCount || currentLastId != lastKnownMessageId)
+
+                                var isTurnRunning = msgStatus is "in_progress" or "running" || rootChatStatus is "running" or "in_progress";
+                                int contentLen = extractedContent.Length;
+
+                                bool hasChanged = lastKnownCount == -1
+                                    ? isTurnRunning
+                                    : (currentCount != lastKnownCount ||
+                                       currentLastId != lastKnownMessageId ||
+                                       msgStatus != lastKnownMsgStatus ||
+                                       rootChatStatus != lastKnownChatStatus ||
+                                       Math.Abs(contentLen - lastKnownContentLen) > 0);
+
+                                if (hasChanged || (lastKnownCount == -1 && isTurnRunning))
                                 {
-                                    string? msgStatus = "completed";
-                                    string role = "assistant";
-                                    string extractedContent = "";
+                                    // reused msgStatus, role, extractedContent
 
                                     if (lastEl.HasValue)
                                     {
@@ -171,7 +204,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     }
 
                                     // Track active turn state in SessionQueueManager
-                                    var isTurnRunning = msgStatus is "in_progress" or "running";
+                                    // reused isTurnRunning
                                     queueManager.SetSessionTurnActive(effectiveChatId, isTurnRunning);
                                     if (!string.IsNullOrWhiteSpace(canonicalSessionId))
                                         queueManager.SetSessionTurnActive(canonicalSessionId, isTurnRunning);
@@ -221,6 +254,17 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 
                                     lastKnownCount = currentCount;
                                     lastKnownMessageId = currentLastId;
+                                    lastKnownMsgStatus = msgStatus;
+                                    lastKnownChatStatus = rootChatStatus;
+                                    lastKnownContentLen = contentLen;
+                                }
+                                else if (lastKnownCount == -1)
+                                {
+                                    lastKnownCount = currentCount;
+                                    lastKnownMessageId = currentLastId;
+                                    lastKnownMsgStatus = msgStatus;
+                                    lastKnownChatStatus = rootChatStatus;
+                                    lastKnownContentLen = contentLen;
                                 }
                             }
                         }
@@ -243,33 +287,56 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
             .WithSummary("Live SSE stream to sync active chat session with Telegram and external turns in real-time")
             .AllowAnonymous();
 
-        // 2. POST /api/v1/agents/{agentId}/channels/responses
+        // 2. POST /api/v1/agents/{agentId}/channels/responses & POST /api/v1/channels/responses
         // Inbound API for external channels (Telegram bot, Zalo bot, Cron runner, A2A subagents) to record real-time response turns
+        var handleIngestResponse = (string? agentId, IngestChannelResponseDto dto, SessionQueueManager queueManager) =>
+        {
+            var isRunning = dto.Status is "in_progress" or "running";
+            var targetAgent = !string.IsNullOrWhiteSpace(dto.AgentId) ? dto.AgentId : (agentId ?? "mons");
+            var primarySession = !string.IsNullOrWhiteSpace(dto.SessionId) ? dto.SessionId : (dto.ChatId ?? "");
+
+            queueManager.SetSessionTurnActive(primarySession, isRunning);
+            if (!string.IsNullOrWhiteSpace(dto.ChatId) && !string.Equals(dto.ChatId, primarySession, StringComparison.OrdinalIgnoreCase))
+            {
+                queueManager.SetSessionTurnActive(dto.ChatId, isRunning);
+            }
+
+            var recorded = ChannelResponseStore.Record(
+                agentId: targetAgent,
+                sessionId: primarySession,
+                channel: dto.Channel ?? "console",
+                role: dto.Role ?? "assistant",
+                content: dto.Content ?? "",
+                status: dto.Status ?? (isRunning ? "in_progress" : "completed"),
+                id: dto.Id,
+                tool: dto.Tool,
+                arguments: dto.Arguments,
+                result: dto.Result,
+                metadata: dto.Metadata
+            );
+
+            return TypedResults.Ok(recorded);
+        };
+
         routeBuilder.MapPost(
             "agents/{agentId}/channels/responses",
             ([FromRoute] string agentId,
              [FromBody] IngestChannelResponseDto dto,
-             SessionQueueManager queueManager) =>
-            {
-                var isRunning = dto.Status is "in_progress" or "running";
-                queueManager.SetSessionTurnActive(dto.SessionId, isRunning);
-
-                var recorded = ChannelResponseStore.Record(
-                    agentId: agentId,
-                    sessionId: dto.SessionId,
-                    channel: dto.Channel,
-                    role: dto.Role,
-                    content: dto.Content,
-                    status: dto.Status ?? "completed",
-                    id: dto.Id
-                );
-
-                return TypedResults.Ok(recorded);
-            })
+             SessionQueueManager queueManager) => handleIngestResponse(agentId, dto, queueManager))
             .MapToApiVersion(ApiVersion.Default)
             .WithName("IngestChannelResponse")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Ingest a real-time turn response from an external channel")
+            .AllowAnonymous();
+
+        routeBuilder.MapPost(
+            "channels/responses",
+            ([FromBody] IngestChannelResponseDto dto,
+             SessionQueueManager queueManager) => handleIngestResponse(dto.AgentId, dto, queueManager))
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("IngestGlobalChannelResponse")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Ingest a real-time turn response across any channel without agentId in route")
             .AllowAnonymous();
 
         // 3. GET /api/v1/agents/{agentId}/channels/responses/recent

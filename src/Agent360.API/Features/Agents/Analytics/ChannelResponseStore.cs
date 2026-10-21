@@ -10,7 +10,11 @@ public sealed record ChannelResponseEvent(
     string Role,
     string Content,
     string Status,
-    DateTime RecordedAt);
+    DateTime RecordedAt,
+    string? Tool = null,
+    string? Arguments = null,
+    string? Result = null,
+    string? Metadata = null);
 
 public static class ChannelResponseStore
 {
@@ -49,7 +53,11 @@ public static class ChannelResponseStore
         string role,
         string content,
         string status = "completed",
-        string? id = null)
+        string? id = null,
+        string? tool = null,
+        string? arguments = null,
+        string? result = null,
+        string? metadata = null)
     {
         var ev = new ChannelResponseEvent(
             Id: id ?? Guid.NewGuid().ToString("N"),
@@ -59,7 +67,11 @@ public static class ChannelResponseStore
             Role: role,
             Content: content,
             Status: status,
-            RecordedAt: DateTime.UtcNow
+            RecordedAt: DateTime.UtcNow,
+            Tool: tool,
+            Arguments: arguments,
+            Result: result,
+            Metadata: metadata
         );
         Record(ev);
         return ev;
