@@ -29,6 +29,7 @@ public interface IQwenPawClient
 
     // Console Chat & Stop
     Task<HttpResponseMessage> StreamConsoleChatAsync(ConsoleChatSendRequestDto request, CancellationToken cancellationToken = default);
+    Task<HttpResponseMessage> ReconnectConsoleChatAsync(string? agentId, string sessionId, string? userId, string? channel, CancellationToken cancellationToken = default);
     Task<bool> StopChatAsync(ConsoleChatStopRequestDto request, CancellationToken cancellationToken = default);
 
     // Workspace & Files

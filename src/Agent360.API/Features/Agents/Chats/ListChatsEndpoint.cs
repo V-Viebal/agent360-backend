@@ -76,19 +76,9 @@ public sealed class ListChatsEndpoint : IEndpoint
                 var result = query.Select(c =>
                 {
                     var id = !string.IsNullOrWhiteSpace(c.Id) ? c.Id : (c.SessionId ?? "");
+                    // QwenPaw's chat status is authoritative: a new turn can start within a second of the previous one.
                     bool rawRunning = string.Equals(c.Status, "running", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(c.Status, "in_progress", StringComparison.OrdinalIgnoreCase);
-
-                    if (rawRunning && !string.IsNullOrWhiteSpace(c.LastFinishedAt) && !string.IsNullOrWhiteSpace(c.UpdatedAt))
-                    {
-                        if (DateTime.TryParse(c.LastFinishedAt, out var finished) && DateTime.TryParse(c.UpdatedAt, out var updated))
-                        {
-                            if (finished >= updated.AddSeconds(-2))
-                            {
-                                rawRunning = false;
-                            }
-                        }
-                    }
 
                     var isRunning = queueManager.IsSessionTurnActive(id)
                         || (!string.IsNullOrWhiteSpace(c.SessionId) && queueManager.IsSessionTurnActive(c.SessionId))

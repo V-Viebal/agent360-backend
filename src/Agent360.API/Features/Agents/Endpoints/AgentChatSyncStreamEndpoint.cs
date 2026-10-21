@@ -134,14 +134,12 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 
                                 string? rootChatStatus = doc.RootElement.TryGetProperty("status", out var rStatProp) ? rStatProp.GetString() : null;
                                 string? msgStatus = "completed";
-                                string? lastType = null;
                                 string role = "assistant";
                                 string extractedContent = "";
 
                                 if (lastEl.HasValue)
                                 {
                                     var el = lastEl.Value;
-                                    if (el.TryGetProperty("type", out var typeProp)) lastType = typeProp.GetString();
                                     if (el.TryGetProperty("status", out var sProp)) msgStatus = sProp.GetString();
                                     if (el.TryGetProperty("role", out var rProp)) role = rProp.GetString() ?? "assistant";
                                     if (el.TryGetProperty("content", out var cProp))
@@ -167,12 +165,9 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     }
                                 }
 
-                                bool isLastAssistantFinal = role == "assistant" && (lastType is "message" or null) && msgStatus is "completed";
-                                isTurnRunning = !isLastAssistantFinal && (
-                                    msgStatus is "in_progress" or "running" ||
-                                    rootChatStatus is "running" or "in_progress" ||
-                                    role == "user" ||
-                                    lastType is "plugin_call" or "plugin_call_output" or "reasoning" or "tool_call");
+                                // QwenPaw persists a turn's messages only when it ends, so the chat-level status is the
+                                // authoritative running flag; message-level status covers runtimes that stream into history.
+                                isTurnRunning = rootChatStatus is "running" or "in_progress" || msgStatus is "in_progress" or "running";
 
                                 int contentLen = extractedContent.Length;
 
@@ -290,6 +285,67 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
             .WithName(RouteName)
             .WithTags(EndpointTags.Agents)
             .WithSummary("Live SSE stream to sync active chat session with Telegram and external turns in real-time")
+            .AllowAnonymous();
+
+        // 1b. GET /api/v1/agents/{agentId}/chats/{chatId}/live
+        // Attaches to the in-flight turn of any channel session with the same event stream the console uses
+        // (reasoning deltas, plugin_call, plugin_call_output, text deltas). Idle sessions end immediately.
+        routeBuilder.MapGet(
+            "agents/{agentId}/chats/{chatId}/live",
+            async (string agentId, string chatId, HttpContext httpContext, IQwenPawClient client, IConfiguration config, CancellationToken ct) =>
+            {
+                var (accessAllowed, accessReason) = await AgentOwnershipGuard.CheckAccessAsync(
+                    agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(), config, ct);
+                if (!accessAllowed)
+                {
+                    return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden);
+                }
+
+                string sessionId = chatId;
+                string? userId = null;
+                string? channel = null;
+                try
+                {
+                    using var doc = JsonDocument.Parse(await client.GetAgentChatsRawAsync(agentId, ct));
+                    foreach (var el in doc.RootElement.EnumerateArray())
+                    {
+                        var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                        var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                        if (!string.Equals(id, chatId, StringComparison.OrdinalIgnoreCase) && !string.Equals(sid, chatId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+                        sessionId = sid ?? chatId;
+                        userId = el.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
+                        channel = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                        break;
+                    }
+                }
+                catch (Exception) when (!ct.IsCancellationRequested)
+                {
+                }
+
+                httpContext.Response.ContentType = "text/event-stream";
+                try
+                {
+                    using var response = await client.ReconnectConsoleChatAsync(agentId, sessionId, userId, channel, ct);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        return Results.StatusCode((int)response.StatusCode);
+                    }
+                    await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                    await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
+                }
+                catch (HttpRequestException)
+                {
+                    return Results.StatusCode(StatusCodes.Status502BadGateway);
+                }
+                return Results.Empty;
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("AttachLiveChatTurn")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Attach to the live turn stream of any channel session (same events as console chat)")
             .AllowAnonymous();
 
         // 2. POST /api/v1/agents/{agentId}/channels/responses & POST /api/v1/channels/responses

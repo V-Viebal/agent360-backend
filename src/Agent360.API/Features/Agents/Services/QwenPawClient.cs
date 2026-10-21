@@ -765,6 +765,18 @@ public sealed class QwenPawClient : IQwenPawClient
         return body?["stopped"]?.GetValue<bool>() ?? true;
     }
 
+    /// <summary>Attaches to the live turn of any channel session (Telegram, Zalo, cron, console). QwenPaw replays
+    /// the current turn from its first event and then streams it live; an idle session returns an empty body.</summary>
+    public Task<HttpResponseMessage> ReconnectConsoleChatAsync(string? agentId, string sessionId, string? userId, string? channel, CancellationToken cancellationToken = default) =>
+        SendAsync(
+            Resolve(agentId),
+            HttpMethod.Post,
+            "console/chat",
+            () => JsonContent.Create(new { reconnect = true, session_id = sessionId, user_id = userId ?? "default", channel = channel ?? "console" }),
+            timeout: TimeSpan.FromMinutes(30),
+            completion: HttpCompletionOption.ResponseHeadersRead,
+            ct: cancellationToken);
+
     // ------------------------------------------------------------------
     // Workspace
     // ------------------------------------------------------------------
