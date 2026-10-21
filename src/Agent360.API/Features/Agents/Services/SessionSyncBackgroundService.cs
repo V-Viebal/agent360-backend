@@ -98,7 +98,7 @@ public sealed class SessionSyncBackgroundService(
         }
 
         // Reconcile sessions that finished running
-        foreach (var trackedId in _activeTrackedSessions.Keys.ToList())
+        foreach (var trackedId in queueManager.GetActiveSessionIds())
         {
             if (!discoveredActiveThisCycle.Contains(trackedId))
             {

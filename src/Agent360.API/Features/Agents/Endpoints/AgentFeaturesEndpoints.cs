@@ -475,8 +475,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
                 if (string.IsNullOrWhiteSpace(chatsJson))
                 {
-                    var fallbackChats = await client.GetChatsAsync(ct);
-                    return TypedResults.Ok(fallbackChats);
+                    return TypedResults.Ok(Array.Empty<AgentSessionResponse>());
                 }
 
                 using var doc = System.Text.Json.JsonDocument.Parse(chatsJson);
@@ -514,8 +513,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             catch (Exception)
             {
-                var allChats = await client.GetChatsAsync(ct);
-                return TypedResults.Ok(allChats);
+                // Never leak other agents' chats when an agent has no chats or is disabled/unhosted
+                return TypedResults.Ok(Array.Empty<AgentSessionResponse>());
             }
         })
         .WithName("GetAgentChats")
@@ -591,6 +590,29 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         })
         .WithName("SetAgentActiveModel")
         .WithSummary("Hot-reload active LLM model provider and model for agent")
+        .AllowAnonymous();
+
+        group.MapPatch("{agentId}/toggle", async (
+            string agentId,
+            [FromBody] ToggleAgentRequest request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
+            if (!accessAllowed)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+            }
+
+            var res = await client.ToggleAgentAsync(agentId, request.Enabled, ct);
+            return res is null ? Results.Problem("Failed to toggle agent enabled state") : TypedResults.Ok(res);
+        })
+        .WithName("ToggleAgentEnabled")
+        .WithSummary("Enable or disable agent profile on runtime")
         .AllowAnonymous();
 
         // 2e. Native Context Management & Compaction (/workspace/checkpoints/gc and /compact trigger)

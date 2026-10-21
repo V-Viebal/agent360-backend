@@ -14,6 +14,10 @@ public interface IFleetInstanceRoutingService
 
     IReadOnlyList<QwenPawInstance> Instances { get; }
 
+    void RegisterDynamicInstance(QwenPawInstance instance);
+
+    void SyncFromGuardian(IEnumerable<Agent360.API.Features.Agents.Models.AgentGuardianAgentDto> guardianAgents);
+
     Task<HttpRequestMessage> CreateProxiedRequestAsync(HttpMethod method, string path, string? agentId, HttpContent? content, CancellationToken ct = default);
 
     /// <summary>Sends to the agent's runtime over the internal endpoint, failing over to the public one,
@@ -77,7 +81,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
         _logger = logger;
         _options = options?.Value ?? new QwenPawOptions();
-        Instances =
+        _staticInstances =
         [
             Build("core", "3rd", "Core Skyer Fleet (Node 3rd)", "http://100.76.185.111:33148", "https://ai.hmz.one", false, "http://100.76.185.111:19222"),
             Build("gm", "6th", "Gia Moc Skyer Fleet (Node 6th)", "http://100.81.66.42:26888", "https://ai-gm.antares.vn", true, "http://100.81.66.42:19222"),
@@ -85,10 +89,62 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("planthy", "5th", "Planthy AI (Node 5th)", "http://100.70.201.83:32842", "https://planthy-ai.hmz.one", true, "http://100.70.201.83:19224"),
             // AgentTeams manager is a QwenPaw runtime bound to loopback on 4th; only the public proxy is reachable.
             Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
+            Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "http://100.66.243.55:26889", true, "http://100.66.243.55:19222"),
+            Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "http://100.66.243.55:26890", true, "http://100.66.243.55:19222"),
         ];
     }
 
-    public IReadOnlyList<QwenPawInstance> Instances { get; }
+    private readonly IReadOnlyList<QwenPawInstance> _staticInstances;
+
+    public IReadOnlyList<QwenPawInstance> Instances
+    {
+        get
+        {
+            if (_state.DynamicInstances.IsEmpty) return _staticInstances;
+            var combined = new Dictionary<string, QwenPawInstance>(StringComparer.OrdinalIgnoreCase);
+            foreach (var inst in _staticInstances) combined[inst.Key] = inst;
+            foreach (var kvp in _state.DynamicInstances) combined[kvp.Key] = kvp.Value;
+            return combined.Values.ToList();
+        }
+    }
+
+    public void RegisterDynamicInstance(QwenPawInstance instance)
+    {
+        _state.DynamicInstances[instance.Key] = instance;
+    }
+
+    public void SyncFromGuardian(IEnumerable<Agent360.API.Features.Agents.Models.AgentGuardianAgentDto> guardianAgents)
+    {
+        foreach (var g in guardianAgents)
+        {
+            if (string.IsNullOrWhiteSpace(g.AgentId) || !string.Equals(g.Runtime, "qwenpaw", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var raw = NormalizeAgentId(g.AgentId);
+            var id = raw.ToLowerInvariant();
+
+            // Register dynamic instance if new host/URL is discovered
+            if (!string.IsNullOrWhiteSpace(g.BaseUrl))
+            {
+                var cleanBase = g.BaseUrl.TrimEnd('/');
+                var matchingInstance = Instances.FirstOrDefault(i =>
+                    i.PublicUrl.Equals(cleanBase, StringComparison.OrdinalIgnoreCase) ||
+                    i.InternalUrl.Equals(cleanBase, StringComparison.OrdinalIgnoreCase));
+
+                if (matchingInstance is null)
+                {
+                    // Infer a unique instance key from prefix or node
+                    var key = id.Contains('-') ? id.Substring(0, id.IndexOf('-')) : id;
+                    var dynamicInst = Build(key, g.Node ?? "infra", g.Instance ?? $"Auto-Discovered {key}", cleanBase, cleanBase, true, g.CdpUrl ?? "");
+                    RegisterDynamicInstance(dynamicInst);
+                    matchingInstance = dynamicInst;
+                }
+
+                var profile = g.ProfileId ?? (id.Contains('-') ? raw.Substring(raw.IndexOf('-') + 1) : raw);
+                _state.DynamicAgentMappings[id] = (matchingInstance.Key, profile);
+            }
+        }
+    }
 
     private QwenPawInstance Build(string key, string node, string name, string internalUrl, string publicUrl, bool requiresLogin, string cdp)
     {
@@ -103,7 +159,8 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             cdp);
     }
 
-    private QwenPawInstance Instance(string key) => Instances.First(i => i.Key == key);
+    private QwenPawInstance Instance(string key) =>
+        Instances.FirstOrDefault(i => i.Key.Equals(key, StringComparison.OrdinalIgnoreCase)) ?? _staticInstances.First(i => i.Key == "core");
 
     public static string NormalizeAgentId(string? agentId)
     {
@@ -120,6 +177,15 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         var raw = NormalizeAgentId(agentId);
         var id = raw.ToLowerInvariant();
 
+        if (_state.DynamicAgentMappings.TryGetValue(id, out var dynamicMapping))
+        {
+            var inst = Instances.FirstOrDefault(i => i.Key.Equals(dynamicMapping.InstanceKey, StringComparison.OrdinalIgnoreCase));
+            if (inst is not null)
+            {
+                return Target(inst, raw, dynamicMapping.Profile);
+            }
+        }
+
         if (id.StartsWith("gm-"))
         {
             var profile = id switch
@@ -128,6 +194,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "gm-team" => "team",
                 "gm-lua" => "customer",
                 "gm-gao" => "supplier",
+                "gm-boc-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
                 _ => raw["gm-".Length..]
             };
             return Target(Instance("gm"), raw, profile);
@@ -148,7 +215,29 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             return Target(Instance("agentteams"), raw, "default");
         }
 
-        // Non-QwenPaw runtimes surfaced by Agent Guardian have no QwenPaw API to proxy to.
+        if (id.StartsWith("its-"))
+        {
+            var profile = id switch
+            {
+                "its-default" => "default",
+                "its-default-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                _ => raw["its-".Length..]
+            };
+            return Target(Instance("its"), raw, profile);
+        }
+
+        if (id.StartsWith("gl-"))
+        {
+            var profile = id switch
+            {
+                "gl-default" => "default",
+                "gl-default-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                _ => raw["gl-".Length..]
+            };
+            return Target(Instance("gl"), raw, profile);
+        }
+
+        // Non-QwenPaw runtimes or external agent types surfaced by Agent Guardian
         if (id.StartsWith("agentteams-") || id.StartsWith("llm360-") || id == "tsx-copaw")
         {
             return new ResolvedInstanceTarget("", "Non-QwenPaw runtime", "", raw, null, null, null, "") { AgentId = raw };
@@ -190,6 +279,15 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         if (_options.Instances.TryGetValue(key, out var inst) && !string.IsNullOrWhiteSpace(inst.Password))
         {
             return (string.IsNullOrWhiteSpace(inst.Username) ? "admin" : inst.Username, inst.Password);
+        }
+        // Fallback default infra credentials for 8th server runtimes
+        if (key.Equals("its", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "ueNsWaSIKgaO2rKUPZ_ZaNuduQ6xRlD6");
+        }
+        if (key.Equals("gl", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "0Y2flhbUfADQLd9kuJ79VCK7ooehgllK");
         }
         return (null, null);
     }
@@ -234,7 +332,10 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(timeout ?? DefaultTimeout);
+                var effectiveTimeout = (baseUrl == instance.InternalUrl && instance.InternalUrl != instance.PublicUrl)
+                    ? TimeSpan.FromSeconds(3)
+                    : (timeout ?? DefaultTimeout);
+                cts.CancelAfter(effectiveTimeout);
                 using var request = new HttpRequestMessage(method, new Uri(new Uri(baseUrl + "/"), path))
                 {
                     Content = contentFactory?.Invoke()
@@ -263,10 +364,10 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 {
                     lastError = ex;
                     var notSent = IsConnectFailure(ex);
-                    if (baseUrl == instance.InternalUrl && notSent)
+                    if (baseUrl == instance.InternalUrl && instance.InternalUrl != instance.PublicUrl && notSent)
                     {
                         // Tailnet path is down (connect refused/timeout): skip it for a while and use the public route.
-                        _internalDownUntil[instance.Key] = DateTime.UtcNow.AddSeconds(30);
+                        _internalDownUntil[instance.Key] = DateTime.UtcNow.AddMinutes(10);
                         _logger.LogWarning("Internal endpoint {Url} for {Instance} unreachable ({Error}); failing over to {Public}", baseUrl, instance.Key, ex.Message, instance.PublicUrl);
                         break;
                     }
@@ -299,7 +400,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             {
                 return true;
             }
-            if (e is TimeoutException && e.Message.Contains("connect", StringComparison.OrdinalIgnoreCase))
+            if (e is TimeoutException)
             {
                 return true;
             }
@@ -407,4 +508,6 @@ public sealed class FleetRoutingState
     public ConcurrentDictionary<string, (string Token, DateTime ExpiresAt)> Tokens { get; } = new();
     public ConcurrentDictionary<string, SemaphoreSlim> LoginLocks { get; } = new();
     public ConcurrentDictionary<string, DateTime> InternalDownUntil { get; } = new();
+    public ConcurrentDictionary<string, QwenPawInstance> DynamicInstances { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public ConcurrentDictionary<string, (string InstanceKey, string Profile)> DynamicAgentMappings { get; } = new(StringComparer.OrdinalIgnoreCase);
 }

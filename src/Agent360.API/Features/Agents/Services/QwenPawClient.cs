@@ -191,7 +191,7 @@ public sealed class QwenPawClient : IQwenPawClient
         // Runtime agents that Agent Guardian does not track yet are still loaded.
         foreach (var (slug, dto) in runtime)
         {
-            if (seen.Contains(slug) || !dto.Enabled)
+            if (seen.Contains(slug))
             {
                 continue;
             }
@@ -203,6 +203,8 @@ public sealed class QwenPawClient : IQwenPawClient
 
     private static string Agent360Slug(string instanceKey, string profileId) => instanceKey switch
     {
+        "its" => profileId == "default" ? "its-default" : $"its-default-{profileId}",
+        "gl" => profileId == "default" ? "gl-default" : $"gl-default-{profileId}",
         "gm" => profileId switch
         {
             "default" => "gm-boc",
@@ -275,6 +277,13 @@ public sealed class QwenPawClient : IQwenPawClient
         AvailableInChat = live.Enabled && live.AvailableInChat
     };
 
+    private static bool IsRootDefaultAgent(string slug)
+    {
+        var s = slug.ToLowerInvariant().Trim();
+        return s is "default-core" or "gm-boc" or "climax-default" or "its-default" or "gl-default" or "planthy-pm"
+            || s.EndsWith("-default") || s == "default";
+    }
+
     private AgentSummaryResponse FromRuntime(string slug, QwenPawAgentDto a)
     {
         var target = Resolve(slug);
@@ -285,7 +294,7 @@ public sealed class QwenPawClient : IQwenPawClient
             Slug: slug,
             RoleTag: roleTag,
             Node: FormatNodeDisplay(target.ClusterNode, target.InstanceName),
-            Status: a.StartupStatus switch { "pending" => "evaluating", "disabled" => "idle", _ => "active" },
+            Status: !a.Enabled ? "disabled" : a.StartupStatus switch { "pending" => "evaluating", "disabled" => "disabled", _ => "active" },
             Model: RuntimeModel(a, null),
             RuntimeVersion: "Skyer v2.2.1",
             Uptime: "Online (Runtime)",
@@ -293,7 +302,9 @@ public sealed class QwenPawClient : IQwenPawClient
             Enabled: a.Enabled,
             Pinned: a.Pinned,
             AvailableInChat: a.AvailableInChat,
-            Tools: DefaultTools);
+            Tools: DefaultTools,
+            CanToggle: !IsRootDefaultAgent(slug),
+            IsRootAgent: IsRootDefaultAgent(slug));
     }
 
     private const string GuardianLastGoodKey = "agent360:guardian:last-good";
@@ -336,6 +347,9 @@ public sealed class QwenPawClient : IQwenPawClient
                 return Array.Empty<AgentSummaryResponse>();
             }
 
+            // Dynamically register discovered instances and mappings into FleetInstanceRoutingService
+            _routingService.SyncFromGuardian(guardianData.Agents);
+
             var results = new List<AgentSummaryResponse>(guardianData.Agents.Count);
             foreach (var g in guardianData.Agents)
             {
@@ -363,7 +377,9 @@ public sealed class QwenPawClient : IQwenPawClient
                     Enabled: isConfigured,
                     Pinned: g.AgentId is "mons" or "ken" or "zen" or "gm-boc" or "default-core",
                     AvailableInChat: true,
-                    Tools: ExtractTools(g)));
+                    Tools: ExtractTools(g),
+                    CanToggle: !IsRootDefaultAgent(g.AgentId),
+                    IsRootAgent: IsRootDefaultAgent(g.AgentId)));
             }
 
             return results;
@@ -418,10 +434,40 @@ public sealed class QwenPawClient : IQwenPawClient
         return await response.Content.ReadFromJsonAsync<SetActiveModelResponseDto>(cancellationToken: cancellationToken);
     }
 
+    public async Task<ToggleAgentResponse?> ToggleAgentAsync(string agentId, bool enabled, CancellationToken cancellationToken = default)
+    {
+        var target = Resolve(agentId);
+        var payload = new ToggleAgentRequest(enabled);
+        using var response = await SendAsync(
+            target,
+            HttpMethod.Patch,
+            "toggle",
+            () => JsonContent.Create(payload),
+            global: false,
+            timeout: SlowReadTimeout,
+            ct: cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Failed to toggle agent {AgentId} to enabled={Enabled}. StatusCode: {StatusCode}", agentId, enabled, response.StatusCode);
+            return null;
+        }
+
+        InvalidateAgent(agentId);
+        if (target.Instance is not null)
+        {
+            _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
+        }
+
+        return await response.Content.ReadFromJsonAsync<ToggleAgentResponse>(cancellationToken: cancellationToken);
+    }
+
     private void InvalidateAgent(string agentId)
     {
-        _cache.Remove($"agent360:profile:{FleetInstanceRoutingService.NormalizeAgentId(agentId)}");
+        var normalized = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        _cache.Remove($"agent360:profile:{normalized}");
         _cache.Remove(AgentsCacheKey);
+        _cache.Remove(AgentsCacheKey + ":last-good");
     }
 
     public async Task<string> GetModelsAsync(CancellationToken cancellationToken = default) =>

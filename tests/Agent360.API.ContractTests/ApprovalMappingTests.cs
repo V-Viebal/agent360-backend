@@ -42,8 +42,15 @@ public class ApprovalMappingTests
     public async Task GetApprovalsAsync_ConcurrentCallers_ShareOneFanOut()
     {
         var calls = 0;
-        var mockHandler = new DelegatingMockHandler(_ =>
+        var mockHandler = new DelegatingMockHandler(req =>
         {
+            if (req.RequestUri?.AbsolutePath.Contains("login") == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new { token = "mock-token" })
+                };
+            }
             Interlocked.Increment(ref calls);
             Thread.Sleep(50);
             return new HttpResponseMessage(HttpStatusCode.OK)

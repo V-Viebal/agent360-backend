@@ -9,6 +9,7 @@ public interface IQwenPawClient
     Task<IReadOnlyList<AgentSummaryResponse>> RefreshAgentsAsync(CancellationToken cancellationToken = default);
     Task<string> GetAgentProfileRawAsync(string agentId, CancellationToken cancellationToken = default);
     Task<SetActiveModelResponseDto?> SetAgentActiveModelAsync(string agentId, string providerId, string model, CancellationToken cancellationToken = default);
+    Task<ToggleAgentResponse?> ToggleAgentAsync(string agentId, bool enabled, CancellationToken cancellationToken = default);
     Task<string> GetModelsAsync(CancellationToken cancellationToken = default);
     Task<string> GetModelsCompactAsync(CancellationToken cancellationToken = default);
 

@@ -65,7 +65,8 @@ public static class AgentOwnershipGuard
         }
 
         var sub = user.FindFirst("sub")?.Value;
-        if (string.Equals(sub, "skyer-m2m-backend", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(sub, "skyer-m2m-backend", StringComparison.OrdinalIgnoreCase) ||
+            (secOpt is not null && secOpt.IsAdminSubject(sub)))
         {
             isAdmin = true;
         }

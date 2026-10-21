@@ -26,6 +26,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         "workspace/running-config",
         "workspace/system-prompt-files",
         "memory",
+        "toggle",
     ];
 
     // Read-heavy capability lists: short fresh cache plus a last-good copy served when the runtime is slow or down.

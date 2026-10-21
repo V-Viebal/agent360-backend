@@ -109,6 +109,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 
                 while (!ct.IsCancellationRequested)
                 {
+                    var isTurnRunning = false;
                     try
                     {
                         var rawJson = await client.GetChatHistoryRawAsync(effectiveChatId, agentId, ct);
@@ -164,16 +165,15 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     }
                                 }
 
-                                var isTurnRunning = msgStatus is "in_progress" or "running" || rootChatStatus is "running" or "in_progress";
+                                isTurnRunning = msgStatus is "in_progress" or "running" || rootChatStatus is "running" or "in_progress";
                                 int contentLen = extractedContent.Length;
 
-                                bool hasChanged = lastKnownCount == -1
-                                    ? isTurnRunning
-                                    : (currentCount != lastKnownCount ||
+                                bool hasChanged = lastKnownCount == -1 ||
+                                       currentCount != lastKnownCount ||
                                        currentLastId != lastKnownMessageId ||
                                        msgStatus != lastKnownMsgStatus ||
                                        rootChatStatus != lastKnownChatStatus ||
-                                       Math.Abs(contentLen - lastKnownContentLen) > 0);
+                                       Math.Abs(contentLen - lastKnownContentLen) > 0;
 
                                 if (hasChanged || (lastKnownCount == -1 && isTurnRunning))
                                 {
@@ -221,13 +221,9 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                         RecordedAt: DateTime.UtcNow
                                     ));
 
-                                    var isUnreadTurn = !isTurnRunning && msgStatus == "completed";
-                                    if (isUnreadTurn)
-                                    {
-                                        ChannelResponseStore.SetUnread(effectiveChatId, true);
-                                        if (!string.IsNullOrWhiteSpace(canonicalSessionId))
-                                            ChannelResponseStore.SetUnread(canonicalSessionId, true);
-                                    }
+                                    // When a client is connected to the live session stream, the user is actively viewing
+                                    // this turn in real-time; never pollute it as unread.
+                                    var isUnreadTurn = false;
 
                                     var payload = JsonSerializer.Serialize(new
                                     {
@@ -278,7 +274,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     await httpContext.Response.WriteAsync(": keepalive\n\n", ct);
                     await httpContext.Response.Body.FlushAsync(ct);
 
-                    await Task.Delay(1500, ct);
+                    var pollDelay = isTurnRunning ? TimeSpan.FromMilliseconds(500) : TimeSpan.FromSeconds(2);
+                    await Task.Delay(pollDelay, ct);
                 }
             })
             .MapToApiVersion(ApiVersion.Default)

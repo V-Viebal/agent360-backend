@@ -232,6 +232,37 @@ public sealed class FleetRoutingTests
         FleetInstanceRoutingService.IsConnectFailure(new HttpRequestException("x", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused))).Should().BeTrue();
     }
 
+    [Fact]
+    public void SyncFromGuardian_DynamicallyRegistersNewInstancesAndRoutes()
+    {
+        var routing = Create(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var guardianDto = new Agent360.API.Features.Agents.Models.AgentGuardianAgentDto(
+            AgentId: "worker9-specialist",
+            Runtime: "qwenpaw",
+            Node: "9th",
+            Instance: "Worker 9th Instance",
+            BaseUrl: "http://100.99.111.222:28888",
+            CdpUrl: "http://100.99.111.222:19222",
+            ProfileId: "specialist",
+            GatusKey: null,
+            Description: "Dynamic agent on node 9th",
+            State: "AVAILABLE",
+            LatencyMs: 20,
+            CheckedAt: DateTime.UtcNow.ToString("O"),
+            ModelValidation: null,
+            Stages: null,
+            Mcp: null);
+
+        routing.SyncFromGuardian(new[] { guardianDto });
+
+        var target = routing.ResolveTarget("worker9-specialist");
+        target.IsQwenPaw.Should().BeTrue();
+        target.Instance!.Key.Should().Be("worker9");
+        target.TargetAgentProfile.Should().Be("specialist");
+        target.Instance.InternalUrl.Should().Be("http://100.99.111.222:28888");
+        target.Instance.CdpUrl.Should().Be("http://100.99.111.222:19222");
+    }
+
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

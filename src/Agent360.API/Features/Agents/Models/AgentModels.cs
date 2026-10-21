@@ -39,9 +39,19 @@ public sealed record AgentSummaryResponse(
     bool Enabled,
     bool Pinned,
     bool AvailableInChat,
-    IReadOnlyList<AgentToolSummary> Tools);
+    IReadOnlyList<AgentToolSummary> Tools,
+    bool CanToggle = true,
+    bool IsRootAgent = false);
 
 public sealed record AgentToolSummary(
     string Name,
     string Type,
     string Description);
+
+public sealed record ToggleAgentRequest(
+    [property: JsonPropertyName("enabled")] bool Enabled);
+
+public sealed record ToggleAgentResponse(
+    [property: JsonPropertyName("success")] bool Success,
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("enabled")] bool Enabled);
