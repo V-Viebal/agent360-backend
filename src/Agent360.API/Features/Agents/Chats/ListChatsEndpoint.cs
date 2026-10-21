@@ -17,6 +17,7 @@ public sealed record QwenPawChatDto(
     [property: JsonPropertyName("channel")] string? Channel,
     [property: JsonPropertyName("created_at")] string? CreatedAt,
     [property: JsonPropertyName("updated_at")] string? UpdatedAt,
+    [property: JsonPropertyName("last_finished_at")] string? LastFinishedAt,
     [property: JsonPropertyName("status")] string? Status,
     [property: JsonPropertyName("pinned")] bool Pinned,
     [property: JsonPropertyName("archived")] bool Archived);
@@ -75,10 +76,23 @@ public sealed class ListChatsEndpoint : IEndpoint
                 var result = query.Select(c =>
                 {
                     var id = !string.IsNullOrWhiteSpace(c.Id) ? c.Id : (c.SessionId ?? "");
-                    var isRunning = string.Equals(c.Status, "running", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(c.Status, "in_progress", StringComparison.OrdinalIgnoreCase)
-                        || queueManager.IsSessionTurnActive(id)
-                        || (!string.IsNullOrWhiteSpace(c.SessionId) && queueManager.IsSessionTurnActive(c.SessionId));
+                    bool rawRunning = string.Equals(c.Status, "running", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(c.Status, "in_progress", StringComparison.OrdinalIgnoreCase);
+
+                    if (rawRunning && !string.IsNullOrWhiteSpace(c.LastFinishedAt) && !string.IsNullOrWhiteSpace(c.UpdatedAt))
+                    {
+                        if (DateTime.TryParse(c.LastFinishedAt, out var finished) && DateTime.TryParse(c.UpdatedAt, out var updated))
+                        {
+                            if (finished >= updated.AddSeconds(-2))
+                            {
+                                rawRunning = false;
+                            }
+                        }
+                    }
+
+                    var isRunning = queueManager.IsSessionTurnActive(id)
+                        || (!string.IsNullOrWhiteSpace(c.SessionId) && queueManager.IsSessionTurnActive(c.SessionId))
+                        || rawRunning;
 
                     var isUnread = ChannelResponseStore.IsUnread(id)
                         || (!string.IsNullOrWhiteSpace(c.SessionId) && ChannelResponseStore.IsUnread(c.SessionId));

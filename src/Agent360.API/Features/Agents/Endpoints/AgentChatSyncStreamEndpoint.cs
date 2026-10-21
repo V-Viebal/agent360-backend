@@ -134,12 +134,14 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 
                                 string? rootChatStatus = doc.RootElement.TryGetProperty("status", out var rStatProp) ? rStatProp.GetString() : null;
                                 string? msgStatus = "completed";
+                                string? lastType = null;
                                 string role = "assistant";
                                 string extractedContent = "";
 
                                 if (lastEl.HasValue)
                                 {
                                     var el = lastEl.Value;
+                                    if (el.TryGetProperty("type", out var typeProp)) lastType = typeProp.GetString();
                                     if (el.TryGetProperty("status", out var sProp)) msgStatus = sProp.GetString();
                                     if (el.TryGetProperty("role", out var rProp)) role = rProp.GetString() ?? "assistant";
                                     if (el.TryGetProperty("content", out var cProp))
@@ -165,7 +167,13 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     }
                                 }
 
-                                isTurnRunning = msgStatus is "in_progress" or "running" || rootChatStatus is "running" or "in_progress";
+                                bool isLastAssistantFinal = role == "assistant" && (lastType is "message" or null) && msgStatus is "completed";
+                                isTurnRunning = !isLastAssistantFinal && (
+                                    msgStatus is "in_progress" or "running" ||
+                                    rootChatStatus is "running" or "in_progress" ||
+                                    role == "user" ||
+                                    lastType is "plugin_call" or "plugin_call_output" or "reasoning" or "tool_call");
+
                                 int contentLen = extractedContent.Length;
 
                                 bool hasChanged = lastKnownCount == -1 ||
