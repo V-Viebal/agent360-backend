@@ -200,9 +200,17 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             return Target(Instance("gm"), raw, profile);
         }
 
-        if (id.StartsWith("climax-"))
+        if (id.StartsWith("climax-") || id == "climax")
         {
-            return Target(Instance("climax"), raw, id == "climax-team" ? "team" : "default");
+            var profile = id switch
+            {
+                "climax" => "default",
+                "climax-default" => "default",
+                "climax-team" => "team",
+                "climax-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                _ => raw["climax-".Length..]
+            };
+            return Target(Instance("climax"), raw, profile);
         }
 
         if (id.StartsWith("planthy-"))
