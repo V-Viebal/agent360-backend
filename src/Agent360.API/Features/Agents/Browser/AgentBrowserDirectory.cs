@@ -165,7 +165,7 @@ public sealed class AgentBrowserDirectory(
                 try
                 {
                     var http = httpClientFactory.CreateClient(HttpClientName);
-                    var newAnchorUrl = $"{AnchorPrefix}{Uri.EscapeDataString(profile)}--><title>Agent profile: {Uri.EscapeDataString(profile)}</title>";
+                    var newAnchorUrl = $"{AnchorPrefix}{Uri.EscapeDataString(profile)}--><title>Agent profile: {Uri.EscapeDataString(target.TargetAgentProfile)}</title>";
                     using var putReq = new HttpRequestMessage(HttpMethod.Put, $"{cdp.TrimEnd('/')}/json/new?{Uri.EscapeDataString(newAnchorUrl)}");
                     using var putRes = await http.SendAsync(putReq, ct);
                     if (putRes.IsSuccessStatusCode)
