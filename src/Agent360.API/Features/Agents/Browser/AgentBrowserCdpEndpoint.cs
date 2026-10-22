@@ -403,7 +403,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         foreach (var wid in targetWids)
                         {
                             var normId = ++reqId;
-                            await SendAsync(ws, new { id = normId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, cts.Token);
+                            await SendAsync(ws, new { id = normId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { left = 0, top = 0, width = 1920, height = 1080, windowState = "normal" } } }, cts.Token);
                             await ReceiveByIdAsync(ws, normId, cts.Token);
 
                             var maxId = ++reqId;
