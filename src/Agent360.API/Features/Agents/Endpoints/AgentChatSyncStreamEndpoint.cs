@@ -334,7 +334,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                         return Results.StatusCode((int)response.StatusCode);
                     }
                     await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                    await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
+                    await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
                 }
                 catch (HttpRequestException)
                 {

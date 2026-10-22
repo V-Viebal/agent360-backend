@@ -15,13 +15,18 @@ public static class SseRelay
         HttpResponse response,
         TimeSpan keepAlive,
         CancellationToken ct,
-        TimeSpan? maxIdleTimeout = null)
+        TimeSpan? maxIdleTimeout = null,
+        bool sendInitialPing = false)
     {
         response.Headers["X-Accel-Buffering"] = "no";
         response.Headers.CacheControl = "no-cache";
         var output = response.Body;
         var buffer = new byte[16 * 1024];
         await response.StartAsync(ct);
+        if (sendInitialPing)
+        {
+            await output.WriteAsync(Ping, ct);
+        }
         await output.FlushAsync(ct);
         Task<int>? pending = null;
         var effectiveIdleTimeout = maxIdleTimeout ?? TimeSpan.FromMinutes(10);
