@@ -26,9 +26,10 @@ public sealed class SubAgentEndpointHostTests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        var b = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
+        var b = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         b.WebHost.UseUrls("http://127.0.0.1:0");
         b.Configuration["Agent360:Security:OperatorToken"] = Token;
+        b.Configuration["Agent360:Security:RequireOperatorForWrites"] = "true";
         b.Configuration["Agent360:SubAgents:StoragePath"] = _dir;
         b.Configuration["Agent360:SubAgents:SyncWaitSeconds"] = "1";
         b.Services.AddRouting();
