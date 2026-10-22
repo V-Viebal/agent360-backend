@@ -398,7 +398,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             queueManager.SetSessionTurnActive(request.SessionId, false);
             var ok = await client.StopChatAsync(request, ct);
-            return ok ? TypedResults.Ok(new { stopped = true }) : Results.Problem("Failed to stop chat execution or no active turn.");
+            return TypedResults.Ok(new { stopped = ok });
         })
         .WithName("ConsoleChatStop")
         .WithSummary("Stop active agent turn")

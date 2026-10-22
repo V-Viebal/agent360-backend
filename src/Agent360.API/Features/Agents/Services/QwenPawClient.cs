@@ -752,17 +752,26 @@ public sealed class QwenPawClient : IQwenPawClient
 
     public async Task<bool> StopChatAsync(ConsoleChatStopRequestDto request, CancellationToken cancellationToken = default)
     {
-        using var response = await SendAsync(
-            Resolve(request.AgentId),
-            HttpMethod.Post,
-            $"console/chat/stop?chat_id={Uri.EscapeDataString(request.SessionId)}",
-            ct: cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        try
         {
+            using var response = await SendAsync(
+                Resolve(request.AgentId),
+                HttpMethod.Post,
+                $"console/chat/stop?chat_id={Uri.EscapeDataString(request.SessionId)}",
+                ct: cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            return doc.RootElement.TryGetProperty("stopped", out var prop) && prop.GetBoolean();
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Failed to stop chat for session {SessionId}", request.SessionId);
             return false;
         }
-        var body = await response.Content.ReadFromJsonAsync<JsonObject>(cancellationToken);
-        return body?["stopped"]?.GetValue<bool>() ?? true;
     }
 
     /// <summary>Attaches to the live turn of any channel session (Telegram, Zalo, cron, console). QwenPaw replays
