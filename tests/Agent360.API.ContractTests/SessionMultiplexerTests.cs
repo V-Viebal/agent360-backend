@@ -61,4 +61,45 @@ public class SessionMultiplexerTests
 
         queue.SetSessionTurnActive(testSession, false);
     }
+
+    [Fact]
+    public async Task SessionQueueManager_SessionLock_SerializesConcurrentTurnExecutions()
+    {
+        var queue = new SessionQueueManager();
+        const string sid = "session_lock_test_1";
+        var sessionLock = queue.GetOrCreateSessionLock(sid);
+
+        var order = new System.Collections.Generic.List<int>();
+        var ct = TestContext.Current.CancellationToken;
+        var t1 = Task.Run(async () =>
+        {
+            await sessionLock.WaitAsync(ct);
+            try
+            {
+                order.Add(1);
+                await Task.Delay(50, ct);
+            }
+            finally
+            {
+                sessionLock.Release();
+            }
+        }, ct);
+
+        var t2 = Task.Run(async () =>
+        {
+            await Task.Delay(10, ct);
+            await sessionLock.WaitAsync(ct);
+            try
+            {
+                order.Add(2);
+            }
+            finally
+            {
+                sessionLock.Release();
+            }
+        }, ct);
+
+        await Task.WhenAll(t1, t2);
+        order.Should().Equal(new[] { 1, 2 });
+    }
 }

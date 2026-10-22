@@ -346,17 +346,19 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             catch {}
 
-            queueManager.SetSessionTurnActive(effectiveSessionId, true);
-            if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
-            {
-                queueManager.SetSessionTurnActive(qwenPawSessionId, true);
-            }
-
-            Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
-
+            var sessionLock = queueManager.GetOrCreateSessionLock(qwenPawSessionId);
+            await sessionLock.WaitAsync(ct);
             try
             {
+                queueManager.SetSessionTurnActive(effectiveSessionId, true);
+                if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, true);
+                }
+
+                Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                    agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
+
                 var effectiveRequest = request with
                 {
                     SessionId = qwenPawSessionId,
@@ -368,7 +370,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 httpContext.Response.StatusCode = (int)response.StatusCode;
 
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
+                await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
 
                 Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
@@ -381,6 +383,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 {
                     queueManager.SetSessionTurnActive(qwenPawSessionId, false);
                 }
+                sessionLock.Release();
             }
         })
         .WithName("ConsoleChatStream")

@@ -17,8 +17,14 @@ public sealed class SessionQueueManager
 {
     private readonly ConcurrentDictionary<string, Channel<QueuedChatTask>> _sessionChannels = new();
     private readonly ConcurrentDictionary<string, bool> _activeSessionTurns = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
 
     public event Action<string, bool>? OnSessionTurnChanged;
+
+    public SemaphoreSlim GetOrCreateSessionLock(string sessionId)
+    {
+        return _sessionLocks.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
+    }
 
     public Channel<QueuedChatTask> GetOrCreateSessionChannel(string sessionId)
     {
