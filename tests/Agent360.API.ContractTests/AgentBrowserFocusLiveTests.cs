@@ -14,6 +14,13 @@ public sealed class AgentBrowserFocusLiveTests
     [Fact]
     public async Task CanFocusAndRaiseWindowOnCoreBrowser()
     {
+        var runLive = Environment.GetEnvironmentVariable("AGENT360_RUN_LIVE_BROWSER_TESTS");
+        if (!string.Equals(runLive, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            // Skip when live tailnet browser is not reachable in general CI runner environment
+            return;
+        }
+
         var services = new ServiceCollection();
         services.AddHttpClient(AgentBrowserDirectory.HttpClientName);
         var sp = services.BuildServiceProvider();
