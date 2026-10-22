@@ -40,4 +40,25 @@ public sealed class SseRelayTests
         await SseRelay.CopyAsync(src, ctx.Response, TimeSpan.FromSeconds(10), Ct);
         Assert.Equal("data: a\n\ndata: b\n\n", Encoding.UTF8.GetString(body.ToArray()));
     }
+
+    [Fact]
+    public async Task Upstream_idle_beyond_max_timeout_terminates_relay()
+    {
+        var pipe = new Pipe();
+        var ctx = new DefaultHttpContext();
+        var body = new MemoryStream();
+        ctx.Response.Body = body;
+
+        var relay = SseRelay.CopyAsync(
+            pipe.Reader.AsStream(),
+            ctx.Response,
+            TimeSpan.FromMilliseconds(25),
+            Ct,
+            maxIdleTimeout: TimeSpan.FromMilliseconds(80));
+
+        await relay.WaitAsync(TimeSpan.FromSeconds(3), Ct);
+
+        var text = Encoding.UTF8.GetString(body.ToArray());
+        Assert.Contains(": ping", text);
+    }
 }
