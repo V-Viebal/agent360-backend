@@ -367,8 +367,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                             {
                                 var wid = widProp.GetInt32();
                                 bool isTarget = p.TargetId == targetId
-                                    || (!string.IsNullOrEmpty(targetContextId) && p.ContextId == targetContextId)
-                                    || (string.IsNullOrEmpty(targetContextId) && string.IsNullOrEmpty(p.ContextId));
+                                    || (!string.IsNullOrEmpty(targetContextId) && p.ContextId == targetContextId);
                                 if (isTarget)
                                 {
                                     targetWids.Add(wid);
@@ -391,12 +390,19 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                             await ReceiveByIdAsync(ws, hideId, cts.Token);
                         }
 
-                        // Auto-dismiss Lens overlay or hanging lens UI targets if present
-                        var lensTargets = pages.Where(p => p.TargetId != targetId && (p.TargetId.Contains("lens", StringComparison.OrdinalIgnoreCase))).ToList();
-                        foreach (var lt in lensTargets)
+                        // Auto-dismiss Lens overlay or hanging lens UI targets and profile-picker if present
+                        var extraTargets = doc.RootElement.GetProperty("result").GetProperty("targetInfos").EnumerateArray()
+                            .Where(t => {
+                                var tid = t.GetProperty("targetId").GetString() ?? "";
+                                var turl = t.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                                return tid != targetId && (tid.Contains("lens", StringComparison.OrdinalIgnoreCase) || turl.Contains("profile-picker", StringComparison.OrdinalIgnoreCase));
+                            })
+                            .Select(t => t.GetProperty("targetId").GetString() ?? "")
+                            .ToList();
+                        foreach (var etId in extraTargets)
                         {
                             var closeId = ++reqId;
-                            await SendAsync(ws, new { id = closeId, method = "Target.closeTarget", @params = new { targetId = lt.TargetId } }, cts.Token);
+                            await SendAsync(ws, new { id = closeId, method = "Target.closeTarget", @params = new { targetId = etId } }, cts.Token);
                             await ReceiveByIdAsync(ws, closeId, cts.Token);
                         }
 
