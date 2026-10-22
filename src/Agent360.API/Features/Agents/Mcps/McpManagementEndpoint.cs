@@ -17,6 +17,7 @@ public sealed class McpManagementEndpoint : IEndpoint
             "mcps",
             async Task<IResult> (
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
@@ -45,6 +46,38 @@ public sealed class McpManagementEndpoint : IEndpoint
                 catch
                 {
                     // Fallback to local configuration
+                }
+
+                // Fallback: If list has no MCPs for the target agent (e.g. non-QwenPaw swarm, edge node, or network blip),
+                // query Agent Guardian's verified discovery cache so edge and non-QwenPaw runtimes expose their verified tools
+                if (list.Count == 0 && !string.IsNullOrWhiteSpace(agentId))
+                {
+                    try
+                    {
+                        var cleanSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                        var client = httpContext?.RequestServices.GetService<IQwenPawClient>();
+                        if (client != null)
+                        {
+                            var agents = await client.GetAgentsAsync(cancellationToken);
+                            var matched = agents.FirstOrDefault(a => a.Slug.Equals(cleanSlug, StringComparison.OrdinalIgnoreCase) || a.Id.Equals(agentId, StringComparison.OrdinalIgnoreCase));
+                            if (matched?.Tools != null && matched.Tools.Count > 0)
+                            {
+                                list.AddRange(matched.Tools.Where(t => t.Type == "mcp").Select(t => new McpServerSummaryResponse(
+                                    Key: t.Name,
+                                    Name: t.Name,
+                                    Description: t.Description ?? "",
+                                    Enabled: true,
+                                    Transport: "gateway",
+                                    Command: null,
+                                    Url: null
+                                )));
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Fallback gracefully
+                    }
                 }
 
                 // Ensure workspace-registered MCPs like Composio appear in the catalog
