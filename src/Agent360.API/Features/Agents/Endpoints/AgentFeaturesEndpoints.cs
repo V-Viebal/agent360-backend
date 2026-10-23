@@ -130,8 +130,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
 
         // 1e. Global Chat History
-        group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, IQwenPawClient client, Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore, CancellationToken ct) =>
+        group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
+            var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>() ?? new Agent360.API.Features.Agents.SubAgents.SessionRoomStore();
             try
             {
                 var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
@@ -522,8 +523,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("List all chat sessions for a specific agent")
         .AllowAnonymous();
 
-        group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, IQwenPawClient client, Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore, CancellationToken ct) =>
+        group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
+            var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>() ?? new Agent360.API.Features.Agents.SubAgents.SessionRoomStore();
             try
             {
                 var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);

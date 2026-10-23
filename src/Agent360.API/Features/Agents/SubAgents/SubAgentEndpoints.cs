@@ -84,13 +84,17 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("IngestNativeDelegations");
 
         // ---- Session-Sticky Collaboration Rooms ([Agent A, Agent B, Manager, Admin]) ----
-        agents.MapGet("rooms", (string agentId, SessionRoomStore roomStore) =>
-            Results.Ok(roomStore.ListByHostAgent(agentId)))
+        agents.MapGet("rooms", (string agentId, HttpContext http) =>
+            {
+                var roomStore = http.RequestServices.GetService<SessionRoomStore>() ?? new SessionRoomStore();
+                return Results.Ok(roomStore.ListByHostAgent(agentId));
+            })
             .WithName("ListAgentSessionRooms")
             .WithSummary("List all AgentTeams collaboration rooms bound to chat sessions of this host agent");
 
-        agents.MapGet("chats/{chatId}/room", (string agentId, string chatId, SessionRoomStore roomStore) =>
+        agents.MapGet("chats/{chatId}/room", (string agentId, string chatId, HttpContext http) =>
             {
+                var roomStore = http.RequestServices.GetService<SessionRoomStore>() ?? new SessionRoomStore();
                 var room = roomStore.GetByChat(agentId, chatId);
                 return Results.Ok(new { active = room is not null, room });
             })
@@ -101,13 +105,14 @@ public sealed class SubAgentEndpoints : IEndpoint
                 string agentId,
                 string chatId,
                 [FromBody] PullAgentIntoRoomRequest? body,
-                SessionRoomOrchestrator orchestrator,
+                HttpContext http,
                 CancellationToken ct) =>
             {
                 if (body is null || string.IsNullOrWhiteSpace(body.CollaboratorAgentId))
                 {
                     return Results.Problem(detail: "collaborator_agent_id is required", statusCode: 400, title: "Invalid request");
                 }
+                var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
                 if (body.AutoDispatch && !string.IsNullOrWhiteSpace(body.Objective))
                 {
                     var (dispatchedRoom, turn) = await orchestrator.ExecuteCollaboratorTurnAsync(
@@ -124,13 +129,14 @@ public sealed class SubAgentEndpoints : IEndpoint
                 string agentId,
                 string chatId,
                 [FromBody] PostRoomMessageRequest? body,
-                SessionRoomOrchestrator orchestrator,
+                HttpContext http,
                 CancellationToken ct) =>
             {
                 if (body is null || string.IsNullOrWhiteSpace(body.Text) || string.IsNullOrWhiteSpace(body.AuthorId))
                 {
                     return Results.Problem(detail: "author_id and text are required", statusCode: 400, title: "Invalid request");
                 }
+                var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
                 var (room, turn) = await orchestrator.PostRoomMessageAsync(agentId, chatId, body, ct);
                 return Results.Ok(new { room, turn });
             })
