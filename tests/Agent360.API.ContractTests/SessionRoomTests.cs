@@ -139,5 +139,10 @@ public class SessionRoomTests
         // 2. When collaborator zen is pulled into the session scope -> room now has mons, zen, manager, admin
         var expandedRoom = await orchestrator.EnsureRoomAsync("mons", newSessionId, "zen", newSessionId, ct);
         expandedRoom.Participants.Select(p => p.AgentId).Should().BeEquivalentTo(["mons", "zen", "agentteams-manager", "admin"]);
+
+        // 3. Sync room title from first prompt -> sets RoomTitle and updates Matrix m.room.name
+        var titledRoom = await orchestrator.SyncRoomTitleAsync("mons", newSessionId, "Kiểm tra chiến dịch Q4 cùng @zen", ct);
+        titledRoom.Should().NotBeNull();
+        titledRoom!.RoomTitle.Should().Be("[mons] Kiểm tra chiến dịch Q4 cùng @zen");
     }
 }

@@ -149,6 +149,24 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("PostChatRoomMessage")
             .WithSummary("Allow collaborator agent B, manager, or admin to post a response back to host agent A's chat session via the room");
 
+        agents.MapPatch("chats/{chatId}/room/title", async (
+                string agentId,
+                string chatId,
+                [FromBody] UpdateRoomTitleRequest? body,
+                HttpContext http,
+                CancellationToken ct) =>
+            {
+                if (body is null || string.IsNullOrWhiteSpace(body.Title))
+                {
+                    return Results.Problem(detail: "title is required", statusCode: 400, title: "Invalid request");
+                }
+                var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
+                var room = await orchestrator.SyncRoomTitleAsync(agentId, chatId, body.Title, ct);
+                return Results.Ok(new { room });
+            })
+            .WithName("UpdateChatRoomTitle")
+            .WithSummary("Update the AgentTeams Matrix room name to match the chat session topic");
+
         // ---- Delegation ledger ----
         var dlg = routeBuilder.MapGroup("delegations")
             .WithTags(EndpointTags.Agents)

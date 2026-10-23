@@ -719,6 +719,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 qwenPawSessionId,
                 ct,
                 mentionedCollaborators);
+            if (string.IsNullOrWhiteSpace(baseRoom.RoomTitle) && !string.IsNullOrWhiteSpace(rawUserText))
+            {
+                baseRoom = await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, ct) ?? baseRoom;
+            }
 
             var initRoomEvt = System.Text.Json.JsonSerializer.Serialize(new
             {

@@ -54,7 +54,11 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("current_turn_count")] int CurrentTurnCount,
     [property: JsonPropertyName("turns")] IReadOnlyList<SessionRoomTurn> Turns,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
-    [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt);
+    [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
+    [property: JsonPropertyName("room_title")] string? RoomTitle = null);
+
+public sealed record UpdateRoomTitleRequest(
+    [property: JsonPropertyName("title")] string Title);
 
 public sealed record PullAgentIntoRoomRequest(
     [property: JsonPropertyName("collaborator_agent_id")] string? CollaboratorAgentId = null,
@@ -436,6 +440,62 @@ public sealed partial class SessionRoomOrchestrator(
         }
 
         return realRoomId;
+    }
+
+    public static string BuildCleanRoomTitle(string hostAgentId, string? rawText)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var cleaned = Regex.Replace((rawText ?? "").Trim(), @"\s+", " ");
+        if (cleaned.Length > 64) cleaned = cleaned[..61].TrimEnd() + "...";
+        return string.IsNullOrWhiteSpace(cleaned) ? $"Session [{host}]" : $"[{host}] {cleaned}";
+    }
+
+    public async Task<SessionCollaborationRoom?> SyncRoomTitleAsync(
+        string hostAgentId,
+        string hostChatId,
+        string? rawPromptOrTitle,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(rawPromptOrTitle)) return roomStore.GetByChat(hostAgentId, hostChatId);
+        var room = roomStore.GetByChat(hostAgentId, hostChatId)
+            ?? await EnsureRoomAsync(hostAgentId, hostChatId, null, hostChatId, ct);
+
+        var nextTitle = BuildCleanRoomTitle(room.HostAgentId, rawPromptOrTitle);
+        if (string.Equals(room.RoomTitle, nextTitle, StringComparison.Ordinal))
+            return room;
+
+        room = await roomStore.SaveAsync(room with
+        {
+            RoomTitle = nextTitle,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+
+        if (!room.MatrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase))
+        {
+            var asToken = ResolveMatrixAppServiceToken();
+            if (!string.IsNullOrWhiteSpace(asToken))
+            {
+                try
+                {
+                    var managerMxid = $"@manager:{GatewayDomain}";
+                    var encodedRoom = Uri.EscapeDataString(room.MatrixRoomId);
+                    var url = $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/state/m.room.name/?user_id={Uri.EscapeDataString(managerMxid)}";
+                    using var req = new HttpRequestMessage(HttpMethod.Put, url)
+                    {
+                        Content = JsonContent.Create(new { name = nextTitle })
+                    };
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                    req.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                    using var _ = await SharedMatrixHttp.SendAsync(req, ct);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "Matrix room rename fallback for {RoomId}", room.MatrixRoomId);
+                }
+            }
+        }
+
+        return room;
     }
 
     private async Task PostTurnToRealMatrixRoomAsync(SessionCollaborationRoom room, SessionRoomTurn turn)
