@@ -16,6 +16,16 @@ public sealed record SessionRoomParticipant(
     [property: JsonPropertyName("status")] string Status, // "idle" | "running" | "completed" | "awaiting_input"
     [property: JsonPropertyName("joined_at")] DateTimeOffset JoinedAt);
 
+public sealed record SessionRoomStep(
+    [property: JsonPropertyName("kind")] string Kind, // "reasoning" | "tool_call"
+    [property: JsonPropertyName("id")] string? Id = null,
+    [property: JsonPropertyName("call_id")] string? CallId = null,
+    [property: JsonPropertyName("text")] string? Text = null,
+    [property: JsonPropertyName("tool")] string? Tool = null,
+    [property: JsonPropertyName("args")] string? Args = null,
+    [property: JsonPropertyName("result")] string? Result = null,
+    [property: JsonPropertyName("state")] string? State = "success");
+
 public sealed record SessionRoomTurn(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("turn_no")] int TurnNo,
@@ -25,7 +35,9 @@ public sealed record SessionRoomTurn(
     [property: JsonPropertyName("kind")] string Kind, // "request" | "collaborator_progress" | "collaborator_reply" | "question" | "answer" | "manager_guard" | "synthesis"
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("target_agent_id")] string? TargetAgentId,
-    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt);
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("reasoning")] string? Reasoning = null,
+    [property: JsonPropertyName("steps")] IReadOnlyList<SessionRoomStep>? Steps = null);
 
 public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("room_id")] string RoomId,
@@ -189,7 +201,9 @@ public sealed class SessionRoomStore
                         ["turn_kind"] = turn.Kind,
                         ["room_id"] = room.RoomId,
                         ["matrix_room_id"] = room.MatrixRoomId,
-                        ["element_room_url"] = room.ElementRoomUrl
+                        ["element_room_url"] = room.ElementRoomUrl,
+                        ["reasoning"] = turn.Reasoning,
+                        ["steps"] = turn.Steps is not null ? JsonSerializer.SerializeToNode(turn.Steps) : null
                     }
                 };
                 messagesArr.Add(msgObj);
@@ -542,6 +556,39 @@ public sealed partial class SessionRoomOrchestrator(
     /// Detects if a user message mentions another agent (e.g. @zen, @ken, @gm-boc, or @Zen)
     /// and resolves the mentioned collaborator agent ID.
     /// </summary>
+    public static IReadOnlyList<string> DetectMentionedCollaborators(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null)
+    {
+        if (string.IsNullOrWhiteSpace(messageText)) return [];
+        var normHost = SubAgentService.NormalizeAgentId(hostAgentId).ToLowerInvariant();
+        var defaultSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "mons", "ken", "zen", "mkai", "gm-boc", "gm-gao", "gm-lua", "planthy-pm", "climax-default", "climax-team"
+        };
+        if (knownAgentSlugs is not null)
+        {
+            foreach (var s in knownAgentSlugs)
+                defaultSlugs.Add(SubAgentService.NormalizeAgentId(s));
+        }
+
+        var result = new List<string>();
+        foreach (Match m in MentionRegex().Matches(messageText))
+        {
+            var candidate = m.Groups[1].Value.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(candidate) || candidate == normHost) continue;
+            string? resolved = null;
+            if (defaultSlugs.Contains(candidate)) resolved = candidate;
+            else
+            {
+                resolved = defaultSlugs.FirstOrDefault(s => s.Equals(candidate, StringComparison.OrdinalIgnoreCase) || s.StartsWith(candidate + "-", StringComparison.OrdinalIgnoreCase));
+            }
+            if (resolved is not null && !string.Equals(resolved, normHost, StringComparison.OrdinalIgnoreCase) && !result.Contains(resolved, StringComparer.OrdinalIgnoreCase))
+            {
+                result.Add(resolved);
+            }
+        }
+        return result;
+    }
+
     public static string? DetectMentionedCollaborator(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null)
     {
         if (string.IsNullOrWhiteSpace(messageText)) return null;

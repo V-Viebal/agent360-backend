@@ -702,8 +702,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             rawUserText = effectiveRequest.Input[0].Content?.FirstOrDefault()?.Text ?? "";
         }
 
-        var mentionedCollaborator = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborator(rawUserText, agentTarget);
-        if (!string.IsNullOrWhiteSpace(mentionedCollaborator))
+        var mentionedCollaborators = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborators(rawUserText, agentTarget);
+        if (mentionedCollaborators.Count > 0)
         {
             var roomOrchestrator = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
             httpContext.Response.ContentType = "text/event-stream";
@@ -711,32 +711,61 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             httpContext.Response.Headers.CacheControl = "no-cache";
             await httpContext.Response.StartAsync(ct);
 
-            var ensuredRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, mentionedCollaborator, qwenPawSessionId, ct);
-            var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
+            var accumulatedContext = new System.Text.StringBuilder();
+            Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = null;
+
+            foreach (var mentionedCollaborator in mentionedCollaborators)
             {
-                @object = "room_event",
-                status = "collaborator_running",
-                collaborator_id = mentionedCollaborator,
-                room = ensuredRoom
-            });
-            await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
-            await httpContext.Response.Body.FlushAsync(ct);
+                var ensuredRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, mentionedCollaborator, qwenPawSessionId, ct);
+                var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_event",
+                    status = "collaborator_running",
+                    collaborator_id = mentionedCollaborator,
+                    room = ensuredRoom
+                });
+                await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
+                await httpContext.Response.Body.FlushAsync(ct);
 
-            var (completedRoom, collabTurn) = await roomOrchestrator.ExecuteCollaboratorTurnAsync(
-                agentTarget, effectiveSessionId, mentionedCollaborator, rawUserText ?? "", null, qwenPawSessionId, ct);
+                var (completedRoom, collabTurn) = await roomOrchestrator.ExecuteCollaboratorTurnAsync(
+                    agentTarget,
+                    effectiveSessionId,
+                    mentionedCollaborator,
+                    rawUserText ?? "",
+                    accumulatedContext.Length > 0 ? accumulatedContext.ToString() : null,
+                    qwenPawSessionId,
+                    ct);
 
-            var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+                latestRoom = completedRoom;
+                accumulatedContext.AppendLine($"- @{mentionedCollaborator} ({collabTurn.AuthorName}): {collabTurn.Text}");
+
+                var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_turn",
+                    status = completedRoom.Status,
+                    collaborator_id = mentionedCollaborator,
+                    room = completedRoom,
+                    turn = collabTurn
+                });
+                await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
+                await httpContext.Response.Body.FlushAsync(ct);
+            }
+
+            // Emit host synthesizing event so UI shows Host Agent A is now responding
+            if (latestRoom is not null)
             {
-                @object = "room_turn",
-                status = completedRoom.Status,
-                collaborator_id = mentionedCollaborator,
-                room = completedRoom,
-                turn = collabTurn
-            });
-            await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
-            await httpContext.Response.Body.FlushAsync(ct);
+                var hostSynthEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_event",
+                    status = "synthesizing",
+                    collaborator_id = agentTarget,
+                    room = latestRoom
+                });
+                await httpContext.Response.WriteAsync($"data: {hostSynthEvt}\n\n", ct);
+                await httpContext.Response.Body.FlushAsync(ct);
+            }
 
-            var synthesizedInput = $"{rawUserText}\n\n[AGENTTEAMS COLLABORATION ROOM ({completedRoom.MatrixRoomId})]\nChuyên viên @{mentionedCollaborator} ({collabTurn.AuthorName}) đã xử lý trong Room và gửi phản hồi về phiên chat này:\n\"\n{collabTurn.Text}\n\"\nHãy dựa trên kết quả từ @{mentionedCollaborator} trong Room để phản hồi và tổng hợp kết quả cuối cùng cho người dùng.";
+            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nCác chuyên viên trong phiên đã lần lượt phản hồi:\n{accumulatedContext}\nHãy dựa trên ngữ cảnh chung và các phản hồi trên để tổng hợp kết quả cuối cùng cho người dùng.";
             effectiveRequest = effectiveRequest with
             {
                 Message = synthesizedInput,
