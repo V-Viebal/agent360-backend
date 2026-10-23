@@ -1010,6 +1010,8 @@ public sealed class QwenPawClient : IQwenPawClient
         if (id == "agentteams-gateway") return ("AgentTeams AI Gateway", "Engineering");
         if (id == "llm360-inference-provider") return ("LLM360 Inference Gateway", "Security");
         if (id == "tsx-copaw") return ("TSX CoPaw Automation", "Operations");
+        if (id == "its-default" || id == "its") return ("ITS Gatekeeper (Inox Tân Sơn)", "Operations");
+        if (id == "gl-default" || id == "gl") return ("GL Automation & Analytics", "Engineering");
 
         var roleTag = DetermineRoleTag(agentId, agentId, description);
         return (agentId, roleTag);

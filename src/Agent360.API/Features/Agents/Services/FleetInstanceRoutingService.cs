@@ -89,8 +89,8 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("planthy", "5th", "Planthy AI (Node 5th)", "http://100.70.201.83:32842", "https://planthy-ai.hmz.one", true, "http://100.70.201.83:19224"),
             // AgentTeams manager is a QwenPaw runtime bound to loopback on 4th; only the public proxy is reachable.
             Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
-            Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "http://100.66.243.55:26889", true, "http://100.66.243.55:19222"),
-            Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "http://100.66.243.55:26890", true, "http://100.66.243.55:19222"),
+            Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
+            Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
         ];
     }
 
