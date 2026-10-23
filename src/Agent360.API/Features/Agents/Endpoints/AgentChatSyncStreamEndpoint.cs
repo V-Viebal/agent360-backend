@@ -112,7 +112,12 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     var isTurnRunning = false;
                     try
                     {
+                        var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
                         var rawJson = await client.GetChatHistoryRawAsync(effectiveChatId, agentId, ct);
+                        if (roomStore is not null && !string.IsNullOrWhiteSpace(rawJson))
+                        {
+                            rawJson = roomStore.EnrichChatHistoryJson(rawJson, agentId, effectiveChatId);
+                        }
                         if (!string.IsNullOrWhiteSpace(rawJson))
                         {
                             using var doc = JsonDocument.Parse(rawJson);

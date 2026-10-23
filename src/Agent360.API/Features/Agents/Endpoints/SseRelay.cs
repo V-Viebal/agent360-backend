@@ -18,11 +18,14 @@ public static class SseRelay
         TimeSpan? maxIdleTimeout = null,
         bool sendInitialPing = false)
     {
-        response.Headers["X-Accel-Buffering"] = "no";
-        response.Headers.CacheControl = "no-cache";
+        if (!response.HasStarted)
+        {
+            response.Headers["X-Accel-Buffering"] = "no";
+            response.Headers.CacheControl = "no-cache";
+            await response.StartAsync(ct);
+        }
         var output = response.Body;
         var buffer = new byte[16 * 1024];
-        await response.StartAsync(ct);
         if (sendInitialPing)
         {
             await output.WriteAsync(Ping, ct);

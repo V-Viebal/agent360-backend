@@ -83,6 +83,60 @@ public sealed class SubAgentEndpoints : IEndpoint
             })
             .WithName("IngestNativeDelegations");
 
+        // ---- Session-Sticky Collaboration Rooms ([Agent A, Agent B, Manager, Admin]) ----
+        agents.MapGet("rooms", (string agentId, SessionRoomStore roomStore) =>
+            Results.Ok(roomStore.ListByHostAgent(agentId)))
+            .WithName("ListAgentSessionRooms")
+            .WithSummary("List all AgentTeams collaboration rooms bound to chat sessions of this host agent");
+
+        agents.MapGet("chats/{chatId}/room", (string agentId, string chatId, SessionRoomStore roomStore) =>
+            {
+                var room = roomStore.GetByChat(agentId, chatId);
+                return Results.Ok(new { active = room is not null, room });
+            })
+            .WithName("GetChatSessionRoom")
+            .WithSummary("Get the AgentTeams collaboration room bound to a specific chat session");
+
+        agents.MapPost("chats/{chatId}/room/pull", async (
+                string agentId,
+                string chatId,
+                [FromBody] PullAgentIntoRoomRequest? body,
+                SessionRoomOrchestrator orchestrator,
+                CancellationToken ct) =>
+            {
+                if (body is null || string.IsNullOrWhiteSpace(body.CollaboratorAgentId))
+                {
+                    return Results.Problem(detail: "collaborator_agent_id is required", statusCode: 400, title: "Invalid request");
+                }
+                if (body.AutoDispatch && !string.IsNullOrWhiteSpace(body.Objective))
+                {
+                    var (dispatchedRoom, turn) = await orchestrator.ExecuteCollaboratorTurnAsync(
+                        agentId, chatId, body.CollaboratorAgentId, body.Objective, body.ContextSnippet, body.HostSessionId, ct);
+                    return Results.Ok(new { room = dispatchedRoom, collaborator_turn = turn });
+                }
+                var room = await orchestrator.EnsureRoomAsync(agentId, chatId, body.CollaboratorAgentId, body.HostSessionId, ct);
+                return Results.Ok(new { room });
+            })
+            .WithName("PullAgentIntoChatRoom")
+            .WithSummary("Pull a collaborator agent B into host agent A's chat session, forming an AgentTeams room [A, B, manager, admin]");
+
+        agents.MapPost("chats/{chatId}/room/messages", async (
+                string agentId,
+                string chatId,
+                [FromBody] PostRoomMessageRequest? body,
+                SessionRoomOrchestrator orchestrator,
+                CancellationToken ct) =>
+            {
+                if (body is null || string.IsNullOrWhiteSpace(body.Text) || string.IsNullOrWhiteSpace(body.AuthorId))
+                {
+                    return Results.Problem(detail: "author_id and text are required", statusCode: 400, title: "Invalid request");
+                }
+                var (room, turn) = await orchestrator.PostRoomMessageAsync(agentId, chatId, body, ct);
+                return Results.Ok(new { room, turn });
+            })
+            .WithName("PostChatRoomMessage")
+            .WithSummary("Allow collaborator agent B, manager, or admin to post a response back to host agent A's chat session via the room");
+
         // ---- Delegation ledger ----
         var dlg = routeBuilder.MapGroup("delegations")
             .WithTags(EndpointTags.Agents)

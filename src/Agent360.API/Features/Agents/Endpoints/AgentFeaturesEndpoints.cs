@@ -130,15 +130,20 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
 
         // 1e. Global Chat History
-        group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, IQwenPawClient client, Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore, CancellationToken ct) =>
         {
             try
             {
                 var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
-                return Results.Content(historyRaw, "application/json");
+                return Results.Content(roomStore.EnrichChatHistoryJson(historyRaw, agentId, chatId), "application/json");
             }
             catch (HttpRequestException)
             {
+                var room = roomStore.GetByChat(agentId ?? "mons", chatId);
+                if (room is not null)
+                {
+                    return Results.Content(roomStore.EnrichChatHistoryJson("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId), "application/json");
+                }
                 return Results.NotFound(new { message = $"Chat {chatId} not found on infra" });
             }
         })
@@ -244,11 +249,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     Channel = detectedChatChannel ?? request.Channel ?? "console"
                 };
 
-                using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
-                httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
-                httpContext.Response.StatusCode = (int)response.StatusCode;
-                await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(15), ct);
+                await ExecuteConsoleChatStreamWithRoomSupportAsync(
+                    effectiveRequest, agentTarget, effectiveSessionId, qwenPawSessionId, httpContext, client, ct);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
 
                 Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
@@ -365,12 +367,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     Channel = detectedChatChannel ?? request.Channel ?? "console"
                 };
 
-                using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
-                httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
-                httpContext.Response.StatusCode = (int)response.StatusCode;
-
-                await using var stream = await response.Content.ReadAsStreamAsync(ct);
-                await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
+                await ExecuteConsoleChatStreamWithRoomSupportAsync(
+                    effectiveRequest, agentTarget, effectiveSessionId, qwenPawSessionId, httpContext, client, ct);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
 
                 Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
@@ -524,15 +522,20 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("List all chat sessions for a specific agent")
         .AllowAnonymous();
 
-        group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, IQwenPawClient client, Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore, CancellationToken ct) =>
         {
             try
             {
                 var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
-                return Results.Content(historyRaw, "application/json");
+                return Results.Content(roomStore.EnrichChatHistoryJson(historyRaw, agentId, chatId), "application/json");
             }
             catch (HttpRequestException)
             {
+                var room = roomStore.GetByChat(agentId, chatId);
+                if (room is not null)
+                {
+                    return Results.Content(roomStore.EnrichChatHistoryJson("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId), "application/json");
+                }
                 return Results.NotFound(new { message = $"Chat {chatId} for agent {agentId} not found on infra" });
             }
         })
@@ -680,6 +683,80 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithName("GetAgentProfile")
         .WithSummary("Get agent profile details")
         .AllowAnonymous();
+    }
+
+    private static async Task ExecuteConsoleChatStreamWithRoomSupportAsync(
+        ConsoleChatSendRequestDto effectiveRequest,
+        string agentTarget,
+        string effectiveSessionId,
+        string qwenPawSessionId,
+        HttpContext httpContext,
+        IQwenPawClient client,
+        CancellationToken ct)
+    {
+        var rawUserText = effectiveRequest.Message;
+        if (string.IsNullOrWhiteSpace(rawUserText) && effectiveRequest.Input is { Count: > 0 })
+        {
+            rawUserText = effectiveRequest.Input[0].Content?.FirstOrDefault()?.Text ?? "";
+        }
+
+        var mentionedCollaborator = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborator(rawUserText, agentTarget);
+        if (!string.IsNullOrWhiteSpace(mentionedCollaborator))
+        {
+            var roomOrchestrator = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
+            httpContext.Response.ContentType = "text/event-stream";
+            httpContext.Response.Headers["X-Accel-Buffering"] = "no";
+            httpContext.Response.Headers.CacheControl = "no-cache";
+            await httpContext.Response.StartAsync(ct);
+
+            var ensuredRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, mentionedCollaborator, qwenPawSessionId, ct);
+            var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                @object = "room_event",
+                status = "collaborator_running",
+                collaborator_id = mentionedCollaborator,
+                room = ensuredRoom
+            });
+            await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
+            await httpContext.Response.Body.FlushAsync(ct);
+
+            var (completedRoom, collabTurn) = await roomOrchestrator.ExecuteCollaboratorTurnAsync(
+                agentTarget, effectiveSessionId, mentionedCollaborator, rawUserText ?? "", null, qwenPawSessionId, ct);
+
+            var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                @object = "room_turn",
+                status = completedRoom.Status,
+                collaborator_id = mentionedCollaborator,
+                room = completedRoom,
+                turn = collabTurn
+            });
+            await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
+            await httpContext.Response.Body.FlushAsync(ct);
+
+            var synthesizedInput = $"{rawUserText}\n\n[AGENTTEAMS COLLABORATION ROOM ({completedRoom.MatrixRoomId})]\nChuyên viên @{mentionedCollaborator} ({collabTurn.AuthorName}) đã xử lý trong Room và gửi phản hồi về phiên chat này:\n\"\n{collabTurn.Text}\n\"\nHãy dựa trên kết quả từ @{mentionedCollaborator} trong Room để phản hồi và tổng hợp kết quả cuối cùng cho người dùng.";
+            effectiveRequest = effectiveRequest with
+            {
+                Message = synthesizedInput,
+                Input =
+                [
+                    new ConsoleChatInputItem(
+                        "user",
+                        "message",
+                        [new ConsoleChatContentItem("text", synthesizedInput)])
+                ]
+            };
+        }
+
+        using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
+        if (!httpContext.Response.HasStarted)
+        {
+            httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
+            httpContext.Response.StatusCode = (int)response.StatusCode;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
     }
 
     /// <summary>Maps runtime transport/status failures to their real HTTP status instead of 500.</summary>
