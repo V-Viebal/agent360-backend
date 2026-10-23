@@ -92,14 +92,22 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("ListAgentSessionRooms")
             .WithSummary("List all AgentTeams collaboration rooms bound to chat sessions of this host agent");
 
-        agents.MapGet("chats/{chatId}/room", (string agentId, string chatId, HttpContext http) =>
+        agents.MapGet("chats/{chatId}/room", async (string agentId, string chatId, [FromQuery] bool? ensure, HttpContext http, CancellationToken ct) =>
             {
                 var roomStore = http.RequestServices.GetService<SessionRoomStore>() ?? new SessionRoomStore();
                 var room = roomStore.GetByChat(agentId, chatId);
+                if (room is null && ensure == true)
+                {
+                    var orchestrator = http.RequestServices.GetService<SessionRoomOrchestrator>();
+                    if (orchestrator is not null)
+                    {
+                        room = await orchestrator.EnsureRoomAsync(agentId, chatId, null, chatId, ct);
+                    }
+                }
                 return Results.Ok(new { active = room is not null, room });
             })
             .WithName("GetChatSessionRoom")
-            .WithSummary("Get the AgentTeams collaboration room bound to a specific chat session");
+            .WithSummary("Get (or ensure) the AgentTeams collaboration room bound to a specific chat session");
 
         agents.MapPost("chats/{chatId}/room/pull", async (
                 string agentId,
@@ -108,18 +116,16 @@ public sealed class SubAgentEndpoints : IEndpoint
                 HttpContext http,
                 CancellationToken ct) =>
             {
-                if (body is null || string.IsNullOrWhiteSpace(body.CollaboratorAgentId))
-                {
-                    return Results.Problem(detail: "collaborator_agent_id is required", statusCode: 400, title: "Invalid request");
-                }
                 var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
-                if (body.AutoDispatch && !string.IsNullOrWhiteSpace(body.Objective))
+                var collabId = body?.CollaboratorAgentId;
+                if (body?.AutoDispatch == true && !string.IsNullOrWhiteSpace(collabId) && !string.IsNullOrWhiteSpace(body.Objective))
                 {
                     var (dispatchedRoom, turn) = await orchestrator.ExecuteCollaboratorTurnAsync(
-                        agentId, chatId, body.CollaboratorAgentId, body.Objective, body.ContextSnippet, body.HostSessionId, ct);
+                        agentId, chatId, collabId, body.Objective, body.ContextSnippet, body.HostSessionId, ct);
                     return Results.Ok(new { room = dispatchedRoom, collaborator_turn = turn });
                 }
-                var room = await orchestrator.EnsureRoomAsync(agentId, chatId, body.CollaboratorAgentId, body.HostSessionId, ct);
+                var room = await orchestrator.EnsureRoomAsync(
+                    agentId, chatId, collabId, body?.HostSessionId, ct, body?.CollaboratorAgentIds);
                 return Results.Ok(new { room });
             })
             .WithName("PullAgentIntoChatRoom")

@@ -470,7 +470,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // 2. Dynamic Agent-Scoped Sub-routes
         // ==========================================
 
-        group.MapGet("{agentId}/chats", async (string agentId, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
+        group.MapGet("{agentId}/chats", async (string agentId, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
             try
             {
@@ -494,6 +494,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     {
                         var id = node["id"]?.ToString() ?? "";
                         var sid = node["session_id"]?.ToString() ?? "";
+                        httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>()?.BindSessionAlias(agentId, id, sid);
                         var rawStatus = node["status"]?.ToString() ?? "idle";
                         var isRunning = string.Equals(rawStatus, "running", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(rawStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
@@ -703,13 +704,35 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         }
 
         var mentionedCollaborators = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborators(rawUserText, agentTarget);
-        if (mentionedCollaborators.Count > 0)
+        var roomOrchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
+        if (roomOrchestrator is not null)
         {
-            var roomOrchestrator = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
             httpContext.Response.ContentType = "text/event-stream";
             httpContext.Response.Headers["X-Accel-Buffering"] = "no";
             httpContext.Response.Headers.CacheControl = "no-cache";
             await httpContext.Response.StartAsync(ct);
+
+            var baseRoom = await roomOrchestrator.EnsureRoomAsync(
+                agentTarget,
+                effectiveSessionId,
+                mentionedCollaborators.FirstOrDefault(),
+                qwenPawSessionId,
+                ct,
+                mentionedCollaborators);
+
+            var initRoomEvt = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                @object = "room_event",
+                status = mentionedCollaborators.Count > 0 ? "collaborator_running" : "active",
+                collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
+                room = baseRoom
+            });
+            await httpContext.Response.WriteAsync($"data: {initRoomEvt}\n\n", ct);
+            await httpContext.Response.Body.FlushAsync(ct);
+        }
+
+        if (mentionedCollaborators.Count > 0 && roomOrchestrator is not null)
+        {
 
             var accumulatedContext = new System.Text.StringBuilder();
             Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = null;

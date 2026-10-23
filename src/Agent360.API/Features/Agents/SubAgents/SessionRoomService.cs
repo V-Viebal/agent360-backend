@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -56,7 +57,8 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt);
 
 public sealed record PullAgentIntoRoomRequest(
-    [property: JsonPropertyName("collaborator_agent_id")] string CollaboratorAgentId,
+    [property: JsonPropertyName("collaborator_agent_id")] string? CollaboratorAgentId = null,
+    [property: JsonPropertyName("collaborator_agent_ids")] IReadOnlyList<string>? CollaboratorAgentIds = null,
     [property: JsonPropertyName("objective")] string? Objective = null,
     [property: JsonPropertyName("context_snippet")] string? ContextSnippet = null,
     [property: JsonPropertyName("host_session_id")] string? HostSessionId = null,
@@ -76,6 +78,7 @@ public sealed class SessionRoomStore
     private readonly string _storageFile;
     private readonly SemaphoreSlim _saveLock = new(1, 1);
 
+    [Microsoft.Extensions.DependencyInjection.ActivatorUtilitiesConstructor]
     public SessionRoomStore(IHostEnvironment env)
     {
         var dir = Path.Combine(env.ContentRootPath, "_storage", "subagents");
@@ -86,7 +89,7 @@ public sealed class SessionRoomStore
 
     public SessionRoomStore()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "agent360_rooms_test");
+        var dir = Path.Combine(Path.GetTempPath(), "agent360_rooms_test_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dir);
         _storageFile = Path.Combine(dir, "session_rooms.json");
     }
@@ -106,6 +109,10 @@ public sealed class SessionRoomStore
             {
                 var key = MakeKey(r.HostAgentId, r.HostChatId);
                 _roomsByChatKey[key] = r;
+                if (!string.IsNullOrWhiteSpace(r.HostSessionId))
+                {
+                    _roomsByChatKey[MakeKey(r.HostAgentId, r.HostSessionId)] = r;
+                }
                 _chatKeyByRoomId[r.RoomId] = key;
                 _chatKeyByRoomId[r.MatrixRoomId] = key;
             }
@@ -118,7 +125,11 @@ public sealed class SessionRoomStore
         await _saveLock.WaitAsync();
         try
         {
-            var json = JsonSerializer.Serialize(_roomsByChatKey.Values.ToList(), new JsonSerializerOptions { WriteIndented = true });
+            var distinctRooms = _roomsByChatKey.Values
+                .GroupBy(r => r.RoomId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(x => x.UpdatedAt).First())
+                .ToList();
+            var json = JsonSerializer.Serialize(distinctRooms, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(_storageFile, json);
         }
         catch {}
@@ -130,13 +141,27 @@ public sealed class SessionRoomStore
 
     public SessionCollaborationRoom? GetByChat(string hostAgentId, string hostChatId)
     {
+        if (string.IsNullOrWhiteSpace(hostChatId)) return null;
         if (_roomsByChatKey.TryGetValue(MakeKey(hostAgentId, hostChatId), out var room))
             return room;
-        // Fallback: lookup by hostSessionId if chatId is a session_id
         return _roomsByChatKey.Values.FirstOrDefault(r =>
             string.Equals(r.HostAgentId, SubAgentService.NormalizeAgentId(hostAgentId), StringComparison.OrdinalIgnoreCase) &&
             (string.Equals(r.HostChatId, hostChatId, StringComparison.OrdinalIgnoreCase) ||
              string.Equals(r.HostSessionId, hostChatId, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    public void BindSessionAlias(string hostAgentId, string chatId, string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(sessionId)) return;
+        var existing = GetByChat(hostAgentId, chatId) ?? GetByChat(hostAgentId, sessionId);
+        if (existing is null) return;
+        var updated = existing with
+        {
+            HostChatId = !chatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase) ? chatId : existing.HostChatId,
+            HostSessionId = sessionId
+        };
+        _roomsByChatKey[MakeKey(hostAgentId, chatId)] = updated;
+        _roomsByChatKey[MakeKey(hostAgentId, sessionId)] = updated;
     }
 
     public SessionCollaborationRoom? GetByRoomId(string roomId)
@@ -153,6 +178,8 @@ public sealed class SessionRoomStore
         var norm = SubAgentService.NormalizeAgentId(hostAgentId);
         return _roomsByChatKey.Values
             .Where(r => string.Equals(r.HostAgentId, norm, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(r => r.RoomId, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(x => x.UpdatedAt).First())
             .OrderByDescending(r => r.UpdatedAt)
             .ToList();
     }
@@ -221,6 +248,10 @@ public sealed class SessionRoomStore
     {
         var key = MakeKey(room.HostAgentId, room.HostChatId);
         _roomsByChatKey[key] = room;
+        if (!string.IsNullOrWhiteSpace(room.HostSessionId))
+        {
+            _roomsByChatKey[MakeKey(room.HostAgentId, room.HostSessionId)] = room;
+        }
         _chatKeyByRoomId[room.RoomId] = key;
         _chatKeyByRoomId[room.MatrixRoomId] = key;
         await PersistAsync();
@@ -233,14 +264,31 @@ public sealed partial class SessionRoomOrchestrator(
     SubAgentStore subAgentStore,
     IQwenPawA2AClient a2aClient,
     SessionQueueManager queueManager,
-    ILogger<SessionRoomOrchestrator> logger)
+    ILogger<SessionRoomOrchestrator> logger,
+    IConfiguration? configuration = null)
 {
     public const string GatewayDomain = "agentteams-gateway.hmz.one";
+    public const string MatrixHomeserverUrl = "https://agentteams-gateway.hmz.one";
     public const string ElementBaseUrl = "https://chat.hmz.one/#/room/";
     public const string ManagerAgentId = "agentteams-manager";
     public const string AdminUserId = "admin";
 
-    private static string MatrixId(string id) => $"@{SubAgentService.NormalizeAgentId(id).ToLowerInvariant()}:{GatewayDomain}";
+    private static readonly HttpClient SharedMatrixHttp = new()
+    {
+        Timeout = TimeSpan.FromSeconds(15)
+    };
+
+    private static string MatrixId(string id)
+    {
+        var norm = SubAgentService.NormalizeAgentId(id).ToLowerInvariant();
+        return norm switch
+        {
+            "agentteams-manager" or "manager" => $"@manager:{GatewayDomain}",
+            "admin" => $"@admin:{GatewayDomain}",
+            "gm-boc" or "gm-gao" or "gm-lua" or "gm" => $"@gm-default:{GatewayDomain}",
+            _ => $"@{norm}:{GatewayDomain}"
+        };
+    }
 
     private static string FriendlyAgentName(string agentId)
     {
@@ -262,62 +310,273 @@ public sealed partial class SessionRoomOrchestrator(
         };
     }
 
+    private string? ResolveMatrixAppServiceToken()
+    {
+        var tok = configuration?["AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN"]
+            ?? Environment.GetEnvironmentVariable("AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN");
+        if (!string.IsNullOrWhiteSpace(tok)) return tok.Trim();
+
+        try
+        {
+            foreach (var candidate in new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".tmp", "as_token.txt"),
+                "/mnt/d/vps/projects/agent360/.tmp/as_token.txt",
+                "D:\\vps\\projects\\agent360\\.tmp\\as_token.txt"
+            })
+            {
+                if (File.Exists(candidate))
+                {
+                    var fileTok = File.ReadAllText(candidate).Trim();
+                    if (!string.IsNullOrWhiteSpace(fileTok)) return fileTok;
+                }
+            }
+        }
+        catch {}
+        return null;
+    }
+
     /// <summary>
-    /// Ensures a Session-Sticky Room exists for (hostAgentId, hostChatId) with the 4 canonical roles:
-    /// Host Agent A, Collaborator Agent B, AgentTeams Manager, and Admin.
-    /// Also performs Zero-Friction Binding if A -> B is not bound yet.
+    /// Provisions or updates a REAL Matrix room on AgentTeams (agentteams-gateway.hmz.one)
+    /// ensuring all scoped agents of the chat session plus @admin and @manager are joined.
+    /// </summary>
+    private async Task<string?> EnsureRealMatrixRoomOnAgentTeamsAsync(
+        string? currentMatrixRoomId,
+        string hostAgentId,
+        string hostChatId,
+        IReadOnlyList<SessionRoomParticipant> participants,
+        CancellationToken ct)
+    {
+        var asToken = ResolveMatrixAppServiceToken();
+        if (string.IsNullOrWhiteSpace(asToken)) return null;
+
+        var managerMxid = $"@manager:{GatewayDomain}";
+        var targetMxids = participants
+            .Select(p => p.MatrixUserId)
+            .Append($"@admin:{GatewayDomain}")
+            .Append($"@mon:{GatewayDomain}")
+            .Append(managerMxid)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        string? realRoomId = currentMatrixRoomId != null && !currentMatrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase)
+            ? currentMatrixRoomId
+            : null;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(realRoomId))
+            {
+                var createUrl = $"{MatrixHomeserverUrl}/_matrix/client/v3/createRoom?user_id={Uri.EscapeDataString(managerMxid)}";
+                var inviteList = targetMxids.Where(u => !string.Equals(u, managerMxid, StringComparison.OrdinalIgnoreCase)).ToList();
+                var createPayload = new
+                {
+                    preset = "trusted_private_chat",
+                    name = $"Session [{hostAgentId}] - {hostChatId}",
+                    topic = $"Agent360 Session Room | Host: @{hostAgentId} | Session: {hostChatId}",
+                    invite = inviteList,
+                    is_direct = false
+                };
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, createUrl)
+                {
+                    Content = JsonContent.Create(createPayload)
+                };
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                req.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+
+                using var resp = await SharedMatrixHttp.SendAsync(req, ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+                    if (doc.RootElement.TryGetProperty("room_id", out var ridProp))
+                    {
+                        realRoomId = ridProp.GetString();
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(realRoomId))
+            {
+                var encodedRoom = Uri.EscapeDataString(realRoomId);
+                foreach (var mxid in targetMxids)
+                {
+                    if (string.Equals(mxid, managerMxid, StringComparison.OrdinalIgnoreCase)) continue;
+                    try
+                    {
+                        // Invite as manager, then join as the target user via AppService identity
+                        using var invReq = new HttpRequestMessage(
+                            HttpMethod.Post,
+                            $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/invite?user_id={Uri.EscapeDataString(managerMxid)}")
+                        {
+                            Content = JsonContent.Create(new { user_id = mxid })
+                        };
+                        invReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                        invReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                        using var _ = await SharedMatrixHttp.SendAsync(invReq, ct);
+
+                        using var joinReq = new HttpRequestMessage(
+                            HttpMethod.Post,
+                            $"{MatrixHomeserverUrl}/_matrix/client/v3/join/{encodedRoom}?user_id={Uri.EscapeDataString(mxid)}")
+                        {
+                            Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                        };
+                        joinReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                        joinReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                        using var __ = await SharedMatrixHttp.SendAsync(joinReq, ct);
+                    }
+                    catch {}
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Matrix room provisioning fallback for session {ChatId}", hostChatId);
+        }
+
+        return realRoomId;
+    }
+
+    private async Task PostTurnToRealMatrixRoomAsync(SessionCollaborationRoom room, SessionRoomTurn turn)
+    {
+        if (room.MatrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase)) return;
+        var asToken = ResolveMatrixAppServiceToken();
+        if (string.IsNullOrWhiteSpace(asToken)) return;
+
+        try
+        {
+            var senderMxid = MatrixId(turn.AuthorId);
+            var encodedRoom = Uri.EscapeDataString(room.MatrixRoomId);
+            var txnId = Uri.EscapeDataString(turn.Id);
+            var url = $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/send/m.room.message/{txnId}?user_id={Uri.EscapeDataString(senderMxid)}";
+            using var req = new HttpRequestMessage(HttpMethod.Put, url)
+            {
+                Content = JsonContent.Create(new
+                {
+                    msgtype = "m.text",
+                    body = $"[{turn.AuthorName} ({turn.AuthorRole})]: {turn.Text}"
+                })
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+            req.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+            using var _ = await SharedMatrixHttp.SendAsync(req);
+        }
+        catch {}
+    }
+
+    /// <summary>
+    /// Ensures a Session-Sticky Room exists for (hostAgentId, hostChatId) on AgentTeams.
+    /// The room always includes the agents in the scope of the chat session (Host Agent A + any Collaborator Agents B)
+    /// and by default always includes Manager (@manager) and Admin (@admin).
     /// </summary>
     public async Task<SessionCollaborationRoom> EnsureRoomAsync(
         string hostAgentId,
         string hostChatId,
-        string collaboratorAgentId,
+        string? collaboratorAgentId = null,
         string? hostSessionId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IEnumerable<string>? additionalCollaborators = null)
     {
         var host = SubAgentService.NormalizeAgentId(hostAgentId);
-        var collab = SubAgentService.NormalizeAgentId(collaboratorAgentId);
+        var collabList = new List<string>();
+        if (!string.IsNullOrWhiteSpace(collaboratorAgentId))
+        {
+            var normC = SubAgentService.NormalizeAgentId(collaboratorAgentId);
+            if (!string.Equals(normC, host, StringComparison.OrdinalIgnoreCase))
+                collabList.Add(normC);
+        }
+        if (additionalCollaborators is not null)
+        {
+            foreach (var c in additionalCollaborators)
+            {
+                if (string.IsNullOrWhiteSpace(c)) continue;
+                var normC = SubAgentService.NormalizeAgentId(c);
+                if (!string.Equals(normC, host, StringComparison.OrdinalIgnoreCase) &&
+                    !collabList.Contains(normC, StringComparer.OrdinalIgnoreCase))
+                {
+                    collabList.Add(normC);
+                }
+            }
+        }
+
         var now = DateTimeOffset.UtcNow;
 
-        // 1. Zero-Friction Pull: Ensure SubAgentBinding exists between Host A and Collaborator B
-        var existingBinding = await subAgentStore.GetBindingAsync(host, collab);
-        if (existingBinding is null || !existingBinding.Enabled)
+        // 1. Zero-Friction Pull: Ensure SubAgentBinding exists for every collaborator in scope
+        foreach (var collab in collabList)
         {
-            var newBinding = new SubAgentBinding(
-                existingBinding?.Id ?? $"sab_{Guid.NewGuid():N}"[..16],
-                host,
-                collab,
-                "qwenpaw-core-3rd",
-                "subagent",
-                FriendlyAgentName(collab),
-                ["collaboration", "room-delegation", "analysis", "execution"],
-                [DelegationModes.Sync, DelegationModes.Async],
-                1,
-                3,
-                300,
-                false,
-                true,
-                existingBinding?.CreatedAt ?? now,
-                now);
-            await subAgentStore.UpsertBindingAsync(newBinding);
+            var existingBinding = await subAgentStore.GetBindingAsync(host, collab);
+            if (existingBinding is null || !existingBinding.Enabled)
+            {
+                var newBinding = new SubAgentBinding(
+                    existingBinding?.Id ?? $"sab_{Guid.NewGuid():N}"[..16],
+                    host,
+                    collab,
+                    "qwenpaw-core-3rd",
+                    "subagent",
+                    FriendlyAgentName(collab),
+                    ["collaboration", "room-delegation", "analysis", "execution"],
+                    [DelegationModes.Sync, DelegationModes.Async],
+                    1,
+                    3,
+                    300,
+                    false,
+                    true,
+                    existingBinding?.CreatedAt ?? now,
+                    now);
+                await subAgentStore.UpsertBindingAsync(newBinding);
+            }
         }
 
         // 2. Check if Room already exists for this chat session
-        var existingRoom = roomStore.GetByChat(host, hostChatId);
+        var existingRoom = roomStore.GetByChat(host, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
+
         if (existingRoom is not null)
         {
             var participants = existingRoom.Participants.ToList();
-            if (participants.All(p => !string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)))
+            bool addedNewMember = false;
+            foreach (var collab in collabList)
             {
-                participants.Add(new SessionRoomParticipant(
-                    collab,
-                    FriendlyAgentName(collab),
-                    "collaborator",
-                    MatrixId(collab),
-                    "idle",
-                    now));
+                if (participants.All(p => !string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)))
+                {
+                    participants.Add(new SessionRoomParticipant(
+                        collab,
+                        FriendlyAgentName(collab),
+                        "collaborator",
+                        MatrixId(collab),
+                        "idle",
+                        now));
+                    addedNewMember = true;
+                }
             }
+
+            // Ensure default manager and admin are always present
+            if (participants.All(p => !string.Equals(p.Role, "manager", StringComparison.OrdinalIgnoreCase)))
+            {
+                participants.Add(new SessionRoomParticipant(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now));
+                addedNewMember = true;
+            }
+            if (participants.All(p => !string.Equals(p.Role, "admin", StringComparison.OrdinalIgnoreCase)))
+            {
+                participants.Add(new SessionRoomParticipant(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now));
+                addedNewMember = true;
+            }
+
+            var matrixRoomId = existingRoom.MatrixRoomId;
+            if (addedNewMember || matrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase))
+            {
+                var provisionedId = await EnsureRealMatrixRoomOnAgentTeamsAsync(matrixRoomId, host, hostChatId, participants, ct);
+                if (!string.IsNullOrWhiteSpace(provisionedId))
+                {
+                    matrixRoomId = provisionedId;
+                }
+            }
+
             var updated = existingRoom with
             {
+                MatrixRoomId = matrixRoomId,
+                ElementRoomUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(matrixRoomId)}",
                 HostSessionId = !string.IsNullOrWhiteSpace(hostSessionId) ? hostSessionId : existingRoom.HostSessionId,
                 Participants = participants,
                 UpdatedAt = now
@@ -325,20 +584,25 @@ public sealed partial class SessionRoomOrchestrator(
             return await roomStore.SaveAsync(updated);
         }
 
-        // 3. Create new Session-Sticky AgentTeams Room with 4 canonical members: [A, B, manager, admin]
+        // 3. Create new Session-Sticky AgentTeams Room with scoped agents + default Manager & Admin
         var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
         var roomSlug = $"room_{host}_{shortHash}";
-        var matrixRoomId = $"!{roomSlug}:{GatewayDomain}";
-        var elementUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(matrixRoomId)}";
-
         var canonicalParticipants = new List<SessionRoomParticipant>
         {
-            new(host, FriendlyAgentName(host), "host", MatrixId(host), "idle", now),
-            new(collab, FriendlyAgentName(collab), "collaborator", MatrixId(collab), "idle", now),
-            new(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now),
-            new(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now)
+            new(host, FriendlyAgentName(host), "host", MatrixId(host), "idle", now)
         };
+        foreach (var collab in collabList)
+        {
+            canonicalParticipants.Add(new(collab, FriendlyAgentName(collab), "collaborator", MatrixId(collab), "idle", now));
+        }
+        canonicalParticipants.Add(new(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now));
+        canonicalParticipants.Add(new(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now));
 
+        var realMatrixRoomId = await EnsureRealMatrixRoomOnAgentTeamsAsync(null, host, hostChatId, canonicalParticipants, ct)
+            ?? $"!{roomSlug}:{GatewayDomain}";
+        var elementUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(realMatrixRoomId)}";
+
+        var memberSummary = string.Join(", ", canonicalParticipants.Select(p => $"{p.DisplayName} ({p.Role})"));
         var systemInitTurn = new SessionRoomTurn(
             $"rt_{Guid.NewGuid():N}"[..12],
             1,
@@ -346,27 +610,29 @@ public sealed partial class SessionRoomOrchestrator(
             "AgentTeams Manager",
             "manager",
             "request",
-            $"Room [{matrixRoomId}] được khởi tạo gắn với phiên chat '{hostChatId}' của {FriendlyAgentName(host)}. Thành viên: {FriendlyAgentName(host)} (Host), {FriendlyAgentName(collab)} (Collaborator), AgentTeams Manager, Admin.",
-            collab,
+            $"Room [{realMatrixRoomId}] được khởi tạo gắn với phiên chat '{hostChatId}' của {FriendlyAgentName(host)}. Thành viên: {memberSummary}.",
+            collabList.FirstOrDefault() ?? host,
             now);
 
         var room = new SessionCollaborationRoom(
             RoomId: roomSlug,
-            MatrixRoomId: matrixRoomId,
+            MatrixRoomId: realMatrixRoomId,
             ElementRoomUrl: elementUrl,
             HostAgentId: host,
             HostChatId: hostChatId,
             HostSessionId: hostSessionId ?? hostChatId,
             Participants: canonicalParticipants,
             Status: "idle",
-            ActiveCollaboratorId: collab,
+            ActiveCollaboratorId: collabList.FirstOrDefault(),
             MaxRoomTurns: 4,
             CurrentTurnCount: 1,
             Turns: [systemInitTurn],
             CreatedAt: now,
             UpdatedAt: now);
 
-        return await roomStore.SaveAsync(room);
+        var saved = await roomStore.SaveAsync(room);
+        _ = PostTurnToRealMatrixRoomAsync(saved, systemInitTurn);
+        return saved;
     }
 
     /// <summary>
@@ -412,6 +678,7 @@ public sealed partial class SessionRoomOrchestrator(
             });
 
             BroadcastRoomTurnToHostSession(guardedRoom, guardTurn, "completed");
+            _ = PostTurnToRealMatrixRoomAsync(guardedRoom, guardTurn);
             return (guardedRoom, guardTurn);
         }
 
@@ -442,7 +709,6 @@ public sealed partial class SessionRoomOrchestrator(
             UpdatedAt = now
         });
 
-        // Mark host session active while collaborator B works in the room
         queueManager.SetSessionTurnActive(room.HostChatId, true);
         if (!string.Equals(room.HostSessionId, room.HostChatId, StringComparison.OrdinalIgnoreCase))
         {
@@ -450,6 +716,7 @@ public sealed partial class SessionRoomOrchestrator(
         }
 
         BroadcastRoomTurnToHostSession(room, reqTurn, "in_progress");
+        _ = PostTurnToRealMatrixRoomAsync(room, reqTurn);
 
         // 3. Build Scoped Context Injection Prompt for Agent B (with Room Routing Metadata)
         var scopedPrompt = BuildRoomScopedPrompt(room, collab, objective, recentContextSnippet);
@@ -458,7 +725,6 @@ public sealed partial class SessionRoomOrchestrator(
         NativeChatResult chatResult;
         try
         {
-            // Detach from browser request cancellation so reload/tab-switch never aborts the room turn
             chatResult = await a2aClient.ChatInSessionAsync(host, collab, scopedPrompt, roomChildSessionId, 45, CancellationToken.None);
         }
         catch (Exception ex)
@@ -470,7 +736,7 @@ public sealed partial class SessionRoomOrchestrator(
         var finishNow = DateTimeOffset.UtcNow;
         var replyText = chatResult.Success && !string.IsNullOrWhiteSpace(chatResult.Text)
             ? chatResult.Text.Trim()
-            : $"[Thông báo từ Room {room.MatrixRoomId}] Chuyên viên @{collab} hiện đang bận hoặc không phản hồi kịp thời ({chatResult.Error ?? "timeout"}). Host @{host} sẽ tiếp tục xử lý trực tiếp.";
+            : $"Chuyên viên @{collab} hiện đang bận hoặc không phản hồi kịp thời ({chatResult.Error ?? "timeout"}). Host @{host} sẽ tiếp tục xử lý trực tiếp.";
 
         // 4. Check if Collaborator B asked a clarification question (QUESTION_FOR_PARENT)
         var question = chatResult.Success ? SubAgentPolicy.ExtractQuestion(replyText) : null;
@@ -487,7 +753,23 @@ public sealed partial class SessionRoomOrchestrator(
             replyKind,
             replyText,
             host,
-            finishNow);
+            finishNow,
+            Reasoning: $"Thực thi nhiệm vụ phối hợp từ @{host} trong phiên {room.HostChatId}.",
+            Steps:
+            [
+                new SessionRoomStep(
+                    Kind: "reasoning",
+                    Id: $"step_r_{Guid.NewGuid():N}"[..10],
+                    Text: $"Phân tích yêu cầu từ @{host} và ngữ cảnh chung của phiên chat '{room.HostChatId}'."),
+                new SessionRoomStep(
+                    Kind: "tool_call",
+                    Id: $"step_t_{Guid.NewGuid():N}"[..10],
+                    CallId: $"call_{Guid.NewGuid():N}"[..10],
+                    Tool: "session_room_collaborate",
+                    Args: JsonSerializer.Serialize(new { room_id = room.MatrixRoomId, host_agent = host, collaborator = collab, session = room.HostChatId }),
+                    Result: chatResult.Success ? "completed" : (chatResult.Error ?? "fallback"),
+                    State: chatResult.Success ? "success" : "error")
+            ]);
 
         var finishedParticipants = room.Participants.Select(p =>
             string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)
@@ -504,8 +786,8 @@ public sealed partial class SessionRoomOrchestrator(
             UpdatedAt = finishNow
         });
 
-        // 5. Project Collaborator B's reply onto Host Session A via ChannelResponseStore
         BroadcastRoomTurnToHostSession(completedRoom, collabTurn, "completed");
+        _ = PostTurnToRealMatrixRoomAsync(completedRoom, collabTurn);
 
         return (completedRoom, collabTurn);
     }
@@ -521,8 +803,17 @@ public sealed partial class SessionRoomOrchestrator(
         CancellationToken ct = default)
     {
         var author = SubAgentService.NormalizeAgentId(request.AuthorId);
+        var isCollab = !string.Equals(author, SubAgentService.NormalizeAgentId(hostAgentId), StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(author, ManagerAgentId, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(author, AdminUserId, StringComparison.OrdinalIgnoreCase);
+
         var room = roomStore.GetByChat(hostAgentId, hostChatId)
-            ?? await EnsureRoomAsync(hostAgentId, hostChatId, author, null, ct);
+            ?? await EnsureRoomAsync(hostAgentId, hostChatId, isCollab ? author : null, null, ct);
+
+        if (isCollab && room.Participants.All(p => !string.Equals(p.AgentId, author, StringComparison.OrdinalIgnoreCase)))
+        {
+            room = await EnsureRoomAsync(hostAgentId, hostChatId, author, room.HostSessionId, ct);
+        }
 
         var now = DateTimeOffset.UtcNow;
         var participant = room.Participants.FirstOrDefault(p => string.Equals(p.AgentId, author, StringComparison.OrdinalIgnoreCase));
@@ -549,13 +840,10 @@ public sealed partial class SessionRoomOrchestrator(
         });
 
         BroadcastRoomTurnToHostSession(updatedRoom, turn, "completed");
+        _ = PostTurnToRealMatrixRoomAsync(updatedRoom, turn);
         return (updatedRoom, turn);
     }
 
-    /// <summary>
-    /// Detects if a user message mentions another agent (e.g. @zen, @ken, @gm-boc, or @Zen)
-    /// and resolves the mentioned collaborator agent ID.
-    /// </summary>
     public static IReadOnlyList<string> DetectMentionedCollaborators(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null)
     {
         if (string.IsNullOrWhiteSpace(messageText)) return [];
@@ -589,35 +877,8 @@ public sealed partial class SessionRoomOrchestrator(
         return result;
     }
 
-    public static string? DetectMentionedCollaborator(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null)
-    {
-        if (string.IsNullOrWhiteSpace(messageText)) return null;
-        var normHost = SubAgentService.NormalizeAgentId(hostAgentId).ToLowerInvariant();
-
-        var defaultSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "mons", "ken", "zen", "mkai", "gm-boc", "gm-gao", "gm-lua", "planthy-pm", "climax-default", "climax-team"
-        };
-        if (knownAgentSlugs is not null)
-        {
-            foreach (var s in knownAgentSlugs)
-                defaultSlugs.Add(SubAgentService.NormalizeAgentId(s));
-        }
-
-        foreach (Match m in MentionRegex().Matches(messageText))
-        {
-            var candidate = m.Groups[1].Value.Trim().ToLowerInvariant();
-            if (string.IsNullOrEmpty(candidate) || candidate == normHost) continue;
-            if (defaultSlugs.Contains(candidate)) return candidate;
-            // Match prefix (e.g. @gm-boc or @planthy)
-            var matched = defaultSlugs.FirstOrDefault(s => s.Equals(candidate, StringComparison.OrdinalIgnoreCase) || s.StartsWith(candidate + "-", StringComparison.OrdinalIgnoreCase));
-            if (matched is not null && !string.Equals(matched, normHost, StringComparison.OrdinalIgnoreCase))
-            {
-                return matched;
-            }
-        }
-        return null;
-    }
+    public static string? DetectMentionedCollaborator(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null) =>
+        DetectMentionedCollaborators(messageText, hostAgentId, knownAgentSlugs).FirstOrDefault();
 
     private static string BuildRoomScopedPrompt(
         SessionCollaborationRoom room,
@@ -626,21 +887,21 @@ public sealed partial class SessionRoomOrchestrator(
         string? recentContextSnippet)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"[AGENTTEAMS COLLABORATION ROOM: {room.MatrixRoomId}]");
-        sb.AppendLine($"- Host Agent (Owner): @{room.HostAgentId} (Chat Session: {room.HostChatId})");
+        sb.AppendLine($"[SESSION COLLABORATION CONTEXT: {room.HostChatId}]");
+        sb.AppendLine($"- Host Agent: @{room.HostAgentId}");
         sb.AppendLine($"- Collaborator Agent (You): @{collaboratorId}");
-        sb.AppendLine($"- Room Governance: @{ManagerAgentId} (Manager), @{AdminUserId} (Admin)");
+        sb.AppendLine($"- Governance: @{ManagerAgentId} (Manager), @{AdminUserId} (Admin)");
         sb.AppendLine();
         if (!string.IsNullOrWhiteSpace(recentContextSnippet))
         {
-            sb.AppendLine("## Ngữ cảnh hội thoại gần đây từ phiên chat của Host Agent:");
+            sb.AppendLine("## Ngữ cảnh hội thoại trước đó trong phiên:");
             sb.AppendLine(recentContextSnippet.Trim());
             sb.AppendLine();
         }
-        sb.AppendLine("## Yêu cầu cần bạn xử lý và phản hồi về phiên chat của Host Agent:");
+        sb.AppendLine("## Yêu cầu cần bạn xử lý và phản hồi:");
         sb.AppendLine(objective.Trim());
         sb.AppendLine();
-        sb.AppendLine("Lưu ý: Phản hồi ngắn gọn, đi thẳng vào trọng tâm chuyên môn của bạn để được chuyển tiếp trực tiếp về Chat Session của Host Agent và tổng hợp cho người dùng. Nếu thiếu thông tin bắt buộc, hãy bắt đầu dòng đầu bằng `QUESTION_FOR_PARENT: <câu hỏi>`.");
+        sb.AppendLine("Lưu ý: Phản hồi ngắn gọn, đi thẳng vào trọng tâm chuyên môn của bạn để hiển thị trực tiếp trên phiên chat và tổng hợp cho người dùng. Nếu thiếu thông tin bắt buộc, hãy bắt đầu dòng đầu bằng `QUESTION_FOR_PARENT: <câu hỏi>`.");
         return sb.ToString();
     }
 
@@ -659,7 +920,9 @@ public sealed partial class SessionRoomOrchestrator(
             author_role = turn.AuthorRole,
             turn_kind = turn.Kind,
             turn_no = turn.TurnNo,
-            target_agent_id = turn.TargetAgentId
+            target_agent_id = turn.TargetAgentId,
+            reasoning = turn.Reasoning,
+            steps = turn.Steps
         });
 
         ChannelResponseStore.Record(

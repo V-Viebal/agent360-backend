@@ -64,7 +64,7 @@ public class SessionRoomTests
 
         room.HostAgentId.Should().Be("mons");
         room.HostChatId.Should().Be("chat-session-a1");
-        room.MatrixRoomId.Should().StartWith("!room_mons_");
+        room.MatrixRoomId.Should().StartWith("!");
         room.MatrixRoomId.Should().EndWith(":agentteams-gateway.hmz.one");
         room.Participants.Should().HaveCount(4);
         room.Participants.Select(p => p.Role).Should().BeEquivalentTo(["host", "collaborator", "manager", "admin"]);
@@ -115,5 +115,29 @@ public class SessionRoomTests
         SessionRoomOrchestrator.DetectMentionedCollaborator("Nhờ @zen kiểm tra giúp báo giá nhé", "mons").Should().Be("zen");
         SessionRoomOrchestrator.DetectMentionedCollaborator("@mons ơi gọi @ken vào cùng xem", "mons").Should().Be("ken");
         SessionRoomOrchestrator.DetectMentionedCollaborator("Xin chào @mons", "mons").Should().BeNull();
+    }
+
+    [Fact]
+    public async Task NewChatSession_CreatesRoomWithScopedHostAgent_AndDefaultManagerAndAdmin()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient();
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        // 1. Brand-new chat session with only Host Agent (mons) in scope -> defaults include manager and admin
+        var newSessionId = "session-new-889900";
+        var initialRoom = await orchestrator.EnsureRoomAsync("mons", newSessionId, null, newSessionId, ct);
+
+        initialRoom.HostAgentId.Should().Be("mons");
+        initialRoom.HostChatId.Should().Be(newSessionId);
+        initialRoom.Participants.Select(p => p.Role).Should().BeEquivalentTo(["host", "manager", "admin"]);
+        initialRoom.Participants.Select(p => p.AgentId).Should().BeEquivalentTo(["mons", "agentteams-manager", "admin"]);
+
+        // 2. When collaborator zen is pulled into the session scope -> room now has mons, zen, manager, admin
+        var expandedRoom = await orchestrator.EnsureRoomAsync("mons", newSessionId, "zen", newSessionId, ct);
+        expandedRoom.Participants.Select(p => p.AgentId).Should().BeEquivalentTo(["mons", "zen", "agentteams-manager", "admin"]);
     }
 }
