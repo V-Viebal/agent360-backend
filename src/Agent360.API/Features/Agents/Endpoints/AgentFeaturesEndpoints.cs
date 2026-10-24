@@ -813,6 +813,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         SemaphoreSlim sessionLock,
         CancellationToken ct)
     {
+        var upstreamCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         var rawUserText = effectiveRequest.Message;
         if (string.IsNullOrWhiteSpace(rawUserText) && effectiveRequest.Input is { Count: > 0 })
         {
@@ -821,54 +822,84 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         var mentionedCollaborators = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborators(rawUserText, agentTarget);
         var roomOrchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
-        if (roomOrchestrator is not null)
+
+        if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null)
         {
-            httpContext.Response.ContentType = "text/event-stream";
-            httpContext.Response.Headers["X-Accel-Buffering"] = "no";
-            httpContext.Response.Headers.CacheControl = "no-cache";
-            await httpContext.Response.StartAsync(ct);
+            // Non-collaborator turn: dispatch room provisioning/title sync in background so QwenPaw receives the prompt with 0ms delay
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var bgRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, null, qwenPawSessionId, CancellationToken.None);
+                    if (string.IsNullOrWhiteSpace(bgRoom.RoomTitle) && !string.IsNullOrWhiteSpace(rawUserText))
+                    {
+                        await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, CancellationToken.None);
+                    }
+                }
+                catch {}
+            });
+        }
+        else if (mentionedCollaborators.Count > 0 && roomOrchestrator is not null)
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                httpContext.Response.ContentType = "text/event-stream";
+                httpContext.Response.Headers["X-Accel-Buffering"] = "no";
+                httpContext.Response.Headers.CacheControl = "no-cache";
+                try { await httpContext.Response.StartAsync(ct); } catch {}
+            }
 
             var baseRoom = await roomOrchestrator.EnsureRoomAsync(
                 agentTarget,
                 effectiveSessionId,
                 mentionedCollaborators.FirstOrDefault(),
                 qwenPawSessionId,
-                ct,
+                upstreamCts.Token,
                 mentionedCollaborators);
             if (string.IsNullOrWhiteSpace(baseRoom.RoomTitle) && !string.IsNullOrWhiteSpace(rawUserText))
             {
-                baseRoom = await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, ct) ?? baseRoom;
+                baseRoom = await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, upstreamCts.Token) ?? baseRoom;
             }
 
-            var initRoomEvt = System.Text.Json.JsonSerializer.Serialize(new
+            if (!ct.IsCancellationRequested)
             {
-                @object = "room_event",
-                status = mentionedCollaborators.Count > 0 ? "collaborator_running" : "active",
-                collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
-                room = baseRoom
-            });
-            await httpContext.Response.WriteAsync($"data: {initRoomEvt}\n\n", ct);
-            await httpContext.Response.Body.FlushAsync(ct);
-        }
-
-        if (mentionedCollaborators.Count > 0 && roomOrchestrator is not null)
-        {
+                var initRoomEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_event",
+                    status = "collaborator_running",
+                    collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
+                    room = baseRoom
+                });
+                try
+                {
+                    await httpContext.Response.WriteAsync($"data: {initRoomEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                }
+                catch {}
+            }
 
             var accumulatedContext = new System.Text.StringBuilder();
             Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = null;
 
             foreach (var mentionedCollaborator in mentionedCollaborators)
             {
-                var ensuredRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, mentionedCollaborator, qwenPawSessionId, ct);
-                var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
+                var ensuredRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, mentionedCollaborator, qwenPawSessionId, upstreamCts.Token);
+                if (!ct.IsCancellationRequested)
                 {
-                    @object = "room_event",
-                    status = "collaborator_running",
-                    collaborator_id = mentionedCollaborator,
-                    room = ensuredRoom
-                });
-                await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
-                await httpContext.Response.Body.FlushAsync(ct);
+                    var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        @object = "room_event",
+                        status = "collaborator_running",
+                        collaborator_id = mentionedCollaborator,
+                        room = ensuredRoom
+                    });
+                    try
+                    {
+                        await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
+                        await httpContext.Response.Body.FlushAsync(ct);
+                    }
+                    catch {}
+                }
 
                 var (completedRoom, collabTurn) = await roomOrchestrator.ExecuteCollaboratorTurnAsync(
                     agentTarget,
@@ -877,25 +908,31 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     rawUserText ?? "",
                     accumulatedContext.Length > 0 ? accumulatedContext.ToString() : null,
                     qwenPawSessionId,
-                    ct);
+                    upstreamCts.Token);
 
                 latestRoom = completedRoom;
                 accumulatedContext.AppendLine($"- @{mentionedCollaborator} ({collabTurn.AuthorName}): {collabTurn.Text}");
 
-                var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+                if (!ct.IsCancellationRequested)
                 {
-                    @object = "room_turn",
-                    status = completedRoom.Status,
-                    collaborator_id = mentionedCollaborator,
-                    room = completedRoom,
-                    turn = collabTurn
-                });
-                await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
-                await httpContext.Response.Body.FlushAsync(ct);
+                    var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        @object = "room_turn",
+                        status = completedRoom.Status,
+                        collaborator_id = mentionedCollaborator,
+                        room = completedRoom,
+                        turn = collabTurn
+                    });
+                    try
+                    {
+                        await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
+                        await httpContext.Response.Body.FlushAsync(ct);
+                    }
+                    catch {}
+                }
             }
 
-            // Emit host synthesizing event so UI shows Host Agent A is now responding
-            if (latestRoom is not null)
+            if (latestRoom is not null && !ct.IsCancellationRequested)
             {
                 var hostSynthEvt = System.Text.Json.JsonSerializer.Serialize(new
                 {
@@ -904,8 +941,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     collaborator_id = agentTarget,
                     room = latestRoom
                 });
-                await httpContext.Response.WriteAsync($"data: {hostSynthEvt}\n\n", ct);
-                await httpContext.Response.Body.FlushAsync(ct);
+                try
+                {
+                    await httpContext.Response.WriteAsync($"data: {hostSynthEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                }
+                catch {}
             }
 
             var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nCác chuyên viên trong phiên đã lần lượt phản hồi:\n{accumulatedContext}\nHãy dựa trên ngữ cảnh chung và các phản hồi trên để tổng hợp kết quả cuối cùng cho người dùng.";
@@ -921,8 +962,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 ]
             };
         }
-
-        var upstreamCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
         HttpResponseMessage? response = null;
         Stream? stream = null;
         try
