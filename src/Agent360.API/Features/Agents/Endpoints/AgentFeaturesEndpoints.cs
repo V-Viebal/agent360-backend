@@ -922,6 +922,46 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 catch {}
             }
 
+            var recentSessionHistory = new System.Text.StringBuilder();
+            try
+            {
+                var histRaw = await client.GetChatHistoryRawAsync(effectiveSessionId, agentTarget, upstreamCts.Token);
+                if (!string.IsNullOrWhiteSpace(histRaw))
+                {
+                    using var hDoc = System.Text.Json.JsonDocument.Parse(histRaw);
+                    if (hDoc.RootElement.TryGetProperty("messages", out var mArr) && mArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var textTurns = new List<(string Role, string Text)>();
+                        foreach (var item in mArr.EnumerateArray())
+                        {
+                            var mType = item.TryGetProperty("type", out var tP) ? tP.GetString() : "message";
+                            if (mType is not (null or "" or "message")) continue;
+                            var mRole = item.TryGetProperty("role", out var rP) ? rP.GetString() ?? "assistant" : "assistant";
+                            string? mText = null;
+                            if (item.TryGetProperty("content", out var cP))
+                            {
+                                if (cP.ValueKind == System.Text.Json.JsonValueKind.String)
+                                    mText = cP.GetString();
+                                else if (cP.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                    mText = string.Join("\n", cP.EnumerateArray().Where(x => !x.TryGetProperty("type", out var tp) || tp.GetString() == "text").Select(x => x.TryGetProperty("text", out var tx) ? tx.GetString() : null).Where(x => !string.IsNullOrWhiteSpace(x)));
+                            }
+                            if (!string.IsNullOrWhiteSpace(mText))
+                            {
+                                var idx = mText.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                                if (idx >= 0) mText = mText[..idx].TrimEnd();
+                                if (mText.Length > 360) mText = mText[..360] + "...";
+                                textTurns.Add((mRole == "user" ? "Người dùng" : $"Host (@{agentTarget})", mText.Trim()));
+                            }
+                        }
+                        foreach (var (speaker, snippet) in textTurns.TakeLast(5))
+                        {
+                            recentSessionHistory.AppendLine($"- {speaker}: {snippet}");
+                        }
+                    }
+                }
+            }
+            catch {}
+
             var accumulatedContext = new System.Text.StringBuilder();
             Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = null;
 
@@ -945,12 +985,25 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     catch {}
                 }
 
+                var combinedContext = new System.Text.StringBuilder();
+                if (recentSessionHistory.Length > 0)
+                {
+                    combinedContext.AppendLine("### Các lượt trao đổi gần đây trong phiên chat:");
+                    combinedContext.Append(recentSessionHistory);
+                }
+                if (accumulatedContext.Length > 0)
+                {
+                    if (combinedContext.Length > 0) combinedContext.AppendLine();
+                    combinedContext.AppendLine("### Ý kiến của các chuyên viên AI vừa phản hồi trước bạn:");
+                    combinedContext.Append(accumulatedContext);
+                }
+
                 var (completedRoom, collabTurn) = await roomOrchestrator.ExecuteCollaboratorTurnAsync(
                     agentTarget,
                     effectiveSessionId,
                     mentionedCollaborator,
                     rawUserText ?? "",
-                    accumulatedContext.Length > 0 ? accumulatedContext.ToString() : null,
+                    combinedContext.Length > 0 ? combinedContext.ToString() : null,
                     qwenPawSessionId,
                     upstreamCts.Token);
 
@@ -993,7 +1046,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 catch {}
             }
 
-            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nCác chuyên viên trong phiên đã lần lượt phản hồi:\n{accumulatedContext}\nHãy dựa trên ngữ cảnh chung và các phản hồi trên để tổng hợp kết quả cuối cùng cho người dùng.";
+            var cleanUserObjective = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.StripCollaboratorMentions(rawUserText, mentionedCollaborators);
+            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: Các thẻ @{string.Join(", @", mentionedCollaborators)} ở trên là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng mời vào hỗ trợ phiên chat, KHÔNG PHẢI là tên sản phẩm hay thương hiệu người dùng đang hỏi.\nNội dung câu hỏi thực chất của người dùng: \"{cleanUserObjective}\"\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn:\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
             effectiveRequest = effectiveRequest with
             {
                 Message = synthesizedInput,

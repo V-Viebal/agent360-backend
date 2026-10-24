@@ -886,11 +886,15 @@ public sealed partial class SessionRoomOrchestrator(
             ? chatResult.Text.Trim()
             : $"Chuyên viên @{collab} hiện đang bận hoặc không phản hồi kịp thời ({chatResult.Error ?? "timeout"}). Host @{host} sẽ tiếp tục xử lý trực tiếp.";
 
-        // 4. Check if Collaborator B asked a clarification question (QUESTION_FOR_PARENT)
+        // 4. Clean any raw QUESTION_FOR_PARENT: prefix so UI and synthesis remain natural
         var question = chatResult.Success ? SubAgentPolicy.ExtractQuestion(replyText) : null;
-        var replyKind = question is not null ? "question" : "collaborator_reply";
-        var nextRoomStatus = question is not null ? "awaiting_clarification" : "completed";
-        var nextCollabStatus = question is not null ? "awaiting_input" : "completed";
+        if (replyText.StartsWith("QUESTION_FOR_PARENT:", StringComparison.OrdinalIgnoreCase))
+        {
+            replyText = replyText["QUESTION_FOR_PARENT:".Length..].Trim();
+        }
+        var replyKind = "collaborator_reply";
+        var nextRoomStatus = "completed";
+        var nextCollabStatus = "completed";
 
         var collabTurn = new SessionRoomTurn(
             $"rt_{Guid.NewGuid():N}"[..12],
@@ -1007,6 +1011,10 @@ public sealed partial class SessionRoomOrchestrator(
 
         var host = SubAgentService.NormalizeAgentId(hostAgentId);
         var now = DateTimeOffset.UtcNow;
+        if (room.Turns.Count > 0 && now <= room.Turns[^1].CreatedAt)
+        {
+            now = room.Turns[^1].CreatedAt.AddMilliseconds(50);
+        }
         var turn = new SessionRoomTurn(
             $"rt_{Guid.NewGuid():N}"[..12],
             room.Turns.Count + 1,
@@ -1108,28 +1116,103 @@ public sealed partial class SessionRoomOrchestrator(
     public static string? DetectMentionedCollaborator(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null) =>
         DetectMentionedCollaborators(messageText, hostAgentId, knownAgentSlugs).FirstOrDefault();
 
+    /// <summary>
+    /// Strips @mention routing tags (both @slug and @Display Name) from the user message so collaborator LLMs
+    /// receive the pure task objective and never confuse a teammate agent handle with a product/brand name.
+    /// </summary>
+    public static string StripCollaboratorMentions(string? messageText, IEnumerable<string>? mentionedSlugs = null)
+    {
+        if (string.IsNullOrWhiteSpace(messageText)) return "";
+        var cleaned = messageText;
+
+        var displayNames = new[]
+        {
+            "Mons (Core Dev & Ops)", "Ken (Product Owner)", "Zen (Sales & Delivery)",
+            "Mkai (Generalist Core)", "Core Skyer Default", "GM Bốc (Executive)",
+            "GM Gạo (Procurement)", "GM Lúa (Customer Support)", "GM Team Ops",
+            "Climax Default (Creative)", "Climax Team (Scraper & Ops)",
+            "Planthy PM (Delivery Office)", "Planthy Team (Execution)",
+            "AgentTeams Manager Swarm", "ITS Gatekeeper (Inox Tân Sơn)",
+            "GL Automation & Analytics", "Planthy Team", "Planthy PM",
+            "Climax Default", "Climax Team", "GM Bốc", "GM Gạo", "GM Lúa", "GM Team"
+        };
+
+        foreach (var name in displayNames)
+        {
+            cleaned = Regex.Replace(cleaned, @"@" + Regex.Escape(name) + @"", "", RegexOptions.IgnoreCase);
+        }
+
+        if (mentionedSlugs is not null)
+        {
+            foreach (var slug in mentionedSlugs)
+            {
+                if (!string.IsNullOrWhiteSpace(slug))
+                {
+                    cleaned = Regex.Replace(cleaned, @"@" + Regex.Escape(slug.Trim()) + @"", "", RegexOptions.IgnoreCase);
+                }
+            }
+        }
+
+        // Also strip any remaining known @agent-slug tokens
+        cleaned = Regex.Replace(
+            cleaned,
+            @"@(?:mons|ken|zen|mkai|default-core|gm-boc|gm-gao|gm-lua|gm-team|planthy-pm|planthy-team|climax-default|climax-team|its-default|gl-default|agentteams-manager)",
+            "",
+            RegexOptions.IgnoreCase);
+
+        cleaned = Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
+        // Trim leading punctuation left after removing leading @mentions (e.g. ", " or ": " or "- ")
+        cleaned = Regex.Replace(cleaned, @"^[,:\-;]+\s*", "").Trim();
+        return string.IsNullOrWhiteSpace(cleaned) ? messageText.Trim() : cleaned;
+    }
+
+    private static string DescribeAgentSpecialty(string agentSlug) => agentSlug.ToLowerInvariant() switch
+    {
+        "zen" => "Chuyên gia Kinh doanh, Sales, Đấu thầu & Chiến lược thương mại (Sales & Delivery)",
+        "ken" => "Product Owner (PO), Chiến lược sản phẩm & Nghiệm thu nghiệp vụ",
+        "mons" => "Kiến trúc sư Kỹ thuật, Lập trình & Vận hành hạ tầng (Core Dev & Ops)",
+        "climax-default" or "climax-team" => "Chuyên gia Sáng tạo, Nghiên cứu thị trường, Truyền thông & Thương hiệu (Creative & Market Research)",
+        "planthy-pm" or "planthy-team" => "Quản lý dự án, Điều phối tiến độ & Vận hành triển khai (Project Delivery Office)",
+        "gm-boc" => "Trợ lý Điều hành cấp cao Gia Mộc (Executive)",
+        "gm-gao" => "Chuyên viên Thu mua & Chuỗi cung ứng (Procurement)",
+        "gm-lua" => "Chuyên viên Chăm sóc khách hàng & Dịch vụ (Customer Support)",
+        "its-default" => "Điều phối Vận hành Inox Tân Sơn (Operational Gatekeeper)",
+        "gl-default" => "Phân tích dữ liệu & Tự động hóa (Automation & Analytics)",
+        _ => "Chuyên viên AI phối hợp trong phiên"
+    };
+
     private static string BuildRoomScopedPrompt(
         SessionCollaborationRoom room,
         string collaboratorId,
         string objective,
         string? recentContextSnippet)
     {
+        var cleanObjective = StripCollaboratorMentions(objective);
+        var teammates = room.Participants
+            .Where(p => p.Role is "host" or "collaborator")
+            .Select(p => $"@{p.AgentId} ({p.DisplayName} — {DescribeAgentSpecialty(p.AgentId)})")
+            .ToList();
+
         var sb = new StringBuilder();
-        sb.AppendLine($"[SESSION COLLABORATION CONTEXT: {room.HostChatId}]");
-        sb.AppendLine($"- Host Agent: @{room.HostAgentId}");
-        sb.AppendLine($"- Collaborator Agent (You): @{collaboratorId}");
-        sb.AppendLine($"- Governance: @{ManagerAgentId} (Manager), @{AdminUserId} (Admin)");
+        sb.AppendLine($"[NGỮ CẢNH PHỐI HỢP ĐA TÁC TỬ TRONG PHIÊN: {room.HostChatId}]");
+        sb.AppendLine($"- Chủ phòng (Host Agent điều phối & tổng hợp cuối): @{room.HostAgentId} ({FriendlyAgentName(room.HostAgentId)})");
+        sb.AppendLine($"- Vai trò của bạn: @{collaboratorId} ({FriendlyAgentName(collaboratorId)}) — {DescribeAgentSpecialty(collaboratorId)}");
+        if (teammates.Count > 0)
+        {
+            sb.AppendLine($"- Các thành viên AI cùng tham gia trong phiên: {string.Join(", ", teammates)}");
+        }
+        sb.AppendLine("- QUY TẮC BẮT BUỘC: Tên các thành viên AI (như `@zen`, `@climax-default`, `@planthy-pm`, `@gm-boc`, `@ken`, `@mons`...) chỉ là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng gắn thẻ để mời vào cùng xử lý công việc, TUYỆT ĐỐI KHÔNG PHẢI là tên sản phẩm, thương hiệu hay đối tượng kinh doanh mà người dùng đang hỏi.");
         sb.AppendLine();
         if (!string.IsNullOrWhiteSpace(recentContextSnippet))
         {
-            sb.AppendLine("## Ngữ cảnh hội thoại trước đó trong phiên:");
+            sb.AppendLine("## Lịch sử hội thoại gần đây của phiên chat & ý kiến đồng đội:");
             sb.AppendLine(recentContextSnippet.Trim());
             sb.AppendLine();
         }
-        sb.AppendLine("## Yêu cầu cần bạn xử lý và phản hồi:");
-        sb.AppendLine(objective.Trim());
+        sb.AppendLine("## Nội dung yêu cầu của người dùng cần bạn đóng góp ý kiến chuyên môn:");
+        sb.AppendLine(cleanObjective);
         sb.AppendLine();
-        sb.AppendLine("Lưu ý: Phản hồi ngắn gọn, đi thẳng vào trọng tâm chuyên môn của bạn để hiển thị trực tiếp trên phiên chat và tổng hợp cho người dùng. Nếu thiếu thông tin bắt buộc, hãy bắt đầu dòng đầu bằng `QUESTION_FOR_PARENT: <câu hỏi>`.");
+        sb.AppendLine("Hướng dẫn phản hồi: Hãy dựa trên lịch sử hội thoại của phiên chat phía trên và đóng góp phân tích/ý kiến ngắn gọn, súc tích đúng chuyên môn của bạn để Chủ phòng tổng hợp cho người dùng. Không lặp lại tiền tố `QUESTION_FOR_PARENT:`. Nếu cả lịch sử phiên chat lẫn câu hỏi đều chưa nêu tên ngành hàng/dự án cụ thể, hãy đưa ra khung tiêu chí phân tích cốt lõi theo chuyên môn của bạn (3-4 gạch đầu dòng ngắn) và ghi chú 1 dòng cuối về thông tin cần người dùng bổ sung.");
         return sb.ToString();
     }
 
