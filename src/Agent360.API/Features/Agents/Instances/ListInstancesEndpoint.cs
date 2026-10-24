@@ -29,6 +29,8 @@ public sealed class ListInstancesEndpoint : IEndpoint
                 var planthyAgents = agents.Where(a => a.Node?.Contains("Planthy") == true || a.Slug.StartsWith("planthy-")).Select(a => a.Slug).ToList();
                 var swarmAgents = agents.Where(a => a.Node?.Contains("AgentTeams") == true || a.Slug.StartsWith("agentteams-")).Select(a => a.Slug).ToList();
                 var llmAgents = agents.Where(a => a.Node?.Contains("LLM360") == true || a.Slug.Contains("llm360")).Select(a => a.Slug).ToList();
+                var itsAgents = agents.Where(a => a.Node?.Contains("8th") == true || a.Slug.StartsWith("its-")).Select(a => a.Slug).ToList();
+                var glAgents = agents.Where(a => a.Node?.Contains("8th") == true || a.Slug.StartsWith("gl-")).Select(a => a.Slug).ToList();
 
                 var instances = new List<InfraNodeInstanceResponse>
                 {
@@ -138,6 +140,36 @@ public sealed class ListInstancesEndpoint : IEndpoint
                         Health: "healthy"),
 
                     new(
+                        InstanceId: "inst:node-8th:its",
+                        NodeName: "8th",
+                        NodeIp: "100.66.243.55",
+                        Role: "ITS Operational Gatekeeper (Inox Tân Sơn)",
+                        Status: "ready",
+                        ClusterId: "antares-vps-cluster",
+                        RuntimeType: "skyer-isolated",
+                        EndpointUrl: "http://100.66.243.55:26889",
+                        ActiveAgentsCount: itsAgents.Count,
+                        TotalAgentsCount: itsAgents.Count,
+                        Agents: itsAgents,
+                        LastHeartbeat: DateTimeOffset.UtcNow.ToString("O"),
+                        Health: "healthy"),
+
+                    new(
+                        InstanceId: "inst:node-8th:gl",
+                        NodeName: "8th",
+                        NodeIp: "100.66.243.55",
+                        Role: "GL Automation & Analytics (Scraping & Data Product)",
+                        Status: "ready",
+                        ClusterId: "antares-vps-cluster",
+                        RuntimeType: "skyer-isolated",
+                        EndpointUrl: "http://100.66.243.55:26890",
+                        ActiveAgentsCount: glAgents.Count,
+                        TotalAgentsCount: glAgents.Count,
+                        Agents: glAgents,
+                        LastHeartbeat: DateTimeOffset.UtcNow.ToString("O"),
+                        Health: "healthy"),
+
+                    new(
                         InstanceId: "inst:node-2nd:agent360",
                         NodeName: "2nd",
                         NodeIp: "100.109.210.72",
@@ -210,6 +242,8 @@ public sealed class ListInstancesEndpoint : IEndpoint
     private static (string TargetNode, string EndpointUrl) ResolveBotPlacement(string slug, string? node)
     {
         var s = slug.ToLowerInvariant();
+        if (s.StartsWith("its-")) return ("Node 8th (ITS)", "https://ai-its.antares.vn");
+        if (s.StartsWith("gl-")) return ("Node 8th (GL)", "https://ai-gl.antares.vn");
         if (s.StartsWith("gm-")) return ("Node 6th (Gia Mộc)", "https://ai-gm.antares.vn");
         if (s.StartsWith("climax-")) return ("Node 5th (Climax)", "https://ai-climax.antares.vn");
         if (s.StartsWith("planthy-")) return ("Node 5th (Planthy)", "https://planthy-ai.hmz.one");

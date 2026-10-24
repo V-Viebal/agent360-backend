@@ -787,37 +787,158 @@ public sealed class QwenPawClient : IQwenPawClient
             ct: cancellationToken);
 
     // ------------------------------------------------------------------
-    // Workspace
+    // Workspace & Library Artifacts
     // ------------------------------------------------------------------
 
-    public async Task<QwenPawWorkspaceTreeResponse?> GetWorkspaceTreeAsync(string? agentId = null, CancellationToken cancellationToken = default)
+    public async Task<QwenPawWorkspaceTreeResponse?> GetWorkspaceTreeAsync(
+        string? agentId = null,
+        CancellationToken cancellationToken = default,
+        string? category = null,
+        string? ext = null,
+        string? search = null,
+        bool includeSystem = false)
     {
         var target = Resolve(agentId);
-        using var response = await SendAsync(target, HttpMethod.Get, "workspace/tree", ct: cancellationToken);
-        if (response.IsSuccessStatusCode)
+        List<QwenPawWorkspaceEntryDto> rawEntries = [];
+
+        // 1. Prefer recursive /workspace/code-files so all nested artifacts (digest/, media/, incoming/, etc.)
+        // are discovered and classified into Library formats.
+        try
         {
-            return await response.Content.ReadFromJsonAsync<QwenPawWorkspaceTreeResponse>(cancellationToken);
+            using var codeFilesResp = await SendAsync(target, HttpMethod.Get, "workspace/code-files", timeout: TimeSpan.FromSeconds(15), ct: cancellationToken);
+            if (codeFilesResp.IsSuccessStatusCode)
+            {
+                var files = await codeFilesResp.Content.ReadFromJsonAsync<JsonArray>(cancellationToken) ?? [];
+                rawEntries = files
+                    .Where(f => f is not null)
+                    .Select(f => new QwenPawWorkspaceEntryDto(
+                        f!["filename"]?.GetValue<string>() ?? f["path"]?.GetValue<string>() ?? "file",
+                        f["path"]?.GetValue<string>() ?? "",
+                        "file",
+                        null,
+                        f["size"]?.GetValue<long>(),
+                        f["modified_time"]?.GetValue<string>()))
+                    .ToList();
+            }
         }
-        if (response.StatusCode is not (HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed))
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            response.EnsureSuccessStatusCode();
+            _logger.LogDebug(ex, "workspace/code-files fallback to workspace/tree for {AgentId}", agentId);
         }
 
-        // QwenPaw v2.0.x has no /workspace/tree; /workspace/code-files is the compatible listing.
-        using var legacy = await SendAsync(target, HttpMethod.Get, "workspace/code-files", ct: cancellationToken);
-        legacy.EnsureSuccessStatusCode();
-        var files = await legacy.Content.ReadFromJsonAsync<JsonArray>(cancellationToken) ?? [];
-        var entries = files
-            .Where(f => f is not null)
-            .Select(f => new QwenPawWorkspaceEntryDto(
-                f!["filename"]?.GetValue<string>() ?? f["path"]?.GetValue<string>() ?? "file",
-                f["path"]?.GetValue<string>() ?? "",
-                "file",
-                null,
-                f["size"]?.GetValue<long>(),
-                f["modified_time"]?.GetValue<string>()))
+        // 2. Fallback to /workspace/tree if code-files returned empty or was unavailable
+        if (rawEntries.Count == 0)
+        {
+            using var response = await SendAsync(target, HttpMethod.Get, "workspace/tree", ct: cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                var treeResp = await response.Content.ReadFromJsonAsync<QwenPawWorkspaceTreeResponse>(cancellationToken);
+                if (treeResp?.Entries is not null)
+                {
+                    rawEntries = treeResp.Entries.ToList();
+                }
+            }
+        }
+
+        // 3. Filter & enrich into user-facing Library artifacts
+        var enrichedAll = rawEntries
+            .Where(e => !string.IsNullOrWhiteSpace(e.Path))
+            .Where(e => includeSystem ? Agent360.API.Features.Agents.Security.WorkspacePathAcl.IsPathAllowed(e.Path) : Agent360.API.Features.Agents.Security.WorkspacePathAcl.IsLibraryArtifactPath(e.Path))
+            .Select(Agent360.API.Features.Agents.Security.WorkspacePathAcl.EnrichEntry)
+            .OrderByDescending(e => e.ModifiedAt ?? "")
+            .ThenBy(e => e.Path, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        return new QwenPawWorkspaceTreeResponse("", entries, false, null);
+
+        // 4. Compute facet counts across all valid artifacts for this agent
+        var categoryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["all"] = enrichedAll.Count,
+            ["pages"] = 0,
+            ["files"] = 0,
+            ["apps"] = 0,
+            ["images"] = 0,
+            ["media"] = 0
+        };
+        var formatCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in enrichedAll)
+        {
+            var cat = item.Category ?? "files";
+            categoryCounts[cat] = categoryCounts.TryGetValue(cat, out var c) ? c + 1 : 1;
+
+            if (!string.IsNullOrWhiteSpace(item.Extension))
+            {
+                var formatKey = item.Extension.ToLowerInvariant();
+                formatCounts[formatKey] = formatCounts.TryGetValue(formatKey, out var fc) ? fc + 1 : 1;
+            }
+        }
+
+        // 5. Apply optional query filters (category, extension, search)
+        IEnumerable<QwenPawWorkspaceEntryDto> filtered = enrichedAll;
+
+        if (!string.IsNullOrWhiteSpace(category) && !category.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            var wantedCat = category.Trim().ToLowerInvariant();
+            filtered = filtered.Where(e => string.Equals(e.Category, wantedCat, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(ext))
+        {
+            var wantedExts = ext.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(x => x.TrimStart('.').ToLowerInvariant())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (wantedExts.Count > 0)
+            {
+                filtered = filtered.Where(e => e.Extension is not null && wantedExts.Contains(e.Extension));
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var q = search.Trim();
+            filtered = filtered.Where(e =>
+                (e.Name?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (e.Path?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (e.Category?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (e.Extension?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+
+        var finalList = filtered.ToList();
+        return new QwenPawWorkspaceTreeResponse(
+            Directory: "",
+            Entries: finalList,
+            HasMore: false,
+            NextCursor: null,
+            CategoryCounts: categoryCounts,
+            FormatCounts: formatCounts,
+            TotalCount: enrichedAll.Count);
+    }
+
+    public async Task<HttpResponseMessage> DownloadWorkspaceFileAsync(string path, string? agentId = null, CancellationToken cancellationToken = default)
+    {
+        var target = Resolve(agentId);
+        var response = await SendAsync(
+            target,
+            HttpMethod.Get,
+            $"workspace/file-download?path={Uri.EscapeDataString(path)}",
+            timeout: TimeSpan.FromMinutes(2),
+            completion: HttpCompletionOption.ResponseHeadersRead,
+            ct: cancellationToken);
+
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        {
+            response.Dispose();
+            var encoded = string.Join('/', path.Trim('/').Split('/').Select(Uri.EscapeDataString));
+            return await SendAsync(
+                target,
+                HttpMethod.Get,
+                $"workspace/binary-files/{encoded}",
+                timeout: TimeSpan.FromMinutes(2),
+                completion: HttpCompletionOption.ResponseHeadersRead,
+                ct: cancellationToken);
+        }
+
+        return response;
     }
 
     public async Task<string?> GetFileContentAsync(string path, string? agentId = null, CancellationToken cancellationToken = default)
@@ -1071,6 +1192,8 @@ public sealed class QwenPawClient : IQwenPawClient
             if (instance.Contains("AgentTeams")) return "Node 4th (AgentTeams) - manager-ai.hmz.one";
             if (instance.Contains("LLM360")) return "Node 4th (LLM360) - proxy-llm360.hmz.one";
             if (instance.Contains("TSX")) return "Node 4th (TSX) - ai-tsx.hmz.one";
+            if (instance.Contains("ITS")) return "Node 8th (ITS) - ai-its.antares.vn";
+            if (instance.Contains("GL")) return "Node 8th (GL) - ai-gl.antares.vn";
         }
 
         return $"Node {cleanNode} - {instance ?? "Infra"}";

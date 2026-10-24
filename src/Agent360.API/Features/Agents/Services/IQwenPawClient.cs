@@ -33,8 +33,15 @@ public interface IQwenPawClient
     Task<bool> StopChatAsync(ConsoleChatStopRequestDto request, CancellationToken cancellationToken = default);
 
     // Workspace & Files
-    Task<QwenPawWorkspaceTreeResponse?> GetWorkspaceTreeAsync(string? agentId = null, CancellationToken cancellationToken = default);
+    Task<QwenPawWorkspaceTreeResponse?> GetWorkspaceTreeAsync(
+        string? agentId = null,
+        CancellationToken cancellationToken = default,
+        string? category = null,
+        string? ext = null,
+        string? search = null,
+        bool includeSystem = false);
     Task<string?> GetFileContentAsync(string path, string? agentId = null, CancellationToken cancellationToken = default);
+    Task<HttpResponseMessage> DownloadWorkspaceFileAsync(string path, string? agentId = null, CancellationToken cancellationToken = default);
 
     // Context Management & Compaction (Native QwenPaw Checkpoint GC & /compact)
     Task<CompactContextResponseDto> CompactContextAsync(CompactContextRequestDto request, CancellationToken cancellationToken = default);
