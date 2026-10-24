@@ -1054,6 +1054,28 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 node["messages"] = messagesArr;
             }
 
+            // Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages so the UI only shows the user's clean message
+            foreach (var msgNode in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
+            {
+                if (!string.Equals(msgNode["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) continue;
+                if (msgNode["content"] is System.Text.Json.Nodes.JsonValue strVal && strVal.TryGetValue<string>(out var rawStr) && !string.IsNullOrEmpty(rawStr))
+                {
+                    var idx = rawStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0) msgNode["content"] = rawStr[..idx].TrimEnd();
+                }
+                else if (msgNode["content"] is System.Text.Json.Nodes.JsonArray contentArr)
+                {
+                    foreach (var part in contentArr.OfType<System.Text.Json.Nodes.JsonObject>())
+                    {
+                        if (part["text"] is System.Text.Json.Nodes.JsonValue tVal && tVal.TryGetValue<string>(out var partStr) && !string.IsNullOrEmpty(partStr))
+                        {
+                            var idx = partStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                            if (idx >= 0) part["text"] = partStr[..idx].TrimEnd();
+                        }
+                    }
+                }
+            }
+
             foreach (var turn in room.Turns.Where(t => t.Kind is "collaborator_reply" or "question" or "manager_guard"))
             {
                 var alreadyPresent = messagesArr.Any(m => m?["id"]?.ToString() == turn.Id);
