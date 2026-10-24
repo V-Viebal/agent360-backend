@@ -213,6 +213,7 @@ public sealed class SessionRoomStore
                 if (msgNode["content"] is System.Text.Json.Nodes.JsonValue strVal && strVal.TryGetValue<string>(out var rawStr) && !string.IsNullOrEmpty(rawStr))
                 {
                     var idx = rawStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) idx = rawStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
                     if (idx >= 0) msgNode["content"] = rawStr[..idx].TrimEnd();
                 }
                 else if (msgNode["content"] is System.Text.Json.Nodes.JsonArray contentArr)
@@ -222,6 +223,7 @@ public sealed class SessionRoomStore
                         if (part["text"] is System.Text.Json.Nodes.JsonValue tVal && tVal.TryGetValue<string>(out var partStr) && !string.IsNullOrEmpty(partStr))
                         {
                             var idx = partStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                            if (idx < 0) idx = partStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
                             if (idx >= 0) part["text"] = partStr[..idx].TrimEnd();
                         }
                     }
