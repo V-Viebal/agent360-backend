@@ -15,7 +15,7 @@ public sealed class SessionSyncBackgroundService(
     ILogger<SessionSyncBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2.5);
-    private readonly ConcurrentDictionary<string, bool> _activeTrackedSessions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _activeTrackedSessions = new(StringComparer.OrdinalIgnoreCase);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -41,10 +41,25 @@ public sealed class SessionSyncBackgroundService(
         using var scope = scopeFactory.CreateScope();
         var client = scope.ServiceProvider.GetRequiredService<IQwenPawClient>();
 
-        // Check primary agent 'mons' and any agent currently having active connections
+        // Check primary agent 'mons', 'default', and any agent currently having active sessions in queueManager
         var agentsToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "mons", "default" };
+        foreach (var ag in queueManager.GetActiveAgentSessions().Keys)
+        {
+            if (!string.IsNullOrWhiteSpace(ag))
+            {
+                agentsToCheck.Add(ag);
+            }
+        }
+        foreach (var ag in _activeTrackedSessions.Values)
+        {
+            if (!string.IsNullOrWhiteSpace(ag))
+            {
+                agentsToCheck.Add(ag);
+            }
+        }
 
         var discoveredActiveThisCycle = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var successfullyCheckedAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var agent in agentsToCheck)
         {
@@ -52,11 +67,14 @@ public sealed class SessionSyncBackgroundService(
 
             try
             {
+                var normalizedAgent = FleetInstanceRoutingService.NormalizeAgentId(agent);
                 var chatsRaw = await client.GetAgentChatsRawAsync(agent, ct);
                 if (string.IsNullOrWhiteSpace(chatsRaw)) continue;
 
                 using var doc = JsonDocument.Parse(chatsRaw);
                 if (doc.RootElement.ValueKind != JsonValueKind.Array) continue;
+
+                successfullyCheckedAgents.Add(normalizedAgent);
 
                 foreach (var el in doc.RootElement.EnumerateArray())
                 {
@@ -74,8 +92,8 @@ public sealed class SessionSyncBackgroundService(
                             discoveredActiveThisCycle.Add(id);
                             if (!_activeTrackedSessions.ContainsKey(id))
                             {
-                                _activeTrackedSessions[id] = true;
-                                queueManager.SetSessionTurnActive(id, true);
+                                _activeTrackedSessions[id] = normalizedAgent;
+                                queueManager.SetSessionTurnActive(id, true, normalizedAgent);
                             }
                         }
 
@@ -84,8 +102,8 @@ public sealed class SessionSyncBackgroundService(
                             discoveredActiveThisCycle.Add(sid);
                             if (!_activeTrackedSessions.ContainsKey(sid))
                             {
-                                _activeTrackedSessions[sid] = true;
-                                queueManager.SetSessionTurnActive(sid, true);
+                                _activeTrackedSessions[sid] = normalizedAgent;
+                                queueManager.SetSessionTurnActive(sid, true, normalizedAgent);
                             }
                         }
                     }
@@ -97,13 +115,13 @@ public sealed class SessionSyncBackgroundService(
             }
         }
 
-        // Reconcile sessions that finished running
-        foreach (var trackedId in queueManager.GetActiveSessionIds())
+        // Reconcile only sessions that were discovered by this background service and whose agent was successfully checked
+        foreach (var (trackedId, trackedAgent) in _activeTrackedSessions.ToArray())
         {
-            if (!discoveredActiveThisCycle.Contains(trackedId))
+            if (successfullyCheckedAgents.Contains(trackedAgent) && !discoveredActiveThisCycle.Contains(trackedId))
             {
                 _activeTrackedSessions.TryRemove(trackedId, out _);
-                queueManager.SetSessionTurnActive(trackedId, false);
+                queueManager.SetSessionTurnActive(trackedId, false, trackedAgent);
                 // Only mark the specific chat UUID as unread, avoid marking shared session identifiers
                 // across multiple chat history branches unless it is an explicit chat UUID
                 if (!trackedId.StartsWith("telegram:", StringComparison.OrdinalIgnoreCase) &&

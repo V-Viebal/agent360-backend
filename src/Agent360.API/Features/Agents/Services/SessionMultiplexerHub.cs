@@ -19,7 +19,7 @@ public sealed class SessionMultiplexerHub : IDisposable
         _queueManager = queueManager;
         _logger = logger;
 
-        _queueManager.OnSessionTurnChanged += HandleQueueTurnChanged;
+        _queueManager.OnSessionTurnChangedWithAgent += HandleQueueTurnChanged;
         ChannelResponseStore.OnChannelResponseRecorded += HandleChannelResponse;
         ChannelResponseStore.OnUnreadChanged += HandleUnreadChanged;
     }
@@ -27,12 +27,17 @@ public sealed class SessionMultiplexerHub : IDisposable
     public int ConnectedWebSocketsCount => _sockets.Count;
     public int ConnectedSseCount => _sseChannels.Count;
 
-    private void HandleQueueTurnChanged(string sessionId, bool isRunning)
+    private void HandleQueueTurnChanged(string sessionId, bool isRunning, string? agentId)
     {
+        var resolvedAgentId = !string.IsNullOrWhiteSpace(agentId)
+            ? FleetInstanceRoutingService.NormalizeAgentId(agentId)
+            : _queueManager.GetSessionAgent(sessionId);
+
         var payload = JsonSerializer.Serialize(new
         {
             type = "session_turn_update",
             session_id = sessionId,
+            agent_id = resolvedAgentId,
             is_running = isRunning,
             status = isRunning ? "running" : "idle",
             timestamp = DateTime.UtcNow.ToString("O")
@@ -44,13 +49,18 @@ public sealed class SessionMultiplexerHub : IDisposable
     private void HandleChannelResponse(ChannelResponseEvent ev)
     {
         var isRunning = string.Equals(ev.Status, "running", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(ev.Status, "in_progress", StringComparison.OrdinalIgnoreCase);
+                        string.Equals(ev.Status, "in_progress", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(ev.Status, "submitted", StringComparison.OrdinalIgnoreCase);
+
+        var normalizedAgentId = !string.IsNullOrWhiteSpace(ev.AgentId)
+            ? FleetInstanceRoutingService.NormalizeAgentId(ev.AgentId)
+            : _queueManager.GetSessionAgent(ev.SessionId);
 
         var payload = JsonSerializer.Serialize(new
         {
             type = "session_turn_update",
             id = ev.Id,
-            agent_id = ev.AgentId,
+            agent_id = normalizedAgentId,
             session_id = ev.SessionId,
             channel = ev.Channel,
             role = ev.Role,
@@ -73,6 +83,7 @@ public sealed class SessionMultiplexerHub : IDisposable
         {
             type = "session_unread_update",
             session_id = sessionId,
+            agent_id = _queueManager.GetSessionAgent(sessionId),
             is_unread = isUnread,
             timestamp = DateTime.UtcNow.ToString("O")
         });
@@ -119,6 +130,7 @@ public sealed class SessionMultiplexerHub : IDisposable
         {
             type = "active_sessions_snapshot",
             active_session_ids = _queueManager.GetActiveSessionIds(),
+            active_agent_sessions = _queueManager.GetActiveAgentSessions(),
             unread_session_ids = ChannelResponseStore.GetUnreadSessionIds(),
             timestamp = DateTime.UtcNow.ToString("O")
         };
@@ -207,7 +219,7 @@ public sealed class SessionMultiplexerHub : IDisposable
 
     public void Dispose()
     {
-        _queueManager.OnSessionTurnChanged -= HandleQueueTurnChanged;
+        _queueManager.OnSessionTurnChangedWithAgent -= HandleQueueTurnChanged;
         ChannelResponseStore.OnChannelResponseRecorded -= HandleChannelResponse;
         ChannelResponseStore.OnUnreadChanged -= HandleUnreadChanged;
 

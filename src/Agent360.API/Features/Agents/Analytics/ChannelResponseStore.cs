@@ -80,14 +80,18 @@ public static class ChannelResponseStore
     public static void SetUnread(string sessionId, bool isUnread)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return;
+        bool changed;
         if (isUnread)
         {
+            changed = !_unreadSessions.TryGetValue(sessionId, out var cur) || !cur;
             _unreadSessions[sessionId] = true;
         }
         else
         {
-            _unreadSessions.TryRemove(sessionId, out _);
+            changed = _unreadSessions.TryRemove(sessionId, out _);
         }
+
+        if (!changed) return;
 
         try
         {

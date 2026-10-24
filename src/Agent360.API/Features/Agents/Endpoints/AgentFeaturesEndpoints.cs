@@ -103,13 +103,59 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
 
         // 1d. Workspace Tree & File Content
-        group.MapGet("workspace/tree", async ([FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("workspace/tree", async (
+            [FromQuery] string? agentId,
+            [FromQuery] string? category,
+            [FromQuery] string? ext,
+            [FromQuery] string? search,
+            [FromQuery] bool? includeSystem,
+            IQwenPawClient client,
+            CancellationToken ct) =>
         {
-            var tree = await client.GetWorkspaceTreeAsync(agentId, ct);
+            var tree = await client.GetWorkspaceTreeAsync(agentId, ct, category, ext, search, includeSystem ?? false);
             return TypedResults.Ok(tree);
         })
         .WithName("GetWorkspaceTree")
-        .WithSummary("Get workspace file tree (optionally scoped to agent)")
+        .WithSummary("Get workspace file tree and library artifacts (optionally scoped to agent, category, and format)")
+        .AllowAnonymous();
+
+        group.MapGet("workspace/file-download", async (
+            [FromQuery] string path,
+            [FromQuery] string? agentId,
+            [FromQuery] bool? inline,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (!WorkspacePathAcl.IsPathAllowed(path))
+            {
+                return Results.Problem(
+                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
+                    statusCode: StatusCodes.Status403Forbidden,
+                    title: "Forbidden Path");
+            }
+
+            using var resp = await client.DownloadWorkspaceFileAsync(path, agentId, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return Results.NotFound(new { message = $"File '{path}' not found" });
+            }
+
+            var ext = WorkspacePathAcl.ExtractExtension(path);
+            var contentType = resp.Content.Headers.ContentType?.ToString() ?? WorkspacePathAcl.GetMimeType(ext);
+            var fileName = Path.GetFileName(path.Replace('\\', '/'));
+            var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+
+            if (inline == true)
+            {
+                httpContext.Response.Headers.ContentDisposition = $"inline; filename=\"{fileName.Replace("\"", "")}\"";
+                return Results.Bytes(bytes, contentType);
+            }
+
+            return Results.File(bytes, contentType, fileName);
+        })
+        .WithName("DownloadWorkspaceFile")
+        .WithSummary("Stream or download a workspace file with ACL enforcement")
         .AllowAnonymous();
 
         group.MapGet("workspace/file-content", async ([FromQuery] string path, [FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
@@ -136,14 +182,14 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             try
             {
                 var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
-                return Results.Content(roomStore.EnrichChatHistoryJson(historyRaw, agentId, chatId), "application/json");
+                return Results.Content(EnrichChatHistoryWithRoom(historyRaw, agentId, chatId, roomStore), "application/json");
             }
             catch (HttpRequestException)
             {
                 var room = roomStore.GetByChat(agentId ?? "mons", chatId);
                 if (room is not null)
                 {
-                    return Results.Content(roomStore.EnrichChatHistoryJson("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId), "application/json");
+                    return Results.Content(EnrichChatHistoryWithRoom("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId, roomStore), "application/json");
                 }
                 return Results.NotFound(new { message = $"Chat {chatId} not found on infra" });
             }
@@ -233,10 +279,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             catch {}
 
-            queueManager.SetSessionTurnActive(effectiveSessionId, true);
+            queueManager.SetSessionTurnActive(effectiveSessionId, true, agentTarget);
             if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
             {
-                queueManager.SetSessionTurnActive(qwenPawSessionId, true);
+                queueManager.SetSessionTurnActive(qwenPawSessionId, true, agentTarget);
             }
 
             Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
@@ -259,10 +305,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             finally
             {
-                queueManager.SetSessionTurnActive(effectiveSessionId, false);
+                queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
                 if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
                 {
-                    queueManager.SetSessionTurnActive(qwenPawSessionId, false);
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
                 }
             }
         })
@@ -353,10 +399,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             await sessionLock.WaitAsync(ct);
             try
             {
-                queueManager.SetSessionTurnActive(effectiveSessionId, true);
+                queueManager.SetSessionTurnActive(effectiveSessionId, true, agentTarget);
                 if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
                 {
-                    queueManager.SetSessionTurnActive(qwenPawSessionId, true);
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, true, agentTarget);
                 }
 
                 Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
@@ -377,10 +423,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             finally
             {
-                queueManager.SetSessionTurnActive(effectiveSessionId, false);
+                queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
                 if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
                 {
-                    queueManager.SetSessionTurnActive(qwenPawSessionId, false);
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
                 }
                 sessionLock.Release();
             }
@@ -395,7 +441,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             {
                 return Results.Problem("session_id is required.", statusCode: StatusCodes.Status400BadRequest, title: "Bad Request");
             }
-            queueManager.SetSessionTurnActive(request.SessionId, false);
+            queueManager.SetSessionTurnActive(request.SessionId, false, request.AgentId);
             var ok = await client.StopChatAsync(request, ct);
             return TypedResults.Ok(new { stopped = ok });
         })
@@ -530,14 +576,14 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             try
             {
                 var historyRaw = await client.GetChatHistoryRawAsync(chatId, agentId, ct);
-                return Results.Content(roomStore.EnrichChatHistoryJson(historyRaw, agentId, chatId), "application/json");
+                return Results.Content(EnrichChatHistoryWithRoom(historyRaw, agentId, chatId, roomStore), "application/json");
             }
             catch (HttpRequestException)
             {
                 var room = roomStore.GetByChat(agentId, chatId);
                 if (room is not null)
                 {
-                    return Results.Content(roomStore.EnrichChatHistoryJson("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId), "application/json");
+                    return Results.Content(EnrichChatHistoryWithRoom("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId, roomStore), "application/json");
                 }
                 return Results.NotFound(new { message = $"Chat {chatId} for agent {agentId} not found on infra" });
             }
@@ -552,10 +598,59 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("List skills belonging to a specific agent")
         .AllowAnonymous();
 
-        group.MapGet("{agentId}/workspace/tree", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
-            await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetWorkspaceTreeAsync(agentId, ct))))
+        group.MapGet("{agentId}/workspace/tree", async (
+            string agentId,
+            [FromQuery] string? category,
+            [FromQuery] string? ext,
+            [FromQuery] string? search,
+            [FromQuery] bool? includeSystem,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+            await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetWorkspaceTreeAsync(agentId, ct, category, ext, search, includeSystem ?? false))))
         .WithName("GetAgentWorkspaceTree")
-        .WithSummary("Get workspace file tree for specific agent")
+        .WithSummary("Get workspace library artifacts and file tree for specific agent with category/format filters")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/workspace/file-download", async (
+            string agentId,
+            [FromQuery] string path,
+            [FromQuery] bool? inline,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (!WorkspacePathAcl.IsPathAllowed(path))
+            {
+                return Results.Problem(
+                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
+                    statusCode: StatusCodes.Status403Forbidden,
+                    title: "Forbidden Path");
+            }
+
+            return await RuntimeResultAsync(async () =>
+            {
+                using var resp = await client.DownloadWorkspaceFileAsync(path, agentId, ct);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    return Results.NotFound(new { message = $"File '{path}' not found" });
+                }
+
+                var ext = WorkspacePathAcl.ExtractExtension(path);
+                var contentType = resp.Content.Headers.ContentType?.ToString() ?? WorkspacePathAcl.GetMimeType(ext);
+                var fileName = Path.GetFileName(path.Replace('\\', '/'));
+                var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+
+                if (inline == true)
+                {
+                    httpContext.Response.Headers.ContentDisposition = $"inline; filename=\"{fileName.Replace("\"", "")}\"";
+                    return Results.Bytes(bytes, contentType);
+                }
+
+                return Results.File(bytes, contentType, fileName);
+            });
+        })
+        .WithName("DownloadAgentWorkspaceFile")
+        .WithSummary("Download or preview a workspace artifact file for specific agent")
         .AllowAnonymous();
 
         group.MapGet("{agentId}/workspace/file-content", async (string agentId, [FromQuery] string path, IQwenPawClient client, CancellationToken ct) =>
@@ -815,6 +910,68 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
+    }
+
+    private static string EnrichChatHistoryWithRoom(
+        string historyRaw,
+        string? agentId,
+        string chatId,
+        Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore)
+    {
+        try
+        {
+            var room = roomStore.GetByChat(agentId ?? "mons", chatId);
+            if (room is null) return historyRaw;
+
+            var node = System.Text.Json.Nodes.JsonNode.Parse(string.IsNullOrWhiteSpace(historyRaw) ? "{}" : historyRaw) as System.Text.Json.Nodes.JsonObject
+                ?? new System.Text.Json.Nodes.JsonObject();
+
+            node["collaboration_room"] = System.Text.Json.JsonSerializer.SerializeToNode(room);
+
+            if (node["messages"] is not System.Text.Json.Nodes.JsonArray messagesArr)
+            {
+                messagesArr = new System.Text.Json.Nodes.JsonArray();
+                node["messages"] = messagesArr;
+            }
+
+            foreach (var turn in room.Turns.Where(t => t.Kind is "collaborator_reply" or "question" or "manager_guard"))
+            {
+                var alreadyPresent = messagesArr.Any(m => m?["id"]?.ToString() == turn.Id);
+                if (alreadyPresent) continue;
+
+                var msgObj = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["id"] = turn.Id,
+                    ["role"] = "assistant",
+                    ["type"] = "message",
+                    ["status"] = "completed",
+                    ["content"] = new System.Text.Json.Nodes.JsonArray(
+                        new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["type"] = "text",
+                            ["text"] = turn.Text
+                        }),
+                    ["metadata"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["timestamp"] = turn.CreatedAt.ToString("O"),
+                        ["sender_agent_id"] = turn.AuthorId,
+                        ["sender_agent_name"] = turn.AuthorName,
+                        ["author_role"] = turn.AuthorRole,
+                        ["turn_kind"] = turn.Kind,
+                        ["room_id"] = room.RoomId,
+                        ["matrix_room_id"] = room.MatrixRoomId,
+                        ["element_room_url"] = room.ElementRoomUrl
+                    }
+                };
+                messagesArr.Add(msgObj);
+            }
+
+            return node.ToJsonString();
+        }
+        catch
+        {
+            return historyRaw;
+        }
     }
 
     /// <summary>Maps runtime transport/status failures to their real HTTP status instead of 500.</summary>

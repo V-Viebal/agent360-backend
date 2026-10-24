@@ -69,6 +69,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 string? lastKnownMsgStatus = null;
                 string? lastKnownChatStatus = null;
                 int lastKnownContentLen = -1;
+                string? lastKnownContentHash = null;
                 string effectiveChatId = chatId;
                 string detectedChannel = channel ?? "unknown";
                 string? canonicalSessionId = null;
@@ -175,13 +176,15 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                 isTurnRunning = rootChatStatus is "running" or "in_progress" || msgStatus is "in_progress" or "running";
 
                                 int contentLen = extractedContent.Length;
+                                string currentContentHash = $"{role}:{contentLen}:{(extractedContent.Length > 120 ? extractedContent[..60] + extractedContent[^60..] : extractedContent)}";
 
+                                // Note: Some runtimes regenerate ephemeral message IDs on read when idle; compare content + count + status instead of ephemeral ID alone.
                                 bool hasChanged = lastKnownCount == -1 ||
                                        currentCount != lastKnownCount ||
-                                       currentLastId != lastKnownMessageId ||
                                        msgStatus != lastKnownMsgStatus ||
                                        rootChatStatus != lastKnownChatStatus ||
-                                       Math.Abs(contentLen - lastKnownContentLen) > 0;
+                                       Math.Abs(contentLen - lastKnownContentLen) > 0 ||
+                                       currentContentHash != lastKnownContentHash;
 
                                 if (hasChanged || (lastKnownCount == -1 && isTurnRunning))
                                 {
@@ -211,23 +214,26 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                         }
                                     }
 
-                                    // Track active turn state in SessionQueueManager
-                                    // reused isTurnRunning
-                                    queueManager.SetSessionTurnActive(effectiveChatId, isTurnRunning);
-                                    if (!string.IsNullOrWhiteSpace(canonicalSessionId))
-                                        queueManager.SetSessionTurnActive(canonicalSessionId, isTurnRunning);
+                                    bool isInitialSync = lastKnownCount == -1;
+                                    // Only broadcast queue/channel telemetry on genuine post-initial turn transitions,
+                                    // not when a browser tab first opens an already-completed chat history.
+                                    if (!isInitialSync || isTurnRunning)
+                                    {
+                                        queueManager.SetSessionTurnActive(effectiveChatId, isTurnRunning, agentId);
+                                        if (!string.IsNullOrWhiteSpace(canonicalSessionId))
+                                            queueManager.SetSessionTurnActive(canonicalSessionId, isTurnRunning, agentId);
 
-                                    // Record response event in telemetry / channel store for auditing and analytics
-                                    ChannelResponseStore.Record(new ChannelResponseEvent(
-                                        Id: currentLastId ?? Guid.NewGuid().ToString(),
-                                        AgentId: agentId,
-                                        SessionId: canonicalSessionId ?? chatId,
-                                        Channel: detectedChannel,
-                                        Role: role,
-                                        Content: extractedContent,
-                                        Status: msgStatus ?? "completed",
-                                        RecordedAt: DateTime.UtcNow
-                                    ));
+                                        ChannelResponseStore.Record(new ChannelResponseEvent(
+                                            Id: currentLastId ?? Guid.NewGuid().ToString(),
+                                            AgentId: agentId,
+                                            SessionId: canonicalSessionId ?? chatId,
+                                            Channel: detectedChannel,
+                                            Role: role,
+                                            Content: extractedContent,
+                                            Status: msgStatus ?? "completed",
+                                            RecordedAt: DateTime.UtcNow
+                                        ));
+                                    }
 
                                     // When a client is connected to the live session stream, the user is actively viewing
                                     // this turn in real-time; never pollute it as unread.
@@ -261,6 +267,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     lastKnownMsgStatus = msgStatus;
                                     lastKnownChatStatus = rootChatStatus;
                                     lastKnownContentLen = contentLen;
+                                    lastKnownContentHash = currentContentHash;
                                 }
                                 else if (lastKnownCount == -1)
                                 {
@@ -269,6 +276,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     lastKnownMsgStatus = msgStatus;
                                     lastKnownChatStatus = rootChatStatus;
                                     lastKnownContentLen = contentLen;
+                                    lastKnownContentHash = currentContentHash;
                                 }
                             }
                         }
@@ -361,10 +369,10 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
             var targetAgent = !string.IsNullOrWhiteSpace(dto.AgentId) ? dto.AgentId : (agentId ?? "mons");
             var primarySession = !string.IsNullOrWhiteSpace(dto.SessionId) ? dto.SessionId : (dto.ChatId ?? "");
 
-            queueManager.SetSessionTurnActive(primarySession, isRunning);
+            queueManager.SetSessionTurnActive(primarySession, isRunning, targetAgent);
             if (!string.IsNullOrWhiteSpace(dto.ChatId) && !string.Equals(dto.ChatId, primarySession, StringComparison.OrdinalIgnoreCase))
             {
-                queueManager.SetSessionTurnActive(dto.ChatId, isRunning);
+                queueManager.SetSessionTurnActive(dto.ChatId, isRunning, targetAgent);
             }
 
             var recorded = ChannelResponseStore.Record(

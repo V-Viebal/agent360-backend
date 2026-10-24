@@ -102,4 +102,41 @@ public class SessionMultiplexerTests
         await Task.WhenAll(t1, t2);
         order.Should().Equal(new[] { 1, 2 });
     }
+
+    [Fact]
+    public async Task Hub_TracksMultiAgentAndMultiSession_AndSubmittedStatusStaysRunning()
+    {
+        var queue = new SessionQueueManager();
+        using var hub = new SessionMultiplexerHub(queue, NullLogger<SessionMultiplexerHub>.Instance);
+        var reader = hub.SubscribeSse(out var subId);
+
+        queue.SetSessionTurnActive("sess_mons_1", true, "bot:agent360:mons");
+        queue.SetSessionTurnActive("sess_mons_2", true, "mons");
+        queue.SetSessionTurnActive("sess_ken_1", true, "bot:agent360:ken");
+
+        var activeAgents = queue.GetActiveAgentSessions();
+        activeAgents.Should().ContainKey("mons");
+        activeAgents["mons"].Should().HaveCount(2);
+        activeAgents.Should().ContainKey("ken");
+        activeAgents["ken"].Should().ContainSingle().Which.Should().Be("sess_ken_1");
+
+        var snapshotJson = System.Text.Json.JsonSerializer.Serialize(hub.CreateSnapshot());
+        snapshotJson.Should().Contain("active_agent_sessions");
+        snapshotJson.Should().Contain("sess_mons_1");
+        snapshotJson.Should().Contain("sess_ken_1");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var msg1 = await reader.ReadAsync(cts.Token);
+        msg1.Should().Contain("agent_id").And.Contain("mons");
+        msg1.Should().Contain("is_running").And.Contain("true");
+
+        // Finishing one session on mons keeps mons active because sess_mons_2 is still running
+        queue.SetSessionTurnActive("sess_mons_1", false, "mons");
+        queue.GetActiveAgentSessions()["mons"].Should().ContainSingle().Which.Should().Be("sess_mons_2");
+
+        // Clean up
+        queue.SetSessionTurnActive("sess_mons_2", false, "mons");
+        queue.SetSessionTurnActive("sess_ken_1", false, "ken");
+        hub.UnsubscribeSse(subId);
+    }
 }

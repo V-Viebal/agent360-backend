@@ -52,7 +52,7 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
                     // Handle Interactive Interruption / Cancel Turn via WS
                     if (action == "stop" || action == "interrupt")
                     {
-                        queueManager.SetSessionTurnActive(sessionId ?? "", false);
+                        queueManager.SetSessionTurnActive(sessionId ?? "", false, agentId);
                         var stopOk = await qwenPawClient.StopChatAsync(new ConsoleChatStopRequestDto(sessionId ?? ""), ct);
                         var stopAck = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "stopped", success = stopOk, session_id = sessionId }));
                         await webSocket.SendAsync(new ArraySegment<byte>(stopAck), WebSocketMessageType.Text, true, ct);
@@ -79,7 +79,7 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
                         continue;
                     }
 
-                    queueManager.SetSessionTurnActive(sessionId ?? "", true);
+                    queueManager.SetSessionTurnActive(sessionId ?? "", true, agentId);
                     try
                     {
                         var sendReq = new ConsoleChatSendRequestDto(
@@ -114,7 +114,7 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
                     }
                     finally
                     {
-                        queueManager.SetSessionTurnActive(sessionId ?? "", false);
+                        queueManager.SetSessionTurnActive(sessionId ?? "", false, agentId);
                     }
                 }
             }
