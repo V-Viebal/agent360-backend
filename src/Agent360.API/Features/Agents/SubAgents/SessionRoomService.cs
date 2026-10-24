@@ -230,9 +230,50 @@ public sealed class SessionRoomStore
                 }
             }
 
-            foreach (var turn in room.Turns.Where(t => t.Kind is "collaborator_reply" or "question" or "manager_guard"))
+            // Project room turns in chronological order (User Request -> Collaborator Replies -> Host Synthesis LAST)
+            foreach (var turn in room.Turns.OrderBy(t => t.TurnNo))
             {
-                var alreadyPresent = messagesArr.Any(m => m?["id"]?.ToString() == turn.Id);
+                if (turn.Kind == "request" && !string.Equals(turn.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
+                {
+                    var reqClean = turn.Text.Trim();
+                    var reqExists = messagesArr.Any(m =>
+                    {
+                        if (!string.Equals(m?["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) return false;
+                        var mText = m?["content"] is System.Text.Json.Nodes.JsonArray arr
+                            ? string.Join("\n", arr.Select(x => x?["text"]?.ToString() ?? ""))
+                            : m?["content"]?.ToString() ?? "";
+                        return mText.Trim().Equals(reqClean, StringComparison.OrdinalIgnoreCase);
+                    });
+                    if (!reqExists && !string.IsNullOrWhiteSpace(reqClean))
+                    {
+                        messagesArr.Add(new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["id"] = turn.Id,
+                            ["role"] = "user",
+                            ["type"] = "message",
+                            ["status"] = "completed",
+                            ["content"] = new System.Text.Json.Nodes.JsonArray(
+                                new System.Text.Json.Nodes.JsonObject { ["type"] = "text", ["text"] = reqClean }),
+                            ["metadata"] = new System.Text.Json.Nodes.JsonObject
+                            {
+                                ["timestamp"] = turn.CreatedAt.ToString("O"),
+                                ["room_id"] = room.RoomId
+                            }
+                        });
+                    }
+                    continue;
+                }
+
+                if (turn.Kind is not ("collaborator_reply" or "question" or "manager_guard" or "synthesis"))
+                    continue;
+
+                var isSynthesis = turn.Kind == "synthesis";
+                var alreadyPresent = messagesArr.Any(m =>
+                    m?["id"]?.ToString() == turn.Id ||
+                    (isSynthesis && string.Equals(m?["role"]?.ToString(), "assistant", StringComparison.OrdinalIgnoreCase) &&
+                     (m?["content"] is System.Text.Json.Nodes.JsonArray cArr
+                        ? string.Join("\n", cArr.Select(x => x?["text"]?.ToString() ?? "")).Trim() == turn.Text.Trim()
+                        : (m?["content"]?.ToString() ?? "").Trim() == turn.Text.Trim())));
                 if (alreadyPresent) continue;
 
                 var msgObj = new System.Text.Json.Nodes.JsonObject
@@ -250,8 +291,8 @@ public sealed class SessionRoomStore
                     ["metadata"] = new System.Text.Json.Nodes.JsonObject
                     {
                         ["timestamp"] = turn.CreatedAt.ToString("O"),
-                        ["sender_agent_id"] = turn.AuthorId,
-                        ["sender_agent_name"] = turn.AuthorName,
+                        ["sender_agent_id"] = isSynthesis ? null : turn.AuthorId,
+                        ["sender_agent_name"] = isSynthesis ? null : turn.AuthorName,
                         ["author_role"] = turn.AuthorRole,
                         ["turn_kind"] = turn.Kind,
                         ["room_id"] = room.RoomId,
@@ -263,6 +304,29 @@ public sealed class SessionRoomStore
                 };
                 messagesArr.Add(msgObj);
             }
+
+            // Guarantee chronological order and ensure Host Synthesis comes AFTER all Collaborator Replies for the same turn batch
+            var sortedMessages = messagesArr
+                .OfType<System.Text.Json.Nodes.JsonObject>()
+                .Select((m, idx) =>
+                {
+                    var tsStr = m["metadata"]?["timestamp"]?.ToString() ?? m["created_at"]?.ToString();
+                    var parsedTs = DateTimeOffset.TryParse(tsStr, out var dto) ? dto : DateTimeOffset.MinValue;
+                    var role = m["role"]?.ToString() ?? "assistant";
+                    var turnKind = m["metadata"]?["turn_kind"]?.ToString();
+                    var senderAg = m["metadata"]?["sender_agent_id"]?.ToString();
+                    // Within the same collaboration window: user (0) -> collaborator_reply (1) -> host synthesis / assistant (2)
+                    var phaseOrder = role == "user" ? 0 : (!string.IsNullOrEmpty(senderAg) && turnKind != "synthesis" ? 1 : 2);
+                    return (Node: System.Text.Json.Nodes.JsonNode.Parse(m.ToJsonString())!, Ts: parsedTs, Phase: phaseOrder, Idx: idx);
+                })
+                .OrderBy(x => x.Ts == DateTimeOffset.MinValue ? 1 : 0)
+                .ThenBy(x => x.Ts)
+                .ThenBy(x => x.Phase)
+                .ThenBy(x => x.Idx)
+                .Select(x => x.Node)
+                .ToArray();
+
+            node["messages"] = new System.Text.Json.Nodes.JsonArray(sortedMessages);
 
             return node.ToJsonString();
         }
@@ -928,13 +992,56 @@ public sealed partial class SessionRoomOrchestrator(
         return (updatedRoom, turn);
     }
 
+    public async Task<(SessionCollaborationRoom Room, SessionRoomTurn Turn)?> RecordHostSynthesisTurnAsync(
+        string hostAgentId,
+        string hostChatId,
+        string synthesisText,
+        string? reasoning = null,
+        IReadOnlyList<SessionRoomStep>? steps = null,
+        string? hostSessionId = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(synthesisText)) return null;
+        var room = roomStore.GetByChat(hostAgentId, hostChatId);
+        if (room is null) return null;
+
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var now = DateTimeOffset.UtcNow;
+        var turn = new SessionRoomTurn(
+            $"rt_{Guid.NewGuid():N}"[..12],
+            room.Turns.Count + 1,
+            host,
+            FriendlyAgentName(host),
+            "host",
+            "synthesis",
+            synthesisText.Trim(),
+            null,
+            now,
+            reasoning,
+            steps);
+
+        var updatedRoom = await roomStore.SaveAsync(room with
+        {
+            Status = "completed",
+            ActiveCollaboratorId = null,
+            CurrentTurnCount = room.Turns.Count + 1,
+            Turns = [.. room.Turns, turn],
+            UpdatedAt = now
+        });
+
+        _ = PostTurnToRealMatrixRoomAsync(updatedRoom, turn);
+        return (updatedRoom, turn);
+    }
+
     public static IReadOnlyList<string> DetectMentionedCollaborators(string? messageText, string hostAgentId, IEnumerable<string>? knownAgentSlugs = null)
     {
         if (string.IsNullOrWhiteSpace(messageText)) return [];
         var normHost = SubAgentService.NormalizeAgentId(hostAgentId).ToLowerInvariant();
         var defaultSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "mons", "ken", "zen", "mkai", "gm-boc", "gm-gao", "gm-lua", "planthy-pm", "climax-default", "climax-team"
+            "mons", "ken", "zen", "mkai", "gm-boc", "gm-gao", "gm-lua", "gm-team",
+            "planthy-pm", "planthy-team", "climax-default", "climax-team",
+            "its-default", "gl-default", "agentteams-manager", "default-core"
         };
         if (knownAgentSlugs is not null)
         {
@@ -942,8 +1049,29 @@ public sealed partial class SessionRoomOrchestrator(
                 defaultSlugs.Add(SubAgentService.NormalizeAgentId(s));
         }
 
+        var friendlyAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["planthy team"] = "planthy-team",
+            ["planthy pm"] = "planthy-pm",
+            ["climax team"] = "climax-team",
+            ["climax default"] = "climax-default",
+            ["gm bốc"] = "gm-boc",
+            ["gm boc"] = "gm-boc",
+            ["gm gạo"] = "gm-gao",
+            ["gm gao"] = "gm-gao",
+            ["gm lúa"] = "gm-lua",
+            ["gm lua"] = "gm-lua",
+            ["gm team"] = "gm-team"
+        };
+
+        var normalizedText = messageText;
+        foreach (var (alias, slug) in friendlyAliases)
+        {
+            normalizedText = Regex.Replace(normalizedText, "@" + Regex.Escape(alias), "@" + slug, RegexOptions.IgnoreCase);
+        }
+
         var result = new List<string>();
-        foreach (Match m in MentionRegex().Matches(messageText))
+        foreach (Match m in MentionRegex().Matches(normalizedText))
         {
             var candidate = m.Groups[1].Value.Trim().ToLowerInvariant();
             if (string.IsNullOrEmpty(candidate) || candidate == normHost) continue;

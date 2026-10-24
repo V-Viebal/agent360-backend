@@ -783,7 +783,7 @@ public sealed class QwenPawClient : IQwenPawClient
 
         var payload = new
         {
-            user_id = "default",
+            user_id = !string.IsNullOrWhiteSpace(request.UserId) ? request.UserId : "default",
             session_id = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
             channel = effectiveChannel,
             loop_mode = request.LoopMode ?? "default",

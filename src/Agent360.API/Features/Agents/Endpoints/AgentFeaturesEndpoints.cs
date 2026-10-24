@@ -253,6 +253,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             string qwenPawSessionId = effectiveSessionId;
             string? detectedChatChannel = request.Channel;
+            string? detectedChatUserId = request.UserId;
             try
             {
                 var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
@@ -261,18 +262,38 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     using var doc = System.Text.Json.JsonDocument.Parse(chatsRaw);
                     if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
                     {
+                        // Prefer exact UUID match first so multi-user Telegram topics map to the exact chat branch
+                        System.Text.Json.JsonElement? matchedEl = null;
                         foreach (var el in doc.RootElement.EnumerateArray())
                         {
                             var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
-                            var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
-                            var ch = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
-                            if ((string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase)))
+                            if (string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
                             {
-                                if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
-                                if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
+                                matchedEl = el;
                                 break;
                             }
+                        }
+                        if (matchedEl is null)
+                        {
+                            foreach (var el in doc.RootElement.EnumerateArray())
+                            {
+                                var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                                if (string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    matchedEl = el;
+                                    break;
+                                }
+                            }
+                        }
+                        if (matchedEl.HasValue)
+                        {
+                            var m = matchedEl.Value;
+                            var sid = m.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                            var ch = m.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                            var uid = m.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
+                            if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
+                            if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
+                            if (!string.IsNullOrWhiteSpace(uid)) detectedChatUserId = uid;
                         }
                     }
                 }
@@ -296,7 +317,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 var effectiveRequest = request with
                 {
                     SessionId = qwenPawSessionId,
-                    Channel = detectedChatChannel ?? request.Channel ?? "console"
+                    Channel = detectedChatChannel ?? request.Channel ?? "console",
+                    UserId = detectedChatUserId ?? request.UserId
                 };
 
                 backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
@@ -380,6 +402,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
             string qwenPawSessionId = effectiveSessionId;
             string? detectedChatChannel = request.Channel;
+            string? detectedChatUserId = request.UserId;
             try
             {
                 var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
@@ -388,18 +411,38 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     using var doc = System.Text.Json.JsonDocument.Parse(chatsRaw);
                     if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
                     {
+                        // Prefer exact UUID match first so multi-user Telegram topics map to the exact chat branch
+                        System.Text.Json.JsonElement? matchedEl = null;
                         foreach (var el in doc.RootElement.EnumerateArray())
                         {
                             var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
-                            var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
-                            var ch = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
-                            if ((string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase)))
+                            if (string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
                             {
-                                if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
-                                if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
+                                matchedEl = el;
                                 break;
                             }
+                        }
+                        if (matchedEl is null)
+                        {
+                            foreach (var el in doc.RootElement.EnumerateArray())
+                            {
+                                var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                                if (string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    matchedEl = el;
+                                    break;
+                                }
+                            }
+                        }
+                        if (matchedEl.HasValue)
+                        {
+                            var m = matchedEl.Value;
+                            var sid = m.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                            var ch = m.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                            var uid = m.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
+                            if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
+                            if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
+                            if (!string.IsNullOrWhiteSpace(uid)) detectedChatUserId = uid;
                         }
                     }
                 }
@@ -423,7 +466,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 var effectiveRequest = request with
                 {
                     SessionId = qwenPawSessionId,
-                    Channel = detectedChatChannel ?? request.Channel ?? "console"
+                    Channel = detectedChatChannel ?? request.Channel ?? "console",
+                    UserId = detectedChatUserId ?? request.UserId
                 };
 
                 backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
@@ -978,6 +1022,51 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             await stream.DisposeAsync();
             response.Dispose();
             upstreamCts.Dispose();
+
+            if (mentionedCollaborators.Count > 0 && roomOrchestrator is not null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        client.InvalidateChatList(agentTarget);
+                        var histRaw = await client.GetChatHistoryRawAsync(effectiveSessionId, agentTarget, CancellationToken.None);
+                        if (!string.IsNullOrWhiteSpace(histRaw))
+                        {
+                            using var hDoc = System.Text.Json.JsonDocument.Parse(histRaw);
+                            if (hDoc.RootElement.TryGetProperty("messages", out var mArr) && mArr.ValueKind == System.Text.Json.JsonValueKind.Array && mArr.GetArrayLength() > 0)
+                            {
+                                string? synthText = null;
+                                string? synthReasoning = null;
+                                for (int i = mArr.GetArrayLength() - 1; i >= 0; i--)
+                                {
+                                    var item = mArr[i];
+                                    var r = item.TryGetProperty("role", out var rP) ? rP.GetString() : null;
+                                    if (r == "user") break;
+                                    if (r == "assistant")
+                                    {
+                                        var t = item.TryGetProperty("type", out var tP) ? tP.GetString() : "message";
+                                        var txt = item.TryGetProperty("content", out var cP) && cP.ValueKind == System.Text.Json.JsonValueKind.Array
+                                            ? string.Join("\n", cP.EnumerateArray().Select(x => x.TryGetProperty("text", out var tx) ? tx.GetString() : null).Where(x => !string.IsNullOrEmpty(x)))
+                                            : null;
+                                        if (t == "message" && string.IsNullOrWhiteSpace(synthText) && !string.IsNullOrWhiteSpace(txt))
+                                            synthText = txt;
+                                        else if (t == "reasoning" && string.IsNullOrWhiteSpace(synthReasoning) && !string.IsNullOrWhiteSpace(txt))
+                                            synthReasoning = txt;
+                                    }
+                                }
+                                if (!string.IsNullOrWhiteSpace(synthText))
+                                {
+                                    await roomOrchestrator.RecordHostSynthesisTurnAsync(
+                                        agentTarget, effectiveSessionId, synthText, synthReasoning, null, qwenPawSessionId, CancellationToken.None);
+                                }
+                            }
+                        }
+                    }
+                    catch {}
+                });
+            }
+
             return false;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested && !upstreamCts.IsCancellationRequested && response is not null && stream is not null)
@@ -1036,87 +1125,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         string historyRaw,
         string? agentId,
         string chatId,
-        Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore)
-    {
-        try
-        {
-            var room = roomStore.GetByChat(agentId ?? "mons", chatId);
-            if (room is null) return historyRaw;
-
-            var node = System.Text.Json.Nodes.JsonNode.Parse(string.IsNullOrWhiteSpace(historyRaw) ? "{}" : historyRaw) as System.Text.Json.Nodes.JsonObject
-                ?? new System.Text.Json.Nodes.JsonObject();
-
-            node["collaboration_room"] = System.Text.Json.JsonSerializer.SerializeToNode(room);
-
-            if (node["messages"] is not System.Text.Json.Nodes.JsonArray messagesArr)
-            {
-                messagesArr = new System.Text.Json.Nodes.JsonArray();
-                node["messages"] = messagesArr;
-            }
-
-            // Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages so the UI only shows the user's clean message
-            foreach (var msgNode in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
-            {
-                if (!string.Equals(msgNode["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) continue;
-                if (msgNode["content"] is System.Text.Json.Nodes.JsonValue strVal && strVal.TryGetValue<string>(out var rawStr) && !string.IsNullOrEmpty(rawStr))
-                {
-                    var idx = rawStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
-                    if (idx < 0) idx = rawStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
-                    if (idx >= 0) msgNode["content"] = rawStr[..idx].TrimEnd();
-                }
-                else if (msgNode["content"] is System.Text.Json.Nodes.JsonArray contentArr)
-                {
-                    foreach (var part in contentArr.OfType<System.Text.Json.Nodes.JsonObject>())
-                    {
-                        if (part["text"] is System.Text.Json.Nodes.JsonValue tVal && tVal.TryGetValue<string>(out var partStr) && !string.IsNullOrEmpty(partStr))
-                        {
-                            var idx = partStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
-                            if (idx < 0) idx = partStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
-                            if (idx >= 0) part["text"] = partStr[..idx].TrimEnd();
-                        }
-                    }
-                }
-            }
-
-            foreach (var turn in room.Turns.Where(t => t.Kind is "collaborator_reply" or "question" or "manager_guard"))
-            {
-                var alreadyPresent = messagesArr.Any(m => m?["id"]?.ToString() == turn.Id);
-                if (alreadyPresent) continue;
-
-                var msgObj = new System.Text.Json.Nodes.JsonObject
-                {
-                    ["id"] = turn.Id,
-                    ["role"] = "assistant",
-                    ["type"] = "message",
-                    ["status"] = "completed",
-                    ["content"] = new System.Text.Json.Nodes.JsonArray(
-                        new System.Text.Json.Nodes.JsonObject
-                        {
-                            ["type"] = "text",
-                            ["text"] = turn.Text
-                        }),
-                    ["metadata"] = new System.Text.Json.Nodes.JsonObject
-                    {
-                        ["timestamp"] = turn.CreatedAt.ToString("O"),
-                        ["sender_agent_id"] = turn.AuthorId,
-                        ["sender_agent_name"] = turn.AuthorName,
-                        ["author_role"] = turn.AuthorRole,
-                        ["turn_kind"] = turn.Kind,
-                        ["room_id"] = room.RoomId,
-                        ["matrix_room_id"] = room.MatrixRoomId,
-                        ["element_room_url"] = room.ElementRoomUrl
-                    }
-                };
-                messagesArr.Add(msgObj);
-            }
-
-            return node.ToJsonString();
-        }
-        catch
-        {
-            return historyRaw;
-        }
-    }
+        Agent360.API.Features.Agents.SubAgents.SessionRoomStore roomStore) =>
+        roomStore.EnrichChatHistoryJson(historyRaw, agentId, chatId);
 
     /// <summary>Maps runtime transport/status failures to their real HTTP status instead of 500.</summary>
     private static async Task<IResult> RuntimeResultAsync(Func<Task<IResult>> action)
