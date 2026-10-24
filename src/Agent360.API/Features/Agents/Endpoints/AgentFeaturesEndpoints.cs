@@ -279,36 +279,47 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             catch {}
 
-            queueManager.SetSessionTurnActive(effectiveSessionId, true, agentTarget);
-            if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
-            {
-                queueManager.SetSessionTurnActive(qwenPawSessionId, true, agentTarget);
-            }
-
-            Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
-
+            var sessionLock = queueManager.GetOrCreateSessionLock(qwenPawSessionId);
+            await sessionLock.WaitAsync(ct);
+            bool backgrounded = false;
             try
             {
+                queueManager.SetSessionTurnActive(effectiveSessionId, true, agentTarget);
+                if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    queueManager.SetSessionTurnActive(qwenPawSessionId, true, agentTarget);
+                }
+
+                Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                    agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
+
                 var effectiveRequest = request with
                 {
                     SessionId = qwenPawSessionId,
                     Channel = detectedChatChannel ?? request.Channel ?? "console"
                 };
 
-                await ExecuteConsoleChatStreamWithRoomSupportAsync(
-                    effectiveRequest, agentTarget, effectiveSessionId, qwenPawSessionId, httpContext, client, ct);
+                backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
+                    effectiveRequest, agentTarget, effectiveSessionId, qwenPawSessionId, httpContext, client, queueManager, sessionLock, ct);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
 
-                Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                    agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
+                if (!backgrounded)
+                {
+                    client.InvalidateChatList(agentTarget);
+                    Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                        agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
+                }
             }
             finally
             {
-                queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
-                if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                if (!backgrounded)
                 {
-                    queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
+                    queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
+                    if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
+                    }
+                    sessionLock.Release();
                 }
             }
         })
@@ -397,6 +408,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             var sessionLock = queueManager.GetOrCreateSessionLock(qwenPawSessionId);
             await sessionLock.WaitAsync(ct);
+            bool backgrounded = false;
             try
             {
                 queueManager.SetSessionTurnActive(effectiveSessionId, true, agentTarget);
@@ -414,21 +426,28 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     Channel = detectedChatChannel ?? request.Channel ?? "console"
                 };
 
-                await ExecuteConsoleChatStreamWithRoomSupportAsync(
-                    effectiveRequest, agentTarget, effectiveSessionId, qwenPawSessionId, httpContext, client, ct);
+                backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
+                    effectiveRequest, agentTarget, effectiveSessionId, qwenPawSessionId, httpContext, client, queueManager, sessionLock, ct);
                 _ = walletService.DeductTokensAsync(tenantId, 250, "INFERENCE_USAGE", $"AI Agent inference turn for '{agentTarget}'", effectiveSessionId);
 
-                Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                    agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
+                if (!backgrounded)
+                {
+                    client.InvalidateChatList(agentTarget);
+                    Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                        agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
+                }
             }
             finally
             {
-                queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
-                if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                if (!backgrounded)
                 {
-                    queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
+                    queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
+                    if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
+                    }
+                    sessionLock.Release();
                 }
-                sessionLock.Release();
             }
         })
         .WithName("ConsoleChatStream")
@@ -783,13 +802,15 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
     }
 
-    private static async Task ExecuteConsoleChatStreamWithRoomSupportAsync(
+    private static async Task<bool> ExecuteConsoleChatStreamWithRoomSupportAsync(
         ConsoleChatSendRequestDto effectiveRequest,
         string agentTarget,
         string effectiveSessionId,
         string qwenPawSessionId,
         HttpContext httpContext,
         IQwenPawClient client,
+        SessionQueueManager queueManager,
+        SemaphoreSlim sessionLock,
         CancellationToken ct)
     {
         var rawUserText = effectiveRequest.Message;
@@ -901,15 +922,75 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             };
         }
 
-        using var response = await client.StreamConsoleChatAsync(effectiveRequest, ct);
-        if (!httpContext.Response.HasStarted)
+        var upstreamCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        HttpResponseMessage? response = null;
+        Stream? stream = null;
+        try
         {
-            httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
-            httpContext.Response.StatusCode = (int)response.StatusCode;
-        }
+            response = await client.StreamConsoleChatAsync(effectiveRequest, upstreamCts.Token);
+            if (!httpContext.Response.HasStarted)
+            {
+                httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";
+                httpContext.Response.StatusCode = (int)response.StatusCode;
+            }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
+            stream = await response.Content.ReadAsStreamAsync(upstreamCts.Token);
+            await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
+            await stream.DisposeAsync();
+            response.Dispose();
+            upstreamCts.Dispose();
+            return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested && !upstreamCts.IsCancellationRequested && response is not null && stream is not null)
+        {
+            // Browser reloaded or disconnected while QwenPaw is still executing the turn.
+            // Keep draining the upstream stream in background so QwenPaw finishes cleanly and
+            // SessionQueueManager keeps is_running=true until the turn actually ends (allowing /live reconnect).
+            var capturedResponse = response;
+            var capturedStream = stream;
+            var capturedCts = upstreamCts;
+            var capturedChannel = effectiveRequest.Channel ?? "console";
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var drainBuf = new byte[8192];
+                    while (await capturedStream.ReadAsync(drainBuf, capturedCts.Token) > 0)
+                    {
+                    }
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    try { client.InvalidateChatList(agentTarget); } catch {}
+                    try
+                    {
+                        Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                            agentTarget, effectiveSessionId, capturedChannel, "assistant", "", "completed");
+                    }
+                    catch {}
+                    queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);
+                    if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        queueManager.SetSessionTurnActive(qwenPawSessionId, false, agentTarget);
+                    }
+                    try { sessionLock.Release(); } catch {}
+                    try { await capturedStream.DisposeAsync(); } catch {}
+                    try { capturedResponse.Dispose(); } catch {}
+                    try { capturedCts.Dispose(); } catch {}
+                }
+            });
+            return true;
+        }
+        catch
+        {
+            if (stream is not null) { try { await stream.DisposeAsync(); } catch {} }
+            response?.Dispose();
+            upstreamCts.Dispose();
+            throw;
+        }
     }
 
     private static string EnrichChatHistoryWithRoom(

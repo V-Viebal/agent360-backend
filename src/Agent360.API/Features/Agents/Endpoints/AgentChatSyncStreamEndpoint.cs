@@ -74,18 +74,23 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 string detectedChannel = channel ?? "unknown";
                 string? canonicalSessionId = null;
 
-                // Resolve channel and canonical UUID if given a session identifier (e.g. telegram:xxx)
-                try
+                // Resolve channel and canonical UUID if given a session identifier (e.g. telegram:xxx or session-xxx)
+                for (int attempt = 0; attempt < 2; attempt++)
                 {
-                    var chatsRaw = await client.GetAgentChatsRawAsync(agentId, ct);
-                    var (resolvedId, resolvedChannel, resolvedSession) = ResolveTargetChat(chatId, chatsRaw);
-                    effectiveChatId = resolvedId;
-                    if (resolvedChannel is not null) detectedChannel = resolvedChannel;
-                    canonicalSessionId = resolvedSession;
-                }
-                catch
-                {
-                    // Fall back to original chatId on resolution failure
+                    try
+                    {
+                        if (attempt == 1) client.InvalidateChatList(agentId);
+                        var chatsRaw = await client.GetAgentChatsRawAsync(agentId, ct);
+                        var (resolvedId, resolvedChannel, resolvedSession) = ResolveTargetChat(chatId, chatsRaw);
+                        effectiveChatId = resolvedId;
+                        if (resolvedChannel is not null) detectedChannel = resolvedChannel;
+                        canonicalSessionId = resolvedSession;
+                        if (!string.IsNullOrWhiteSpace(canonicalSessionId)) break;
+                    }
+                    catch
+                    {
+                        // Fall back to original chatId on resolution failure
+                    }
                 }
 
                 var isInitiallyRunning = queueManager.IsSessionTurnActive(effectiveChatId) ||
@@ -317,25 +322,34 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 string sessionId = chatId;
                 string? userId = null;
                 string? channel = null;
-                try
+                bool foundChat = false;
+                for (int attempt = 0; attempt < 2 && !foundChat; attempt++)
                 {
-                    using var doc = JsonDocument.Parse(await client.GetAgentChatsRawAsync(agentId, ct));
-                    foreach (var el in doc.RootElement.EnumerateArray())
+                    try
                     {
-                        var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
-                        var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
-                        if (!string.Equals(id, chatId, StringComparison.OrdinalIgnoreCase) && !string.Equals(sid, chatId, StringComparison.OrdinalIgnoreCase))
+                        if (attempt == 1) client.InvalidateChatList(agentId);
+                        var chatsRaw = await client.GetAgentChatsRawAsync(agentId, ct);
+                        if (string.IsNullOrWhiteSpace(chatsRaw)) continue;
+                        using var doc = JsonDocument.Parse(chatsRaw);
+                        if (doc.RootElement.ValueKind != JsonValueKind.Array) continue;
+                        foreach (var el in doc.RootElement.EnumerateArray())
                         {
-                            continue;
+                            var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                            var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                            if (!string.Equals(id, chatId, StringComparison.OrdinalIgnoreCase) && !string.Equals(sid, chatId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+                            sessionId = sid ?? chatId;
+                            userId = el.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
+                            channel = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                            foundChat = true;
+                            break;
                         }
-                        sessionId = sid ?? chatId;
-                        userId = el.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
-                        channel = el.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
-                        break;
                     }
-                }
-                catch (Exception) when (!ct.IsCancellationRequested)
-                {
+                    catch (Exception) when (!ct.IsCancellationRequested)
+                    {
+                    }
                 }
 
                 httpContext.Response.ContentType = "text/event-stream";

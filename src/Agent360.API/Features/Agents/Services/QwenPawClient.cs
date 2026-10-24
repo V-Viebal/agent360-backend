@@ -567,8 +567,62 @@ public sealed class QwenPawClient : IQwenPawClient
 
     public void InvalidateChatList(string? agentId) => _cache.Remove(ChatListKey(agentId));
 
-    public Task<string> GetChatHistoryRawAsync(string chatId, string? agentId = null, CancellationToken cancellationToken = default) =>
-        GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(chatId)}", SlowReadTimeout, ct: cancellationToken);
+    private async Task<string?> ResolveChatUuidAsync(string identifier, string? agentId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(identifier)) return null;
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                if (attempt == 1) InvalidateChatList(agentId);
+                var chatsRaw = await GetAgentChatsRawAsync(agentId ?? "mons", ct);
+                if (string.IsNullOrWhiteSpace(chatsRaw)) continue;
+                using var doc = JsonDocument.Parse(chatsRaw);
+                if (doc.RootElement.ValueKind != JsonValueKind.Array) continue;
+                foreach (var el in doc.RootElement.EnumerateArray())
+                {
+                    var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                    var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                    if (string.Equals(id, identifier, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(sid, identifier, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return !string.IsNullOrWhiteSpace(id) ? id : identifier;
+                    }
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+            }
+        }
+        return null;
+    }
+
+    public async Task<string> GetChatHistoryRawAsync(string chatId, string? agentId = null, CancellationToken cancellationToken = default)
+    {
+        var targetChatId = chatId;
+        if (!Guid.TryParse(chatId, out _))
+        {
+            var resolved = await ResolveChatUuidAsync(chatId, agentId, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                targetChatId = resolved;
+            }
+        }
+
+        try
+        {
+            return await GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(targetChatId)}", SlowReadTimeout, ct: cancellationToken);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound && string.Equals(targetChatId, chatId, StringComparison.OrdinalIgnoreCase))
+        {
+            var resolved = await ResolveChatUuidAsync(chatId, agentId, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(resolved) && !string.Equals(resolved, chatId, StringComparison.OrdinalIgnoreCase))
+            {
+                return await GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(resolved)}", SlowReadTimeout, ct: cancellationToken);
+            }
+            throw;
+        }
+    }
 
     public Task<ChatHistoryResponseDto?> GetChatHistoryAsync(string chatId, CancellationToken cancellationToken = default) =>
         GetJsonAsync<ChatHistoryResponseDto>("mons", $"chats/{Uri.EscapeDataString(chatId)}", ct: cancellationToken);
@@ -776,15 +830,35 @@ public sealed class QwenPawClient : IQwenPawClient
 
     /// <summary>Attaches to the live turn of any channel session (Telegram, Zalo, cron, console). QwenPaw replays
     /// the current turn from its first event and then streams it live; an idle session returns an empty body.</summary>
-    public Task<HttpResponseMessage> ReconnectConsoleChatAsync(string? agentId, string sessionId, string? userId, string? channel, CancellationToken cancellationToken = default) =>
-        SendAsync(
+    public Task<HttpResponseMessage> ReconnectConsoleChatAsync(string? agentId, string sessionId, string? userId, string? channel, CancellationToken cancellationToken = default)
+    {
+        var effectiveChannel = !string.IsNullOrWhiteSpace(channel)
+            ? channel
+            : sessionId.StartsWith("telegram:", StringComparison.OrdinalIgnoreCase) || sessionId.Contains("telegram", StringComparison.OrdinalIgnoreCase)
+                ? "telegram"
+                : sessionId.StartsWith("zalo:", StringComparison.OrdinalIgnoreCase) || sessionId.Contains("zalo", StringComparison.OrdinalIgnoreCase)
+                    ? "zalo"
+                    : sessionId.StartsWith("discord:", StringComparison.OrdinalIgnoreCase)
+                        ? "discord"
+                        : sessionId.StartsWith("slack:", StringComparison.OrdinalIgnoreCase)
+                            ? "slack"
+                            : "console";
+
+        var effectiveUserId = !string.IsNullOrWhiteSpace(userId)
+            ? userId
+            : (effectiveChannel is "telegram" or "zalo" && sessionId.Contains(':')
+                ? sessionId.Split(':', 2)[1]
+                : "default");
+
+        return SendAsync(
             Resolve(agentId),
             HttpMethod.Post,
             "console/chat",
-            () => JsonContent.Create(new { reconnect = true, session_id = sessionId, user_id = userId ?? "default", channel = channel ?? "console" }),
+            () => JsonContent.Create(new { reconnect = true, session_id = sessionId, user_id = effectiveUserId, channel = effectiveChannel }),
             timeout: TimeSpan.FromMinutes(30),
             completion: HttpCompletionOption.ResponseHeadersRead,
             ct: cancellationToken);
+    }
 
     // ------------------------------------------------------------------
     // Workspace & Library Artifacts
