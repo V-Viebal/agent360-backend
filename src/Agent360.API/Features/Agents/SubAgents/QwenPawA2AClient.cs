@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Agent360.API.Features.Agents.Services;
 using Agent360.API.Options;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -32,12 +33,14 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
     private const string AgentsCacheKey = "agent360:a2a:native-agents";
     private readonly HttpClient _http;
     private readonly IMemoryCache? _cache;
+    private readonly IFleetInstanceRoutingService? _routingService;
 
-    public QwenPawA2AClient(HttpClient http, IOptions<QwenPawOptions> options, IMemoryCache? cache = null)
+    public QwenPawA2AClient(HttpClient http, IOptions<QwenPawOptions> options, IMemoryCache? cache = null, IFleetInstanceRoutingService? routingService = null)
     {
         _http = http;
         _cache = cache;
-        // Native inter-agent tools execute inside the Core runtime; use its internal endpoint.
+        _routingService = routingService;
+        // Default fallback base address for unit tests that do not supply IFleetInstanceRoutingService
         options.Value.Instances.TryGetValue("core", out var core);
         var baseUrl = !string.IsNullOrWhiteSpace(core?.InternalUrl) ? core.InternalUrl : "http://100.76.185.111:33148";
         _http.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
@@ -137,28 +140,44 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
     {
         var sessionId = string.IsNullOrWhiteSpace(existingSessionId) ? BuildSessionId(fromAgent, toAgent) : existingSessionId;
         using var cts = Linked(ct, timeoutSeconds);
-        using var req = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
-        {
-            Content = JsonContent.Create(BuildPayload(fromAgent, sessionId, text, null))
-        };
-        req.Headers.Add(AgentHeader, toAgent);
+        var resolvedTarget = _routingService?.ResolveTarget(toAgent);
+        var effectiveAgentProfile = resolvedTarget?.TargetAgentProfile ?? toAgent;
         try
         {
             HttpResponseMessage first;
-            try
+            if (_routingService is not null && resolvedTarget?.Instance is not null)
             {
-                first = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                first = await _routingService.SendAsync(
+                    resolvedTarget.Instance,
+                    HttpMethod.Post,
+                    $"agents/{Uri.EscapeDataString(effectiveAgentProfile)}/console/chat",
+                    () => JsonContent.Create(BuildPayload(fromAgent, sessionId, text, null)),
+                    effectiveAgentProfile,
+                    TimeSpan.FromSeconds(Math.Max(5, timeoutSeconds)),
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cts.Token);
             }
-            catch (HttpRequestException ex) when (!ct.IsCancellationRequested && IsConnectFailure(ex))
+            else
             {
-                // Connection refused/reset before the turn started: the chat never reached the target agent.
-                await Task.Delay(TransientRetryDelay, ct);
-                using var again = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
+                using var req = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
                 {
                     Content = JsonContent.Create(BuildPayload(fromAgent, sessionId, text, null))
                 };
-                again.Headers.Add(AgentHeader, toAgent);
-                first = await _http.SendAsync(again, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                req.Headers.Add(AgentHeader, effectiveAgentProfile);
+                try
+                {
+                    first = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                }
+                catch (HttpRequestException ex) when (!ct.IsCancellationRequested && IsConnectFailure(ex))
+                {
+                    await Task.Delay(TransientRetryDelay, ct);
+                    using var again = new HttpRequestMessage(HttpMethod.Post, "api/console/chat")
+                    {
+                        Content = JsonContent.Create(BuildPayload(fromAgent, sessionId, text, null))
+                    };
+                    again.Headers.Add(AgentHeader, effectiveAgentProfile);
+                    first = await _http.SendAsync(again, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                }
             }
             using var resp = first;
             if (!resp.IsSuccessStatusCode)
@@ -170,15 +189,90 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             using var reader = new StreamReader(stream, Encoding.UTF8);
             string? finalText = null;
             string? error = null;
+            var reasoningMsgIds = new HashSet<string>(StringComparer.Ordinal);
+            var textByMsgId = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
+            var msgOrder = new List<string>();
             string? line;
             while ((line = await reader.ReadLineAsync(cts.Token)) is not null)
             {
                 var parsed = ParseSseFinal(line);
                 if (parsed.Text is not null) finalText = parsed.Text;
                 if (parsed.Error is not null) error = parsed.Error;
+
+                if (line.StartsWith("data: ", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line[6..]);
+                        var root = doc.RootElement;
+                        var obj = Str(root, "object");
+                        if (obj == "message")
+                        {
+                            var mid = Str(root, "id") ?? "default";
+                            var mtype = Str(root, "type") ?? "message";
+                            var mrole = Str(root, "role") ?? "assistant";
+                            if (mtype is "reasoning" or "thinking")
+                            {
+                                reasoningMsgIds.Add(mid);
+                            }
+                            else if (mrole == "assistant" && mtype == "message" && root.TryGetProperty("content", out var cArr) && cArr.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var part in cArr.EnumerateArray())
+                                {
+                                    if (Str(part, "type") == "text")
+                                    {
+                                        var txt = Str(part, "text");
+                                        if (!string.IsNullOrEmpty(txt))
+                                        {
+                                            if (!textByMsgId.TryGetValue(mid, out var sb))
+                                            {
+                                                sb = new StringBuilder();
+                                                textByMsgId[mid] = sb;
+                                                msgOrder.Add(mid);
+                                            }
+                                            var isDelta = part.TryGetProperty("delta", out var dProp) && dProp.ValueKind == JsonValueKind.True;
+                                            if (isDelta) sb.Append(txt);
+                                            else { sb.Clear(); sb.Append(txt); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else if (obj == "content" && Str(root, "type") == "text")
+                        {
+                            var mid = Str(root, "msg_id") ?? "default";
+                            if (!reasoningMsgIds.Contains(mid))
+                            {
+                                var txt = Str(root, "text");
+                                if (!string.IsNullOrEmpty(txt))
+                                {
+                                    if (!textByMsgId.TryGetValue(mid, out var sb))
+                                    {
+                                        sb = new StringBuilder();
+                                        textByMsgId[mid] = sb;
+                                        msgOrder.Add(mid);
+                                    }
+                                    var isDelta = root.TryGetProperty("delta", out var dProp) && dProp.ValueKind == JsonValueKind.True;
+                                    if (isDelta) sb.Append(txt);
+                                    else { sb.Clear(); sb.Append(txt); }
+                                }
+                            }
+                        }
+                    }
+                    catch (JsonException) {}
+                }
             }
 
-            return finalText is not null
+            if (string.IsNullOrWhiteSpace(finalText) && msgOrder.Count > 0)
+            {
+                var combined = string.Join("\n\n", msgOrder.Select(id => textByMsgId[id].ToString().Trim()).Where(s => !string.IsNullOrEmpty(s)));
+                if (!string.IsNullOrWhiteSpace(combined))
+                {
+                    finalText = combined;
+                }
+            }
+
+            return !string.IsNullOrWhiteSpace(finalText)
                 ? new NativeChatResult(true, sessionId, finalText, null, 200)
                 : new NativeChatResult(false, sessionId, null, error ?? "No completed response from target agent", 200);
         }

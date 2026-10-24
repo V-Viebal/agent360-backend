@@ -1051,6 +1051,22 @@ public sealed partial class SessionRoomOrchestrator(
 
         var friendlyAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
+            ["Mons (Core Dev & Ops)"] = "mons",
+            ["Ken (Product Owner)"] = "ken",
+            ["Zen (Sales & Delivery)"] = "zen",
+            ["Mkai (Generalist Core)"] = "mkai",
+            ["Core Skyer Default"] = "default-core",
+            ["GM Bốc (Executive)"] = "gm-boc",
+            ["GM Gạo (Procurement)"] = "gm-gao",
+            ["GM Lúa (Customer Support)"] = "gm-lua",
+            ["GM Team Ops"] = "gm-team",
+            ["Climax Default (Creative)"] = "climax-default",
+            ["Climax Team (Scraper & Ops)"] = "climax-team",
+            ["Planthy PM (Delivery Office)"] = "planthy-pm",
+            ["Planthy Team (Execution)"] = "planthy-team",
+            ["AgentTeams Manager Swarm"] = "agentteams-manager",
+            ["ITS Gatekeeper (Inox Tân Sơn)"] = "its-default",
+            ["GL Automation & Analytics"] = "gl-default",
             ["planthy team"] = "planthy-team",
             ["planthy pm"] = "planthy-pm",
             ["climax team"] = "climax-team",
