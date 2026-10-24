@@ -145,4 +145,77 @@ public class SessionRoomTests
         titledRoom.Should().NotBeNull();
         titledRoom!.RoomTitle.Should().Be("[mons] Kiểm tra chiến dịch Q4 cùng @zen");
     }
+
+    [Fact]
+    public void ReactionClassifier_Classifies_Praise_Disapprove_AndBuildsPrompt()
+    {
+        var (posSent, posCat, posDir) = AgentReactionClassifier.Classify("❤️");
+        posSent.Should().Be("positive");
+        posCat.Should().Be("praise");
+
+        var (negSent, negCat, negDir) = AgentReactionClassifier.Classify("👎");
+        negSent.Should().Be("negative");
+        negCat.Should().Be("disapprove");
+
+        var prompt = AgentReactionClassifier.BuildImplicitReactionPrompt("👎", "Câu trả lời trước đó của agent", "Mons");
+        prompt.Should().Contain("[IMPLICIT_REACTION_FEEDBACK");
+        prompt.Should().Contain("emoji=\"👎\"");
+        prompt.Should().Contain("category=\"disapprove\"");
+        prompt.Should().Contain("Mons");
+        prompt.Should().Contain("[/IMPLICIT_REACTION_FEEDBACK]");
+    }
+
+    [Fact]
+    public async Task RecordReaction_PersistsAndSummarizes_AndEnrichAttachesReactionsAndFiltersFeedback()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+
+        // 1. Record reactions on msg_01
+        var room = await roomStore.RecordReactionAsync("mons", "chat_react_01", "msg_01", "❤️", "user_1", "add", ct);
+        room = await roomStore.RecordReactionAsync("mons", "chat_react_01", "msg_01", "🔥", "user_1", "add", ct);
+        room = await roomStore.RecordReactionAsync("mons", "chat_react_01", "msg_02", "👎", "user_2", "add", ct);
+
+        room.Reactions.Should().NotBeNull();
+        room.Reactions!["msg_01"].Should().HaveCount(2);
+        room.Reactions!["msg_02"].Should().HaveCount(1);
+
+        // 2. Summary test
+        var summary = roomStore.GetReactionSummary("mons");
+        summary.TotalReactions.Should().Be(3);
+        summary.PositiveCount.Should().Be(2);
+        summary.NegativeCount.Should().Be(1);
+        summary.TopEmojis["❤️"].Should().Be(1);
+
+        // 3. Test EnrichChatHistoryJson attaches reactions AND filters out implicit feedback user turn
+        var rawChatHistory = """
+        {
+          "messages": [
+            {
+              "id": "msg_01",
+              "role": "assistant",
+              "content": [{"type": "text", "text": "Phản hồi mẫu từ trợ lý."}]
+            },
+            {
+              "id": "msg_implicit_feedback",
+              "role": "user",
+              "content": [{"type": "text", "text": "[IMPLICIT_REACTION_FEEDBACK emoji=\"❤️\"]\nĐánh giá ngầm...\n[/IMPLICIT_REACTION_FEEDBACK]"}]
+            },
+            {
+              "id": "msg_02",
+              "role": "assistant",
+              "content": [{"type": "text", "text": "Cảm ơn bạn rất nhiều!"}]
+            }
+          ]
+        }
+        """;
+
+        var enriched = roomStore.EnrichChatHistoryJson(rawChatHistory, "mons", "chat_react_01");
+        enriched.Should().NotContain("msg_implicit_feedback");
+        enriched.Should().NotContain("[IMPLICIT_REACTION_FEEDBACK");
+        enriched.Should().Contain("reactions");
+        enriched.Should().Contain("reactions");
+        enriched.Should().Contain("msg_01");
+        enriched.Should().Contain("category");
+    }
 }

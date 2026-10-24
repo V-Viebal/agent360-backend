@@ -40,6 +40,32 @@ public sealed record SessionRoomTurn(
     [property: JsonPropertyName("reasoning")] string? Reasoning = null,
     [property: JsonPropertyName("steps")] IReadOnlyList<SessionRoomStep>? Steps = null);
 
+public sealed record MessageReactionRecord(
+    [property: JsonPropertyName("emoji")] string Emoji,
+    [property: JsonPropertyName("user_id")] string UserId,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("sentiment")] string Sentiment, // "positive" | "negative" | "neutral"
+    [property: JsonPropertyName("category")] string Category   // "praise" | "approve" | "disapprove" | "sad_frustrated" | "surprised_curious" | "amused"
+);
+
+public sealed record SubmitMessageReactionRequestDto(
+    [property: JsonPropertyName("emoji")] string Emoji,
+    [property: JsonPropertyName("action")] string? Action = "add", // "add" | "remove"
+    [property: JsonPropertyName("session_id")] string? SessionId = null,
+    [property: JsonPropertyName("message_snippet")] string? MessageSnippet = null,
+    [property: JsonPropertyName("target_agent_id")] string? TargetAgentId = null,
+    [property: JsonPropertyName("trigger_agent_response")] bool TriggerAgentResponse = true
+);
+
+public sealed record MessageReactionSummaryDto(
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("total_reactions")] int TotalReactions,
+    [property: JsonPropertyName("positive_count")] int PositiveCount,
+    [property: JsonPropertyName("negative_count")] int NegativeCount,
+    [property: JsonPropertyName("neutral_count")] int NeutralCount,
+    [property: JsonPropertyName("top_emojis")] IReadOnlyDictionary<string, int> TopEmojis
+);
+
 public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("room_id")] string RoomId,
     [property: JsonPropertyName("matrix_room_id")] string MatrixRoomId,
@@ -55,7 +81,8 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("turns")] IReadOnlyList<SessionRoomTurn> Turns,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
-    [property: JsonPropertyName("room_title")] string? RoomTitle = null);
+    [property: JsonPropertyName("room_title")] string? RoomTitle = null,
+    [property: JsonPropertyName("reactions")] IReadOnlyDictionary<string, IReadOnlyList<MessageReactionRecord>>? Reactions = null);
 
 public sealed record UpdateRoomTitleRequest(
     [property: JsonPropertyName("title")] string Title);
@@ -74,6 +101,45 @@ public sealed record PostRoomMessageRequest(
     [property: JsonPropertyName("kind")] string? Kind,
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("target_agent_id")] string? TargetAgentId = null);
+
+
+public static class AgentReactionClassifier
+{
+    public static (string Sentiment, string Category, string DirectiveVi) Classify(string emoji)
+    {
+        return emoji switch
+        {
+            "❤️" or "🔥" or "🚀" or "🎉" or "💯" or "👏" or "🤩" or "😍" or "🙌" or "⚡" or "💪" =>
+                ("positive", "praise", "Người dùng rất ấn tượng, khen ngợi và đánh giá cao câu trả lời vừa rồi. Hãy ghi nhận, cảm ơn ngắn gọn lịch thiệp tự nhiên (1-2 câu), củng cố hướng tiếp cận này và sẵn sàng hỗ trợ bước tiếp theo."),
+            "👍" or "🤝" or "🫡" or "🎯" or "💡" or "🙏" or "☕" or "🤖" =>
+                ("positive", "approve", "Người dùng đồng ý, xác nhận phương án hoặc thông tin vừa nêu là đúng và hữu ích. Hãy xác nhận ngắn gọn rằng bạn đã chốt ý này và đề xuất bước thực thi tiếp theo."),
+            "👎" =>
+                ("negative", "disapprove", "Người dùng không hài lòng hoặc chê chất lượng/tính chính xác của câu trả lời vừa rồi. Hãy lập tức nhận phản hồi với thái độ cầu thị, tự rà soát ngắn gọn điểm có thể chưa chuẩn hoặc chưa đầy đủ trong câu trả lời trên, và đưa ra giải pháp khắc phục/bổ sung chính xác hơn hoặc hỏi ngắn gọn ý người dùng muốn điều chỉnh."),
+            "😢" =>
+                ("negative", "sad_frustrated", "Người dùng cảm thấy hụt hẫng, chưa thỏa đáng hoặc gặp sự cố bất tiện. Hãy thể hiện sự đồng cảm, kiểm tra lại thiếu sót và chủ động đề xuất giải pháp tháo gỡ khó khăn ngay lập tức."),
+            "😮" or "👀" =>
+                ("neutral", "surprised_curious", "Người dùng thấy bất ngờ, ngạc nhiên hoặc tò mò về điểm mấu chốt/thông tin vừa nêu. Hãy làm rõ thêm chi tiết quan trọng nhất để người dùng nắm bắt trọn vẹn."),
+            "😆" =>
+                ("positive", "amused", "Người dùng thấy phản hồi thú vị, vui vẻ. Hãy đáp lại tự nhiên, tích cực và giữ mạch công việc trôi chảy."),
+            _ =>
+                ("neutral", "feedback", "Người dùng vừa gắn biểu tượng cảm xúc vào phản hồi của bạn. Hãy tiếp thu một cách tự nhiên và tiếp tục đồng hành hỗ trợ.")
+        };
+    }
+
+                public static string BuildImplicitReactionPrompt(string emoji, string? messageSnippet, string? authorName)
+    {
+        var (sentiment, category, directive) = Classify(emoji);
+        var cleanSnippet = string.IsNullOrWhiteSpace(messageSnippet) ? "(phản hồi trước đó)" : messageSnippet.Trim().Replace("\r", "").Replace("\n", " ");
+        if (cleanSnippet.Length > 200) cleanSnippet = cleanSnippet[..200] + "...";
+        var author = string.IsNullOrWhiteSpace(authorName) ? "bạn" : authorName;
+
+        return $"[IMPLICIT_REACTION_FEEDBACK emoji=\"{emoji}\" category=\"{category}\" sentiment=\"{sentiment}\" target=\"{author}\"]\n" +
+               $"Người dùng vừa thả biểu tượng cảm xúc {emoji} để đánh giá câu trả lời vừa rồi của {author}:\n" +
+               $"\"{cleanSnippet}\"\n\n" +
+               $"[Chỉ thị phản hồi ngầm]: {directive} Lưu ý: KHÔNG lặp lại thẻ hệ thống [IMPLICIT_REACTION_FEEDBACK]. Hãy trả lời ngắn gọn, tự nhiên, đúng giọng điệu của agent.\n" +
+               $"[/IMPLICIT_REACTION_FEEDBACK]";
+    }
+}
 
 public sealed class SessionRoomStore
 {
@@ -143,6 +209,94 @@ public sealed class SessionRoomStore
         }
     }
 
+    
+    public async Task<SessionCollaborationRoom> RecordReactionAsync(
+        string hostAgentId,
+        string hostChatId,
+        string messageId,
+        string emoji,
+        string userId,
+        string action,
+        CancellationToken ct = default)
+    {
+        var room = GetByChat(hostAgentId, hostChatId)
+            ?? new SessionCollaborationRoom(
+                $"rm_{Guid.NewGuid():N}"[..12],
+                $"!{Guid.NewGuid():N}[..8]:{SessionRoomOrchestrator.GatewayDomain}",
+                $"{SessionRoomOrchestrator.ElementBaseUrl}!placeholder",
+                hostAgentId,
+                hostChatId,
+                hostChatId,
+                [],
+                "idle",
+                null,
+                10,
+                0,
+                [],
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow);
+
+        var currentReactions = room.Reactions is not null
+            ? new Dictionary<string, List<MessageReactionRecord>>(room.Reactions.ToDictionary(k => k.Key, v => v.Value.ToList()), StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, List<MessageReactionRecord>>(StringComparer.OrdinalIgnoreCase);
+
+        if (!currentReactions.TryGetValue(messageId, out var list))
+        {
+            list = new List<MessageReactionRecord>();
+            currentReactions[messageId] = list;
+        }
+
+        var isAdd = !string.Equals(action, "remove", StringComparison.OrdinalIgnoreCase);
+        if (isAdd)
+        {
+            var (sentiment, category, _) = AgentReactionClassifier.Classify(emoji);
+            if (!list.Any(r => string.Equals(r.Emoji, emoji, StringComparison.OrdinalIgnoreCase) && string.Equals(r.UserId, userId, StringComparison.OrdinalIgnoreCase)))
+            {
+                list.Add(new MessageReactionRecord(emoji, userId, DateTimeOffset.UtcNow, sentiment, category));
+            }
+        }
+        else
+        {
+            list.RemoveAll(r => string.Equals(r.Emoji, emoji, StringComparison.OrdinalIgnoreCase) && (string.IsNullOrWhiteSpace(userId) || string.Equals(r.UserId, userId, StringComparison.OrdinalIgnoreCase)));
+            if (list.Count == 0) currentReactions.Remove(messageId);
+        }
+
+        var updatedReactions = currentReactions.ToDictionary(k => k.Key, v => (IReadOnlyList<MessageReactionRecord>)v.Value);
+        var updatedRoom = room with
+        {
+            Reactions = updatedReactions,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        return await SaveAsync(updatedRoom);
+    }
+
+    public MessageReactionSummaryDto GetReactionSummary(string agentId)
+    {
+        var norm = SubAgentService.NormalizeAgentId(agentId);
+        var rooms = ListByHostAgent(norm);
+        int total = 0, pos = 0, neg = 0, neu = 0;
+        var emojiCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var r in rooms)
+        {
+            if (r.Reactions is null) continue;
+            foreach (var kvp in r.Reactions)
+            {
+                foreach (var rec in kvp.Value)
+                {
+                    total++;
+                    if (rec.Sentiment == "positive") pos++;
+                    else if (rec.Sentiment == "negative") neg++;
+                    else neu++;
+
+                    emojiCounts[rec.Emoji] = emojiCounts.GetValueOrDefault(rec.Emoji) + 1;
+                }
+            }
+        }
+
+        return new MessageReactionSummaryDto(norm, total, pos, neg, neu, emojiCounts);
+    }
+
     public SessionCollaborationRoom? GetByChat(string hostAgentId, string hostChatId)
     {
         if (string.IsNullOrWhiteSpace(hostChatId)) return null;
@@ -204,6 +358,39 @@ public sealed class SessionRoomStore
             {
                 messagesArr = new System.Text.Json.Nodes.JsonArray();
                 node["messages"] = messagesArr;
+            }
+
+                        // 1. Filter out internal [IMPLICIT_REACTION_FEEDBACK] user turns so evaluation prompt stays completely invisible to user UI
+            var filteredList = new List<System.Text.Json.Nodes.JsonObject>();
+            foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
+            {
+                var role = msgObj["role"]?.ToString();
+                var text = msgObj["content"] is System.Text.Json.Nodes.JsonArray arr
+                    ? string.Join("\n", arr.Select(x => x?["text"]?.ToString() ?? ""))
+                    : msgObj["content"]?.ToString() ?? "";
+                if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) && text.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue; // drop implicit reaction evaluation prompt from user chat view
+                }
+                filteredList.Add(msgObj);
+            }
+            messagesArr.Clear();
+            foreach (var m in filteredList) messagesArr.Add(m);
+
+            // 2. Attach stored reactions from room to each corresponding message
+            if (room.Reactions is { Count: > 0 })
+            {
+                foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
+                {
+                    var mid = msgObj["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(mid) && room.Reactions.TryGetValue(mid, out var recs) && recs.Count > 0)
+                    {
+                        var emojiList = recs.Select(r => r.Emoji).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                        var reactArr = new System.Text.Json.Nodes.JsonArray();
+                        foreach (var e in emojiList) reactArr.Add(e);
+                        msgObj["reactions"] = reactArr;
+                    }
+                }
             }
 
             // Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages so the UI only shows the user's clean message

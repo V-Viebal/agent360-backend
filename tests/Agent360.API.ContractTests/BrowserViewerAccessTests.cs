@@ -83,6 +83,16 @@ public sealed class BrowserViewerAccessTests
 public sealed class BrowserProfileMapParsingTests
 {
     [Fact]
+    public void BuildAnchorUrlIncludesStyledDarkThemeBodyAndProfileMarker()
+    {
+        var url = Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.BuildAnchorUrl("Default", "mons");
+        url.Should().StartWith(Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.AnchorPrefix);
+        url.Should().Contain("<body");
+        url.Should().Contain("background:%230d0d12");
+        Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ProfileOf(url).Should().Be("Default");
+    }
+
+    [Fact]
     public void ParsesPlainAndBase64JsonAndRejectsGarbage()
     {
         const string json = "{\"mons\":\"Default\",\"ken\":\"Profile 1\"}";

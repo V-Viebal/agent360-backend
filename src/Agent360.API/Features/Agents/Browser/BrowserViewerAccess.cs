@@ -3,8 +3,10 @@ using System.Text;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
 using Agent360.API.Features.Agents.SubAgents;
+using Agent360.API.Identity;
 using Asp.Versioning;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace Agent360.API.Features.Agents.Browser;
 
@@ -107,19 +109,46 @@ public sealed class BrowserViewerAccessEndpoint : IEndpoint
         // potential controller. Non-operators keep the screenshot preview.
         routeBuilder.MapPost(
             "agents/{agentId}/browser/viewer",
-            async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, BrowserViewerAccess access,
+            async Task<IResult> (string agentId, HttpContext http, CurrentUser currentUser, IConfiguration config,
+                AgentBrowserDirectory directory, BrowserViewerAccess access,
                 IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment env,
-                Microsoft.AspNetCore.Authorization.IAuthorizationService authorization) =>
+                Microsoft.AspNetCore.Authorization.IAuthorizationService authorization, CancellationToken ct) =>
             {
-                // Operator key, or a signed-in admin (Logto admin role/scope, AdminSubjects) — the Skyer UI has no
-                // operator key once the user signs in, and previously fell back to a frozen screenshot.
+                // Operator key, signed-in admin (Logto admin role/scope, AdminSubjects), or an authenticated member
+                // assigned to this agent in AgentAssignments (so mobile/desktop users without an operator key in localStorage can view their agent browser).
                 var allowed = OperatorAuthFilter.IsAuthorized(http, security.CurrentValue, env)
                     || OperatorAuthFilter.IsSignedInAdmin(http, security.CurrentValue)
                     || (http.User.Identity?.IsAuthenticated == true
                         && (await authorization.AuthorizeAsync(http.User, http, "Admin")).Succeeded);
+
+                if (!allowed && http.User.Identity?.IsAuthenticated == true && currentUser.UserId is > 0)
+                {
+                    var bareSlug = agentId.Replace("bot:agent360:", "", StringComparison.OrdinalIgnoreCase).Trim();
+                    var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+                    if (!string.IsNullOrWhiteSpace(connStr))
+                    {
+                        try
+                        {
+                            await using var conn = new NpgsqlConnection(connStr);
+                            await conn.OpenAsync(ct);
+                            await using var cmd = new NpgsqlCommand(
+                                @"SELECT 1 FROM user_management.""AgentAssignments"" WHERE ""UserId"" = $1 AND (LOWER(""AgentSlug"") = LOWER($2) OR LOWER(""AgentSlug"") = LOWER($3)) LIMIT 1",
+                                conn);
+                            cmd.Parameters.AddWithValue(currentUser.UserId.Value);
+                            cmd.Parameters.AddWithValue(bareSlug);
+                            cmd.Parameters.AddWithValue("bot:agent360:" + bareSlug);
+                            allowed = await cmd.ExecuteScalarAsync(ct) is not null;
+                        }
+                        catch
+                        {
+                            // Fail-safe
+                        }
+                    }
+                }
+
                 if (!allowed)
                 {
-                    return Results.Problem(detail: "Operator token required to open the agent desktop.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
+                    return Results.Problem(detail: "Operator token or agent assignment required to open the agent desktop.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
                 }
                 if (!access.CanSign)
                 {

@@ -165,7 +165,7 @@ public sealed class AgentBrowserDirectory(
                 try
                 {
                     var http = httpClientFactory.CreateClient(HttpClientName);
-                    var newAnchorUrl = $"{AnchorPrefix}{Uri.EscapeDataString(profile)}--><title>Agent profile: {Uri.EscapeDataString(target.TargetAgentProfile)}</title>";
+                    var newAnchorUrl = BuildAnchorUrl(profile, target.TargetAgentProfile);
                     using var putReq = new HttpRequestMessage(HttpMethod.Put, $"{cdp.TrimEnd('/')}/json/new?{Uri.EscapeDataString(newAnchorUrl)}");
                     using var putRes = await http.SendAsync(putReq, ct);
                     if (putRes.IsSuccessStatusCode)
@@ -175,6 +175,23 @@ public sealed class AgentBrowserDirectory(
                     }
                 }
                 catch { }
+            }
+            else if (ctx is not null)
+            {
+                // Upgrade any legacy bodyless anchor tab (which renders 100% blank white #FFFFFF) to the styled dark-theme anchor
+                var bodylessAnchor = all.FirstOrDefault(t =>
+                    t.Type == "page"
+                    && t.BrowserContextId == ctx
+                    && ProfileOf(t.Url) == profile
+                    && !t.Url.Contains("<body", StringComparison.OrdinalIgnoreCase));
+                if (bodylessAnchor is not null)
+                {
+                    try
+                    {
+                        await NavigateTargetAsync(cdp, bodylessAnchor.TargetId, BuildAnchorUrl(profile, target.TargetAgentProfile), ct);
+                    }
+                    catch { }
+                }
             }
 
             if (ctx is not null)
@@ -267,6 +284,28 @@ public sealed class AgentBrowserDirectory(
         }
         return !u.Host.Contains('.') || u.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase)
             || u.Host.EndsWith(".ts.net", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string BuildAnchorUrl(string profile, string agentName)
+    {
+        var q = Uri.EscapeDataString(profile);
+        var display = Uri.EscapeDataString(string.IsNullOrWhiteSpace(agentName) ? profile : agentName);
+        return $"{AnchorPrefix}{q}--><title>Agent profile: {display}</title>"
+            + "<body style='margin:0;height:100vh;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;"
+            + "background:%230d0d12;color:%23cfcfd8;font:16px system-ui,sans-serif'>"
+            + "<div>Agent360 %C2%B7 Browser Profile <b style='color:%23ff7a00'>&nbsp;" + display + "</b></div>"
+            + "<div style='font-size:12px;color:%2371717a;font-family:monospace'>Ready for autonomous navigation (" + q + ")</div></body>";
+    }
+
+    private static async Task NavigateTargetAsync(string cdpUrl, string targetId, string url, CancellationToken ct)
+    {
+        var cdp = new Uri(cdpUrl);
+        var pageWs = new Uri($"ws://{cdp.Authority}/devtools/page/{Uri.EscapeDataString(targetId)}");
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(pageWs, ct);
+        var msg = JsonSerializer.SerializeToUtf8Bytes(new { id = 1, method = "Page.navigate", @params = new { url } });
+        await ws.SendAsync(msg, WebSocketMessageType.Text, true, ct);
+        await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
     internal static string? ProfileOf(string url)

@@ -198,6 +198,95 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Get chat session messages")
         .AllowAnonymous();
 
+        // 1e-reaction. Submit message reaction (implicit evaluation & agent treatment)
+        group.MapPost("{agentId}/chats/{chatId}/messages/{messageId}/reactions", async (
+            string agentId,
+            string chatId,
+            string messageId,
+            [FromBody] Agent360.API.Features.Agents.SubAgents.SubmitMessageReactionRequestDto request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            SessionQueueManager queueManager,
+            ILogger<AgentFeaturesEndpoints> logger,
+            CancellationToken ct) =>
+        {
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var currentUser = httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>();
+            var userId = currentUser.ExternalUserId ?? "user";
+
+            var room = await roomStore.RecordReactionAsync(
+                agentId,
+                chatId,
+                messageId,
+                request.Emoji,
+                userId,
+                request.Action ?? "add",
+                ct);
+
+            // If action is remove or trigger_agent_response is false, return updated room immediately
+            var isAdd = !string.Equals(request.Action, "remove", StringComparison.OrdinalIgnoreCase);
+            if (!isAdd || !request.TriggerAgentResponse)
+            {
+                return Results.Ok(new { success = true, action = request.Action ?? "add", room });
+            }
+
+            // Implicit Evaluation Turn: Build implicit prompt and stream directly to QwenPaw
+            var targetAgent = !string.IsNullOrWhiteSpace(request.TargetAgentId) ? request.TargetAgentId : agentId;
+            var implicitPrompt = Agent360.API.Features.Agents.SubAgents.AgentReactionClassifier.BuildImplicitReactionPrompt(
+                request.Emoji, request.MessageSnippet, targetAgent);
+
+            var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : chatId;
+
+            var consoleReq = new ConsoleChatSendRequestDto(
+                effectiveSessionId,
+                implicitPrompt,
+                targetAgent,
+                null,
+                [new ConsoleChatInputItem("user", "message", [new ConsoleChatContentItem("text", implicitPrompt)])],
+                "console");
+
+            var sessionLock = queueManager.GetOrCreateSessionLock(effectiveSessionId);
+            await sessionLock.WaitAsync(ct);
+            queueManager.SetSessionTurnActive(effectiveSessionId, true, targetAgent);
+
+            try
+            {
+                var backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
+                    consoleReq,
+                    targetAgent,
+                    effectiveSessionId,
+                    effectiveSessionId,
+                    httpContext,
+                    client,
+                    queueManager,
+                    sessionLock,
+                    ct);
+
+                return Results.Empty;
+            }
+            finally
+            {
+                queueManager.SetSessionTurnActive(effectiveSessionId, false, targetAgent);
+                sessionLock.Release();
+            }
+        })
+        .WithName("SubmitChatMessageReaction")
+        .WithSummary("Submit reaction to an agent message and stream implicit response evaluation")
+        .AllowAnonymous();
+
+        // Summary of reactions for agent telemetry
+        group.MapGet("{agentId}/reactions/summary", (
+            string agentId,
+            HttpContext httpContext) =>
+        {
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var summary = roomStore.GetReactionSummary(agentId);
+            return Results.Ok(summary);
+        })
+        .WithName("GetAgentReactionSummary")
+        .WithSummary("Get positive/negative/neutral reaction evaluation summary for agent")
+        .AllowAnonymous();
+
         // 1f. Console Chat Stream & Stop (mapped to both /agents/console/chat and root /console/chat for resilience)
         routeBuilder.MapPost("console/chat", async (
             [FromBody] ConsoleChatSendRequestDto request,
