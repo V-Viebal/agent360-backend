@@ -23,7 +23,10 @@ public sealed record IngestChannelResponseDto(
     [property: JsonPropertyName("tool")] string? Tool = null,
     [property: JsonPropertyName("arguments")] string? Arguments = null,
     [property: JsonPropertyName("result")] string? Result = null,
-    [property: JsonPropertyName("metadata")] string? Metadata = null);
+    [property: JsonPropertyName("metadata")] string? Metadata = null,
+    [property: JsonPropertyName("room_id")] string? RoomId = null,
+    [property: JsonPropertyName("turn_id")] string? TurnId = null,
+    [property: JsonPropertyName("event_type")] string? EventType = null);
 
 public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 {
@@ -377,7 +380,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
 
         // 2. POST /api/v1/agents/{agentId}/channels/responses & POST /api/v1/channels/responses
         // Inbound API for external channels (Telegram bot, Zalo bot, Cron runner, A2A subagents) to record real-time response turns
-        var handleIngestResponse = (string? agentId, IngestChannelResponseDto dto, SessionQueueManager queueManager) =>
+        var handleIngestResponse = (string? agentId, IngestChannelResponseDto dto, SessionQueueManager queueManager, HttpContext httpContext) =>
         {
             var isRunning = dto.Status is "in_progress" or "running";
             var targetAgent = !string.IsNullOrWhiteSpace(dto.AgentId) ? dto.AgentId : (agentId ?? "mons");
@@ -403,6 +406,42 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 metadata: dto.Metadata
             );
 
+            // If response is tagged with room_id or session belongs to an active Room, sync turn to Room
+            var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            if (roomStore is not null && !string.IsNullOrWhiteSpace(primarySession))
+            {
+                var targetRoom = !string.IsNullOrWhiteSpace(dto.RoomId)
+                    ? roomStore.GetByRoomId(dto.RoomId)
+                    : roomStore.GetByChat(targetAgent, primarySession);
+
+                if (targetRoom is not null && !string.IsNullOrWhiteSpace(dto.Content) && !isRunning)
+                {
+                    var exists = targetRoom.Turns.Any(t => t.Id == dto.Id || (t.Kind == "collaborator_reply" && t.Text.Trim() == dto.Content.Trim()));
+                    if (!exists)
+                    {
+                        var now = DateTimeOffset.UtcNow;
+                        var turn = new Agent360.API.Features.Agents.SubAgents.SessionRoomTurn(
+                            dto.Id ?? dto.TurnId ?? $"ct_{Guid.NewGuid():N}"[..12],
+                            targetRoom.Turns.Count + 1,
+                            targetAgent,
+                            targetAgent,
+                            "collaborator",
+                            "collaborator_reply",
+                            dto.Content.Trim(),
+                            targetRoom.HostAgentId,
+                            now);
+
+                        _ = roomStore.SaveAsync(targetRoom with
+                        {
+                            Status = "completed",
+                            CurrentTurnCount = targetRoom.Turns.Count + 1,
+                            Turns = [.. targetRoom.Turns, turn],
+                            UpdatedAt = now
+                        });
+                    }
+                }
+            }
+
             return TypedResults.Ok(recorded);
         };
 
@@ -410,7 +449,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
             "agents/{agentId}/channels/responses",
             ([FromRoute] string agentId,
              [FromBody] IngestChannelResponseDto dto,
-             SessionQueueManager queueManager) => handleIngestResponse(agentId, dto, queueManager))
+             SessionQueueManager queueManager,
+             HttpContext httpContext) => handleIngestResponse(agentId, dto, queueManager, httpContext))
             .MapToApiVersion(ApiVersion.Default)
             .WithName("IngestChannelResponse")
             .WithTags(EndpointTags.Agents)
@@ -420,7 +460,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
         routeBuilder.MapPost(
             "channels/responses",
             ([FromBody] IngestChannelResponseDto dto,
-             SessionQueueManager queueManager) => handleIngestResponse(dto.AgentId, dto, queueManager))
+             SessionQueueManager queueManager,
+             HttpContext httpContext) => handleIngestResponse(dto.AgentId, dto, queueManager, httpContext))
             .MapToApiVersion(ApiVersion.Default)
             .WithName("IngestGlobalChannelResponse")
             .WithTags(EndpointTags.Agents)
