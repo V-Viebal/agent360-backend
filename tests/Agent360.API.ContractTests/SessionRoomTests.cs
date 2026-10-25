@@ -575,4 +575,46 @@ public class SessionRoomTests
             .Should().BeEquivalentTo(["zen", "climax-default", "planthy-pm"]);
         rehydratedRoom.Turns.Where(t => t.Kind == "collaborator_reply").Should().HaveCount(3);
     }
+
+    [Fact]
+    public async Task ManagerIntakeAndRouting_AssignsHandlingAgentsInRoom_AndRecordsManagerTriageStep()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient { NextReply = "Phân tích gói giá B2B từ Zen." };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-manager-intake-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default", "planthy-pm"]);
+
+        // 1. New request in existing Room -> AgentTeams Manager (@agentteams-manager) receives and assigns @zen + @gm-boc
+        var collabDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Lên bảng báo giá bán và chiết khấu đại lý B2B");
+        collabDecision.TriageOwnerId.Should().Be("agentteams-manager");
+        collabDecision.ShouldUseRoom.Should().BeTrue();
+        collabDecision.SelectedCollaborators.Should().Equal(["zen"]);
+        collabDecision.AssignedAgents.Should().Equal(["zen", "gm-boc"]);
+        collabDecision.Reason.Should().Contain("AgentTeams Manager (@agentteams-manager)");
+
+        var (roomAfterWave, _) = await orchestrator.ExecuteCollaboratorTurnAsync(
+            "gm-boc", chatId, "zen", "Lên bảng báo giá bán và chiết khấu đại lý B2B", null, chatId, ct);
+        var reqTurn = roomAfterWave.Turns.First(t => t.Kind == "request" && t.AuthorRole != "manager");
+        reqTurn.Steps.Should().NotBeNull();
+        reqTurn.Steps!.Should().Contain(s => s.Tool == "agentteams_manager_triage");
+
+        // 2. Solo request in existing Room -> AgentTeams Manager (@agentteams-manager) receives and assigns @gm-boc directly
+        var soloDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Chỉ mình bạn trả lời thôi, tóm tắt lại kết quả trên");
+        soloDecision.TriageOwnerId.Should().Be("agentteams-manager");
+        soloDecision.ShouldUseRoom.Should().BeFalse();
+        soloDecision.AssignedAgents.Should().Equal(["gm-boc"]);
+        soloDecision.Reason.Should().Contain("AgentTeams Manager (@agentteams-manager)");
+
+        var roomAfterSolo = await orchestrator.RecordManagerTriageTurnAsync(
+            "gm-boc", chatId, chatId, "Chỉ mình bạn trả lời thôi, tóm tắt lại kết quả trên", soloDecision, ct);
+        roomAfterSolo.Should().NotBeNull();
+        roomAfterSolo!.Turns.Last().Steps.Should().Contain(s => s.Tool == "agentteams_manager_triage");
+    }
 }

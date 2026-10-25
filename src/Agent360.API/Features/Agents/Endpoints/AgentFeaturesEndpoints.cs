@@ -962,7 +962,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null)
         {
-            // Non-collaborator turn: dispatch room provisioning/title sync in background so QwenPaw receives the prompt with 0ms delay
+            // Non-collaborator turn: dispatch room provisioning/title sync and Manager intake turn in background so QwenPaw receives the prompt with 0ms delay
             _ = Task.Run(async () =>
             {
                 try
@@ -972,6 +972,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     {
                         await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, CancellationToken.None);
                     }
+                    await roomOrchestrator.RecordManagerTriageTurnAsync(agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision, CancellationToken.None);
                 }
                 catch {}
             });
@@ -993,11 +994,13 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 {
                     @object = "room_event",
                     status = "host_triage",
+                    triage_owner_id = triageDecision.TriageOwnerId,
                     collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
                     triage_mode = triageDecision.Mode,
                     triage_reason = triageDecision.Reason,
                     triage_confidence = triageDecision.Confidence,
                     selected_collaborators = mentionedCollaborators,
+                    assigned_agents = triageDecision.AssignedAgents,
                     collaborator_focuses = triageDecision.CollaboratorFocuses
                 });
                 try
@@ -1161,8 +1164,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             var triageHeader = triageDecision.Mode == "explicit_mention"
-                ? $"Các thẻ @{string.Join(", @", mentionedCollaborators)} ở trên là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng mời vào hỗ trợ phiên chat, KHÔNG PHẢI là tên sản phẩm hay thương hiệu người dùng đang hỏi."
-                : $"Với vai trò Chủ phòng (@{agentTarget}), bạn đã chủ động phân tích yêu cầu mới và kéo @{string.Join(", @", mentionedCollaborators)} trong Room của phiên chat vào cùng giải quyết ({triageDecision.Reason}).";
+                ? $"AgentTeams Manager (@agentteams-manager) đã tiếp nhận yêu cầu trong Room và phân công @{string.Join(", @", mentionedCollaborators)} xử lý theo thẻ chỉ định của người dùng (lưu ý: các thẻ này là ĐỊNH DANH ĐỒNG NGHIỆP AI, KHÔNG PHẢI là tên sản phẩm hay thương hiệu)."
+                : $"AgentTeams Manager (@agentteams-manager) đã tiếp nhận yêu cầu mới trong Room, phân định giao @{string.Join(", @", mentionedCollaborators)} xử lý chuyên môn và giao Chủ phòng (@{agentTarget}) tổng hợp kết quả cuối ({triageDecision.Reason}).";
             var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\n{managerSynthesisBrief}\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn (đã qua kiểm định của AgentTeams Manager):\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên theo đúng Biên bản nghiệm thu của Manager thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
             effectiveRequest = effectiveRequest with
             {

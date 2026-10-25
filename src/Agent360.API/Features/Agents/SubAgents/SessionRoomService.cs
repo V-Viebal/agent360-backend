@@ -127,7 +127,9 @@ public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("reason")] string Reason,
     [property: JsonPropertyName("confidence")] double Confidence = 1.0,
     [property: JsonPropertyName("collaborator_focuses")] IReadOnlyDictionary<string, string>? CollaboratorFocuses = null,
-    [property: JsonPropertyName("execution_strategy")] string ExecutionStrategy = "parallel");
+    [property: JsonPropertyName("execution_strategy")] string ExecutionStrategy = "parallel",
+    [property: JsonPropertyName("triage_owner_id")] string TriageOwnerId = "agentteams-manager",
+    [property: JsonPropertyName("assigned_agents")] IReadOnlyList<string>? AssignedAgents = null);
 
 
 public static class AgentReactionClassifier
@@ -1597,6 +1599,106 @@ public sealed partial class SessionRoomOrchestrator(
         });
     }
 
+    public async Task<SessionCollaborationRoom?> RecordManagerTriageTurnAsync(
+        string hostAgentId,
+        string hostChatId,
+        string? hostSessionId,
+        string? rawUserText,
+        HostRoomTriageDecision decision,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(rawUserText)) return null;
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var room = roomStore.GetByChat(host, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
+        if (room is null) return null;
+
+        var sessionLock = GetSessionRoomLock(host, room.HostChatId, room.HostSessionId);
+        await sessionLock.WaitAsync(ct);
+        try
+        {
+            room = roomStore.GetByChat(host, hostChatId)
+                ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null)
+                ?? room;
+
+            var cleanObj = StripCollaboratorMentions(rawUserText);
+            var alreadyRecorded = room.Turns.Any(t =>
+                t.Kind == "request" &&
+                !string.Equals(t.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(t.Text.Trim(), rawUserText.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (alreadyRecorded) return room;
+
+            var now = DateTimeOffset.UtcNow;
+            if (room.Turns.Count > 0 && now <= room.Turns[^1].CreatedAt)
+                now = room.Turns[^1].CreatedAt.AddMilliseconds(25);
+
+            var assigned = decision.AssignedAgents is { Count: > 0 }
+                ? decision.AssignedAgents
+                : (decision.SelectedCollaborators.Count > 0 ? [.. decision.SelectedCollaborators, host] : [host]);
+            var roomMemberIds = room.Participants
+                .Where(p => p.Role is "host" or "collaborator")
+                .Select(p => p.AgentId)
+                .ToArray();
+
+            var reqTurn = new SessionRoomTurn(
+                $"rt_{Guid.NewGuid():N}"[..12],
+                room.Turns.Count + 1,
+                host,
+                FriendlyAgentName(host),
+                "host",
+                "request",
+                rawUserText.Trim(),
+                string.Join(", @", assigned),
+                now,
+                Reasoning: decision.Reason,
+                Steps:
+                [
+                    new SessionRoomStep(
+                        Kind: "reasoning",
+                        Id: $"step_mgr_r_{Guid.NewGuid():N}"[..12],
+                        Text: decision.Reason),
+                    new SessionRoomStep(
+                        Kind: "tool_call",
+                        Id: $"step_mgr_t_{Guid.NewGuid():N}"[..12],
+                        CallId: $"call_triage_{Guid.NewGuid():N}"[..12],
+                        Tool: "agentteams_manager_triage",
+                        Args: JsonSerializer.Serialize(new
+                        {
+                            manager = ManagerAgentId,
+                            room_id = room.MatrixRoomId,
+                            session = room.HostChatId,
+                            request = cleanObj,
+                            room_agents = roomMemberIds,
+                            triage_policy = room.TriagePolicy ?? "auto"
+                        }),
+                        Result: JsonSerializer.Serialize(new
+                        {
+                            triage_owner = ManagerAgentId,
+                            mode = decision.Mode,
+                            confidence = decision.Confidence,
+                            assigned_agents = assigned,
+                            selected_collaborators = decision.SelectedCollaborators,
+                            execution_strategy = decision.ExecutionStrategy,
+                            reason = decision.Reason
+                        }),
+                        State: "success")
+                ]);
+
+            var updatedRoom = await roomStore.SaveAsync(room with
+            {
+                CurrentTurnCount = room.Turns.Count + 1,
+                Turns = [.. room.Turns, reqTurn],
+                UpdatedAt = now
+            });
+            _ = PostTurnToRealMatrixRoomAsync(updatedRoom, reqTurn);
+            return updatedRoom;
+        }
+        finally
+        {
+            sessionLock.Release();
+        }
+    }
+
     public async Task<(SessionCollaborationRoom Room, SessionRoomTurn CollaboratorTurn)> ExecuteCollaboratorTurnAsync(
         string hostAgentId,
         string hostChatId,
@@ -1674,6 +1776,11 @@ public sealed partial class SessionRoomOrchestrator(
 
             if (existingWaveRequest is null)
             {
+                var cleanReqObj = StripCollaboratorMentions(objective);
+                var roomMemberIds = room.Participants
+                    .Where(p => p.Role is "host" or "collaborator")
+                    .Select(p => p.AgentId)
+                    .ToArray();
                 var reqTurn = new SessionRoomTurn(
                     $"rt_{Guid.NewGuid():N}"[..12],
                     room.Turns.Count + 1,
@@ -1683,7 +1790,37 @@ public sealed partial class SessionRoomOrchestrator(
                     "request",
                     objective,
                     collab,
-                    now);
+                    now,
+                    Reasoning: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong Room {room.MatrixRoomId}, phân định giao @{collab} xử lý chuyên môn và @{host} tổng hợp kết quả cuối.",
+                    Steps:
+                    [
+                        new SessionRoomStep(
+                            Kind: "reasoning",
+                            Id: $"step_mgr_r_{Guid.NewGuid():N}"[..12],
+                            Text: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong phiên chat '{room.HostChatId}' và phân định agent xử lý theo ma trận chuyên môn của Room."),
+                        new SessionRoomStep(
+                            Kind: "tool_call",
+                            Id: $"step_mgr_t_{Guid.NewGuid():N}"[..12],
+                            CallId: $"call_triage_{Guid.NewGuid():N}"[..12],
+                            Tool: "agentteams_manager_triage",
+                            Args: JsonSerializer.Serialize(new
+                            {
+                                manager = ManagerAgentId,
+                                room_id = room.MatrixRoomId,
+                                session = room.HostChatId,
+                                request = cleanReqObj,
+                                room_agents = roomMemberIds,
+                                triage_policy = room.TriagePolicy ?? "auto"
+                            }),
+                            Result: JsonSerializer.Serialize(new
+                            {
+                                triage_owner = ManagerAgentId,
+                                assigned_collaborator = collab,
+                                synthesis_host = host,
+                                status = "dispatched"
+                            }),
+                            State: "success")
+                    ]);
 
                 room = await roomStore.SaveAsync(room with
                 {
@@ -2625,7 +2762,16 @@ public sealed partial class SessionRoomOrchestrator(
         var host = SubAgentService.NormalizeAgentId(hostAgentId);
         if (string.IsNullOrWhiteSpace(rawUserText) || rawUserText.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
         {
-            return new HostRoomTriageDecision(false, [], "host_solo", $"Chủ phòng (@{host}) xử lý trực tiếp phản hồi cảm xúc hoặc tin nhắn trống.", 1.0);
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: false,
+                SelectedCollaborators: [],
+                Mode: "host_solo",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận tín hiệu phản hồi cảm xúc và phân định Chủ phòng (@{host}) xử lý trực tiếp.",
+                Confidence: 1.0,
+                CollaboratorFocuses: null,
+                ExecutionStrategy: "sequential",
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [host]);
         }
 
         var room = roomStore.GetByChat(host, hostChatId)
@@ -2680,21 +2826,27 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: true,
                 SelectedCollaborators: mentions,
                 Mode: "explicit_mention",
-                Reason: $"Chủ phòng (@{host}) điều phối yêu cầu vào Room cho chuyên viên được chỉ định: @{string.Join(", @", mentions)}.",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu trong Room và phân định giao chuyên viên được chỉ định @{string.Join(", @", mentions)} xử lý (Chủ phòng @{host} tổng hợp cuối).",
                 Confidence: 1.0,
                 CollaboratorFocuses: focuses,
-                ExecutionStrategy: DetermineWaveExecutionStrategy(mentions, userBodyText));
+                ExecutionStrategy: DetermineWaveExecutionStrategy(mentions, userBodyText),
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [.. mentions, host]);
         }
 
-        // 2. If the session Room has no collaborators yet and none were @mentioned, Host handles solo
+        // 2. If the session Room has no collaborators yet and none were @mentioned, Manager assigns directly to Host
         if (roomCollaborators.Count == 0)
         {
             return new HostRoomTriageDecision(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "no_room_collaborators",
-                Reason: $"Phiên chat chưa có chuyên viên phối hợp trong Room; Chủ phòng (@{host}) xử lý trực tiếp.",
-                Confidence: 1.0);
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu: Room hiện chỉ có Chủ phòng (@{host}) nên phân định @{host} trực tiếp xử lý.",
+                Confidence: 1.0,
+                CollaboratorFocuses: null,
+                ExecutionStrategy: "sequential",
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [host]);
         }
 
         // 3. Check if user is explicitly instructing the Host to answer solo or only reformat/summarize existing output
@@ -2714,8 +2866,12 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "host_solo",
-                Reason: $"Chủ phòng (@{host}) đánh giá yêu cầu mang tính trao đổi trực tiếp nên tự phản hồi ngay, không đẩy vào Room.",
-                Confidence: 0.98);
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong Room ({room?.MatrixRoomId}) và phân định Chủ phòng (@{host}) trực tiếp xử lý mà không cần gọi thêm chuyên viên.",
+                Confidence: 0.98,
+                CollaboratorFocuses: null,
+                ExecutionStrategy: "sequential",
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [host]);
         }
 
         // 4. Check Direct Reply to a Collaborator bubble OR Natural Collaborator Name Reference (without @) + Negative Exclusion ("trừ zen", "không cần gọi climax")
@@ -2770,10 +2926,12 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: true,
                 SelectedCollaborators: namedInRoom,
                 Mode: "reply_or_named",
-                Reason: $"Chủ phòng (@{host}) nhận diện yêu cầu hướng trực tiếp tới @{string.Join(", @", namedInRoom)} trong Room.",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu trong Room và phân định giao @{string.Join(", @", namedInRoom)} xử lý phản hồi trực tiếp (Chủ phòng @{host} tổng hợp cuối).",
                 Confidence: 0.95,
                 CollaboratorFocuses: focuses,
-                ExecutionStrategy: DetermineWaveExecutionStrategy(namedInRoom, userBodyText));
+                ExecutionStrategy: DetermineWaveExecutionStrategy(namedInRoom, userBodyText),
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [.. namedInRoom, host]);
         }
 
         // If the session Room's triage policy is set to "manual", do not auto-pull collaborators unless explicitly @mentioned or replied/named
@@ -2783,10 +2941,12 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "manual_policy_host_solo",
-                Reason: $"Chế độ điều phối Room đang đặt là Thủ công (Manual); Chủ phòng (@{host}) trực tiếp phản hồi khi không có thẻ @mention.",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) kiểm tra chế độ điều phối Room đang đặt là Thủ công (Manual); phân định Chủ phòng (@{host}) trực tiếp phản hồi khi không có thẻ @mention.",
                 Confidence: 1.0,
                 CollaboratorFocuses: null,
-                ExecutionStrategy: "sequential");
+                ExecutionStrategy: "sequential",
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [host]);
         }
 
         // Check if this is a pure text formatting/rewriting request of already-generated content (with no domain investigation needed)
@@ -2800,8 +2960,12 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "host_solo",
-                Reason: $"Chủ phòng (@{host}) tự biên tập/tóm tắt nội dung sẵn có mà không cần gọi lại chuyên viên trong Room.",
-                Confidence: 0.95);
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) đánh giá yêu cầu chỉ biên tập/tóm tắt nội dung sẵn có nên phân định Chủ phòng (@{host}) trực tiếp thực hiện.",
+                Confidence: 0.95,
+                CollaboratorFocuses: null,
+                ExecutionStrategy: "sequential",
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [host]);
         }
 
         // 5. Inspect Latest Wave in Room for Pending Clarification / Scope Questions & Conversational Momentum
@@ -2856,15 +3020,12 @@ public sealed partial class SessionRoomOrchestrator(
             .ThenBy(x => x.Order)
             .ToList();
 
-        // Dominant Specialty Pruning: if the top collaborator has a strong specific domain match (Score >= 4),
-        // filter out peripheral collaborators with a weak 1-keyword overlap unless they reach >= 50% of topScore (or >= 4)
         int topScore = evalList.Count > 0 ? evalList[0].Score : 0;
         var scoredCollaborators = evalList
             .Where(x => topScore < 4 || x.Score >= 4 || x.Score * 2 >= topScore)
             .Select(x => x.Collab)
             .ToList();
 
-        // Only expand to all pendingWaveCollaborators if the user is supplying shared scope (not when the user is already strongly targeting a single dominant specialty with topScore >= 6)
         bool isScopeSupply = latestWaveAskedClarification &&
             (topScore < 6 || evalList.Count(x => x.Score >= 4) > 1) &&
             Regex.IsMatch(userBodyText, @"ngành|sản\s+phẩm|dịch\s+vụ|đối\s+thủ|chuỗi|công\s+ty|dự\s+án|mục\s+tiêu|địa\s+bàn", RegexOptions.IgnoreCase) &&
@@ -2895,10 +3056,12 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: true,
                 SelectedCollaborators: scoredCollaborators,
                 Mode: "specialty_triage",
-                Reason: $"Chủ phòng (@{host}) phân tích chuyên môn của yêu cầu mới và chủ động kéo @{string.Join(", @", scoredCollaborators)} trong Room cùng giải quyết.",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong Room, phân tích chuyên môn và phân định giao @{string.Join(", @", scoredCollaborators)} xử lý (Chủ phòng @{host} tổng hợp cuối).",
                 Confidence: Math.Round(confidence, 2),
                 CollaboratorFocuses: focuses,
-                ExecutionStrategy: DetermineWaveExecutionStrategy(scoredCollaborators, userBodyText));
+                ExecutionStrategy: DetermineWaveExecutionStrategy(scoredCollaborators, userBodyText),
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [.. scoredCollaborators, host]);
         }
 
         // 7. Continuity Follow-up: If no specific domain keyword matched, but the latest wave asked the user for missing context/scope
@@ -2913,15 +3076,15 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: true,
                 SelectedCollaborators: pendingWaveCollaborators,
                 Mode: "continuity_followup",
-                Reason: $"Chủ phòng (@{host}) nhận thấy người dùng đang bổ sung thông tin cho phiên thảo luận trước nên đẩy vào Room cho @{string.Join(", @", pendingWaveCollaborators)} hoàn tất phân tích.",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) nhận thấy người dùng đang bổ sung thông tin cho phiên thảo luận trước nên phân định giao @{string.Join(", @", pendingWaveCollaborators)} trong Room hoàn tất phân tích (Chủ phòng @{host} tổng hợp cuối).",
                 Confidence: 0.9,
                 CollaboratorFocuses: focuses,
-                ExecutionStrategy: DetermineWaveExecutionStrategy(pendingWaveCollaborators, userBodyText));
+                ExecutionStrategy: DetermineWaveExecutionStrategy(pendingWaveCollaborators, userBodyText),
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [.. pendingWaveCollaborators, host]);
         }
 
-        // 8. Conversational Momentum / Active Collaborator Drill-down Affinity:
-        // When the user asks a follow-up drill-down ("còn mục 2 thì sao?", "chi tiết hơn phương án này nhé", "bổ sung thêm ví dụ")
-        // right after a collaborator wave, route smoothly to the active collaborator(s) of that wave
+        // 8. Conversational Momentum / Active Collaborator Drill-down Affinity
         bool isDrillDownFollowup = pendingWaveCollaborators.Count > 0 && Regex.IsMatch(
             userBodyText,
             @"(?:chi\s+tiết\s+hơn|cụ\s+thể\s+hơn|làm\s+rõ\s+hơn|mục\s+(?:số\s+)?\d+|phương\s+án\s+(?:này|đó|\d+)|điểm\s+(?:này|đó|\d+)|bổ\s+sung\s+thêm|thêm\s+ví\s+dụ|còn\s+về\s+phần|tiếp\s+tục\s+phân\s+tích|đi\s+sâu\s+hơn)",
@@ -2938,19 +3101,25 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: true,
                 SelectedCollaborators: pendingWaveCollaborators,
                 Mode: "active_collaborator_affinity",
-                Reason: $"Chủ phòng (@{host}) duy trì mạch trao đổi chuyên sâu và chuyển yêu cầu làm rõ cho @{string.Join(", @", pendingWaveCollaborators)} trong Room.",
+                Reason: $"AgentTeams Manager (@{ManagerAgentId}) duy trì mạch trao đổi chuyên sâu trong Room và phân định giao @{string.Join(", @", pendingWaveCollaborators)} làm rõ yêu cầu (Chủ phòng @{host} tổng hợp cuối).",
                 Confidence: 0.88,
                 CollaboratorFocuses: focuses,
-                ExecutionStrategy: DetermineWaveExecutionStrategy(pendingWaveCollaborators, userBodyText));
+                ExecutionStrategy: DetermineWaveExecutionStrategy(pendingWaveCollaborators, userBodyText),
+                TriageOwnerId: ManagerAgentId,
+                AssignedAgents: [.. pendingWaveCollaborators, host]);
         }
 
-        // 9. Default when no collaborator specialty matches and no pending clarification/drill-down exists: Host handles solo
+        // 9. Default when no collaborator specialty matches and no pending clarification/drill-down exists: Manager assigns to Host solo
         return new HostRoomTriageDecision(
             ShouldUseRoom: false,
             SelectedCollaborators: [],
             Mode: "host_solo",
-            Reason: $"Yêu cầu mới không đòi hỏi phối hợp chuyên môn từ các thành viên khác trong Room; Chủ phòng (@{host}) trực tiếp xử lý.",
-            Confidence: 0.92);
+            Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong Room, đánh giá không đòi hỏi phối hợp chuyên môn từ các thành viên khác và phân định Chủ phòng (@{host}) trực tiếp xử lý.",
+            Confidence: 0.92,
+            CollaboratorFocuses: null,
+            ExecutionStrategy: "sequential",
+            TriageOwnerId: ManagerAgentId,
+            AssignedAgents: [host]);
     }
 
     private static void BroadcastRoomTurnToHostSession(
