@@ -929,18 +929,14 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
             }
 
-            var agents = await client.GetAgentsAsync(ct);
-            var cleanSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
-            var match = agents.FirstOrDefault(a => a.Slug.Equals(cleanSlug, StringComparison.OrdinalIgnoreCase) || a.Id.Equals(agentId, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
+            var res = await client.GetAgentActiveModelAsync(agentId, ct);
+            if (res is null)
             {
+                var cleanSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
                 return Results.NotFound(new { detail = $"Agent '{cleanSlug}' not found in fleet" });
             }
 
-            var rawModel = match.Model ?? "";
-            var prov = rawModel.Contains('/') ? rawModel.Split('/')[0] : "";
-            var mod = rawModel.Contains('/') ? rawModel.Split('/')[1] : rawModel;
-            return TypedResults.Ok(new SetActiveModelResponseDto(new QwenPawActiveModel(prov, mod), 500000));
+            return TypedResults.Ok(res);
         })
         .WithName("GetAgentActiveModel")
         .WithSummary("Get current active LLM model provider and model for agent")
