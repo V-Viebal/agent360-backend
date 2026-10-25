@@ -129,7 +129,8 @@ public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("collaborator_focuses")] IReadOnlyDictionary<string, string>? CollaboratorFocuses = null,
     [property: JsonPropertyName("execution_strategy")] string ExecutionStrategy = "parallel",
     [property: JsonPropertyName("triage_owner_id")] string TriageOwnerId = "agentteams-manager",
-    [property: JsonPropertyName("assigned_agents")] IReadOnlyList<string>? AssignedAgents = null);
+    [property: JsonPropertyName("assigned_agents")] IReadOnlyList<string>? AssignedAgents = null,
+    [property: JsonPropertyName("auto_recruited_collaborators")] IReadOnlyList<string>? AutoRecruitedCollaborators = null);
 
 
 public static class AgentReactionClassifier
@@ -3026,7 +3027,45 @@ public sealed partial class SessionRoomOrchestrator(
             .Select(x => x.Collab)
             .ToList();
 
+        // 6b. Manager Dynamic Specialist Recruitment:
+        // If no current Room member strongly covers the request's domain (topScore < 4), AgentTeams Manager scans the canonical specialist pool
+        // and automatically recruits the top matching external specialist (Score >= 6) into the session's single Room!
+        var autoRecruited = new List<string>();
+        var externalMatchedKeywords = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        if (topScore < 4)
+        {
+            var canonicalPool = new[] { "zen", "climax-default", "planthy-pm", "mons", "ken", "gm-gao", "gm-lua" };
+            var externalCandidates = canonicalPool
+                .Where(c => !string.Equals(c, host, StringComparison.OrdinalIgnoreCase) &&
+                            !roomCollaborators.Contains(c, StringComparer.OrdinalIgnoreCase) &&
+                            !excludedInRoom.Contains(c))
+                .Select(c =>
+                {
+                    var (sc, kws) = EvaluateCollaboratorSpecialty(c, userBodyText);
+                    return (Collab: c, Score: sc, MatchedKeywords: kws);
+                })
+                .Where(x => x.Score >= 6)
+                .OrderByDescending(x => x.Score)
+                .ToList();
+
+            if (externalCandidates.Count > 0)
+            {
+                int bestExtScore = externalCandidates[0].Score;
+                foreach (var ext in externalCandidates.Where(x => x.Score * 2 >= bestExtScore))
+                {
+                    autoRecruited.Add(ext.Collab);
+                    externalMatchedKeywords[ext.Collab] = ext.MatchedKeywords;
+                    if (!scoredCollaborators.Contains(ext.Collab, StringComparer.OrdinalIgnoreCase))
+                    {
+                        scoredCollaborators.Add(ext.Collab);
+                    }
+                }
+                if (bestExtScore > topScore) topScore = bestExtScore;
+            }
+        }
+
         bool isScopeSupply = latestWaveAskedClarification &&
+            autoRecruited.Count == 0 &&
             (topScore < 6 || evalList.Count(x => x.Score >= 4) > 1) &&
             Regex.IsMatch(userBodyText, @"ngành|sản\s+phẩm|dịch\s+vụ|đối\s+thủ|chuỗi|công\s+ty|dự\s+án|mục\s+tiêu|địa\s+bàn", RegexOptions.IgnoreCase) &&
             !Regex.IsMatch(userBodyText, @"\b(?:chỉ\s+cần|riêng\s+phần|riêng\s+mảng)\b", RegexOptions.IgnoreCase);
@@ -3046,22 +3085,30 @@ public sealed partial class SessionRoomOrchestrator(
                 c => c,
                 c =>
                 {
+                    if (externalMatchedKeywords.TryGetValue(c, out var extKws))
+                        return BuildCollaboratorFocusBrief(c, extKws);
                     var m = evalList.FirstOrDefault(x => string.Equals(x.Collab, c, StringComparison.OrdinalIgnoreCase));
                     return BuildCollaboratorFocusBrief(c, m.MatchedKeywords);
                 },
                 StringComparer.OrdinalIgnoreCase);
 
             var confidence = Math.Clamp(0.72 + Math.Min(topScore, 8) * 0.035, 0.75, 0.99);
+            var mode = autoRecruited.Count > 0 ? "manager_specialist_recruitment" : "specialty_triage";
+            var reason = autoRecruited.Count > 0
+                ? $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới, phát hiện Room chưa có chuyên viên phụ trách mảng này nên tự động mời bổ sung @{string.Join(", @", autoRecruited)} vào Room và phân định giao @{string.Join(", @", scoredCollaborators)} xử lý (Chủ phòng @{host} tổng hợp cuối)."
+                : $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong Room, phân tích chuyên môn và phân định giao @{string.Join(", @", scoredCollaborators)} xử lý (Chủ phòng @{host} tổng hợp cuối).";
+
             return new HostRoomTriageDecision(
                 ShouldUseRoom: true,
                 SelectedCollaborators: scoredCollaborators,
-                Mode: "specialty_triage",
-                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu mới trong Room, phân tích chuyên môn và phân định giao @{string.Join(", @", scoredCollaborators)} xử lý (Chủ phòng @{host} tổng hợp cuối).",
+                Mode: mode,
+                Reason: reason,
                 Confidence: Math.Round(confidence, 2),
                 CollaboratorFocuses: focuses,
                 ExecutionStrategy: DetermineWaveExecutionStrategy(scoredCollaborators, userBodyText),
                 TriageOwnerId: ManagerAgentId,
-                AssignedAgents: [.. scoredCollaborators, host]);
+                AssignedAgents: [.. scoredCollaborators, host],
+                AutoRecruitedCollaborators: autoRecruited.Count > 0 ? autoRecruited : null);
         }
 
         // 7. Continuity Follow-up: If no specific domain keyword matched, but the latest wave asked the user for missing context/scope

@@ -1001,6 +1001,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     triage_confidence = triageDecision.Confidence,
                     selected_collaborators = mentionedCollaborators,
                     assigned_agents = triageDecision.AssignedAgents,
+                    auto_recruited_collaborators = triageDecision.AutoRecruitedCollaborators,
                     collaborator_focuses = triageDecision.CollaboratorFocuses
                 });
                 try

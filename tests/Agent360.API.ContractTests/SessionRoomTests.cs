@@ -617,4 +617,52 @@ public class SessionRoomTests
         roomAfterSolo.Should().NotBeNull();
         roomAfterSolo!.Turns.Last().Steps.Should().Contain(s => s.Tool == "agentteams_manager_triage");
     }
+
+    [Fact]
+    public async Task ManagerDynamicSpecialistRecruitment_RecruitsExternalSpecialistIntoSingleRoom_WhenDomainIsUncovered()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient { NextReply = "Lộ trình WBS 90 ngày từ Planthy PM." };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-manager-recruit-01";
+        // Room initially only has zen (Sales) and climax-default (Marketing) — NO planthy-pm yet
+        var initialRoom = await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default"]);
+        initialRoom.Participants.Select(p => p.AgentId).Should().NotContain("planthy-pm");
+
+        // User asks a Project Management / WBS / timeline question WITHOUT @mention
+        var decision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc",
+            chatId,
+            chatId,
+            "Lập bảng kế hoạch tiến độ timeline, lộ trình milestone, phân công WBS và checklist nghiệm thu theo từng tuần");
+
+        decision.TriageOwnerId.Should().Be("agentteams-manager");
+        decision.ShouldUseRoom.Should().BeTrue();
+        decision.Mode.Should().Be("manager_specialist_recruitment");
+        decision.AutoRecruitedCollaborators.Should().Equal(["planthy-pm"]);
+        decision.SelectedCollaborators.Should().Equal(["planthy-pm"]);
+        decision.AssignedAgents.Should().Equal(["planthy-pm", "gm-boc"]);
+        decision.Reason.Should().Contain("mời bổ sung @planthy-pm vào Room");
+
+        // Executing the wave adds planthy-pm into the EXACT SAME single Room
+        var (updatedRoom, _) = await orchestrator.ExecuteCollaboratorWaveAsync(
+            "gm-boc",
+            chatId,
+            decision.SelectedCollaborators,
+            "Lập bảng kế hoạch tiến độ timeline, lộ trình milestone, phân công WBS và checklist nghiệm thu theo từng tuần",
+            null,
+            chatId,
+            decision.CollaboratorFocuses,
+            decision.ExecutionStrategy,
+            null,
+            ct);
+
+        roomStore.ListByHostAgent("gm-boc").Should().HaveCount(1);
+        updatedRoom.RoomId.Should().Be(initialRoom.RoomId);
+        updatedRoom.Participants.Select(p => p.AgentId).Should().Contain("planthy-pm");
+    }
 }
