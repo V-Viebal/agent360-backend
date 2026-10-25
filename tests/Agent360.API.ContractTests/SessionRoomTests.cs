@@ -10,6 +10,7 @@ namespace Agent360.API.ContractTests;
 public sealed class FakeRoomA2AClient : IQwenPawA2AClient
 {
     public string NextReply { get; set; } = "Kết quả phân tích từ Agent B trong Room.";
+    public Queue<string> ReplyQueue { get; } = new();
 
     public Task<IReadOnlyList<NativeAgentInfo>> ListAgentsAsync(CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<NativeAgentInfo>>(
@@ -20,10 +21,10 @@ public sealed class FakeRoomA2AClient : IQwenPawA2AClient
         ]);
 
     public Task<NativeChatResult> ChatAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct) =>
-        Task.FromResult(new NativeChatResult(true, $"room:{fromAgent}:{toAgent}", NextReply, null, 200));
+        Task.FromResult(new NativeChatResult(true, $"room:{fromAgent}:{toAgent}", ReplyQueue.Count > 0 ? ReplyQueue.Dequeue() : NextReply, null, 200));
 
     public Task<NativeChatResult> ChatInSessionAsync(string fromAgent, string toAgent, string text, string? sessionId, int timeoutSeconds, CancellationToken ct) =>
-        Task.FromResult(new NativeChatResult(true, sessionId ?? $"room:{fromAgent}:{toAgent}", NextReply, null, 200));
+        Task.FromResult(new NativeChatResult(true, sessionId ?? $"room:{fromAgent}:{toAgent}", ReplyQueue.Count > 0 ? ReplyQueue.Dequeue() : NextReply, null, 200));
 
     public Task<NativeSubmitResult> SubmitAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct) =>
         Task.FromResult(new NativeSubmitResult(true, $"room:{fromAgent}:{toAgent}", "task_1", timeoutSeconds, null, 200));
@@ -397,5 +398,132 @@ public class SessionRoomTests
             "gm-boc", chatId, chatId, "Phân tích chiến dịch truyền thông của đối thủ cạnh tranh, không cần gọi zen nhé");
         exclusionDecision.ShouldUseRoom.Should().BeTrue();
         exclusionDecision.SelectedCollaborators.Should().Equal(["climax-default"]);
+    }
+
+    [Fact]
+    public async Task ExecuteCollaboratorWave_RunsIndependentCollaboratorsInParallel_AndRespectsManualTriagePolicy()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient { NextReply = "Phản hồi chuyên môn song song trong Room." };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-parallel-wave-01";
+        var completedOrder = new List<string>();
+
+        var (waveRoom, waveTurns) = await orchestrator.ExecuteCollaboratorWaveAsync(
+            "gm-boc",
+            chatId,
+            ["zen", "climax-default", "planthy-pm"],
+            "Phân tích toàn diện dự án mới",
+            "Ngữ cảnh phiên chat",
+            chatId,
+            new Dictionary<string, string>
+            {
+                ["zen"] = "Trọng tâm thương mại",
+                ["climax-default"] = "Trọng tâm thương hiệu",
+                ["planthy-pm"] = "Trọng tâm tiến độ"
+            },
+            executionStrategy: "parallel",
+            onCollaboratorCompleted: (_, turn, collab) =>
+            {
+                lock (completedOrder) completedOrder.Add(collab);
+                return Task.CompletedTask;
+            },
+            ct: ct);
+
+        // 1. All 3 collaborators completed in the single Room and streamed via callback
+        waveTurns.Should().HaveCount(3);
+        completedOrder.Should().BeEquivalentTo(["zen", "climax-default", "planthy-pm"]);
+        roomStore.ListByHostAgent("gm-boc").Should().HaveCount(1);
+        waveRoom.Participants.Where(p => p.Role == "collaborator").Select(p => p.AgentId)
+            .Should().BeEquivalentTo(["zen", "climax-default", "planthy-pm"]);
+
+        // Only 1 user request turn was recorded for the entire wave (plus 1 manager init turn + 3 collaborator replies = 5 turns)
+        waveRoom.Turns.Count(t => t.Kind == "request" && t.AuthorRole != "manager").Should().Be(1);
+        waveRoom.Turns.Count(t => t.Kind == "collaborator_reply").Should().Be(3);
+
+        // 2. Test TriagePolicy Toggle ("manual" vs "auto")
+        var manualRoom = await orchestrator.SetRoomTriagePolicyAsync("gm-boc", chatId, "manual", ct);
+        manualRoom.TriagePolicy.Should().Be("manual");
+
+        // In "manual" mode, an un-mentioned domain question stays host_solo
+        var manualDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Lên bảng báo giá bán và chiết khấu đại lý B2B");
+        manualDecision.ShouldUseRoom.Should().BeFalse();
+        manualDecision.Mode.Should().Be("manual_policy_host_solo");
+
+        // Explicit @mention still works in "manual" mode
+        var explicitInManual = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "@zen tính lại bảng giá nhé");
+        explicitInManual.ShouldUseRoom.Should().BeTrue();
+        explicitInManual.SelectedCollaborators.Should().Equal(["zen"]);
+
+        // Switching back to "auto" restores autonomous specialty triage
+        await orchestrator.SetRoomTriagePolicyAsync("gm-boc", chatId, "auto", ct);
+        var autoDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Lên bảng báo giá bán và chiết khấu đại lý B2B");
+        autoDecision.ShouldUseRoom.Should().BeTrue();
+        autoDecision.Mode.Should().Be("specialty_triage");
+        autoDecision.SelectedCollaborators.Should().Equal(["zen"]);
+    }
+
+    [Fact]
+    public async Task ManagerRoomGovernance_AuditsEveryMemberTurn_AutoCorrectsDefectiveOutput_AndExcludesStrayMons()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient();
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-manager-gov-01";
+        var room = await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default"]);
+
+        // 1. Verify Room strictly contains ONLY [gm-boc, zen, climax-default, agentteams-manager, admin] and NO stray "mons" or "mon"
+        room.Participants.Select(p => p.AgentId).Should().BeEquivalentTo(
+            ["gm-boc", "zen", "climax-default", "agentteams-manager", "admin"]);
+        room.Participants.Select(p => p.AgentId).Should().NotContain(["mons", "mon"]);
+        room.Participants.Select(p => p.MatrixUserId).Should().NotContain(["@mon:agentteams-gateway.hmz.one", "@mons:agentteams-gateway.hmz.one"]);
+
+        // EnrichChatHistoryJson with null agentId resolves by chatId without falling back to "mons"
+        var enrichedRaw = roomStore.EnrichChatHistoryJson("""{"messages":[]}""", null, chatId);
+        enrichedRaw.Should().Contain(room.RoomId);
+
+        // 2. Simulate Member Agent (zen) initially returning a defective output (confusing @climax-default as a competitor brand),
+        // followed by a corrected response when AgentTeams Manager issues the auto-correction directive!
+        a2a.ReplyQueue.Enqueue("Phân tích đối thủ climax-default: hiện chưa rõ dòng sản phẩm.");
+        a2a.ReplyQueue.Enqueue("- **So sánh giá & Kênh B2B (Katinat vs Phê La):**\n  + Katinat mạnh về mặt bằng góc & danh mục đồ uống đa dạng.\n  + Phê La tập trung đặc sản Ô Long & định vị ngách rõ rệt.");
+
+        var (updatedRoom, zenTurn) = await orchestrator.ExecuteCollaboratorTurnAsync(
+            "gm-boc",
+            chatId,
+            "zen",
+            "@zen @climax-default Ngành hàng là chuỗi cà phê đặc sản, đối thủ chính là Katinat và Phê La",
+            null,
+            chatId,
+            ct);
+
+        zenTurn.ManagerAudit.Should().NotBeNull();
+        zenTurn.ManagerAudit!.Passed.Should().BeTrue();
+        zenTurn.ManagerAudit.AutoRetried.Should().BeTrue();
+        zenTurn.ManagerAudit.Verdict.Should().Be("auto_corrected");
+        zenTurn.Text.Should().Contain("Katinat vs Phê La");
+        zenTurn.Steps.Should().Contain(s => s.Tool == "manager_quality_gate");
+
+        // 3. Verify BuildManagerSynthesisBrief summarizes audited member outputs for Host synthesis
+        var triage = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "@zen @climax-default Ngành hàng là chuỗi cà phê đặc sản, đối thủ chính là Katinat và Phê La");
+        var synthesisBrief = orchestrator.BuildManagerSynthesisBrief(
+            updatedRoom,
+            "Ngành hàng là chuỗi cà phê đặc sản, đối thủ chính là Katinat và Phê La",
+            triage,
+            [zenTurn]);
+        synthesisBrief.Should().Contain("AGENTTEAMS MANAGER");
+        synthesisBrief.Should().Contain("AUTO_CORRECTED");
+        synthesisBrief.Should().Contain("Đã tự động hiệu chỉnh");
     }
 }

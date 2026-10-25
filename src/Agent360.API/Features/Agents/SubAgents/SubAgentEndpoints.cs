@@ -186,6 +186,20 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("TriageChatRoomTurn")
             .WithSummary("Evaluate the Host Agent's autonomous decision on whether a new request should be pushed into the session Room and which Room collaborators to pull in");
 
+        agents.MapPatch("chats/{chatId}/room/triage-policy", async (
+                string agentId,
+                string chatId,
+                [FromBody] UpdateRoomTriagePolicyRequest? body,
+                HttpContext http,
+                CancellationToken ct) =>
+            {
+                var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
+                var room = await orchestrator.SetRoomTriagePolicyAsync(agentId, chatId, body?.TriagePolicy ?? "auto", ct);
+                return Results.Ok(new { room, triage_policy = room.TriagePolicy });
+            })
+            .WithName("UpdateChatRoomTriagePolicy")
+            .WithSummary("Switch the session Room triage mode between 'auto' (autonomous Host triage) and 'manual' (explicit @mention or reply only)");
+
         // ---- Delegation ledger ----
         var dlg = routeBuilder.MapGroup("delegations")
             .WithTags(EndpointTags.Agents)

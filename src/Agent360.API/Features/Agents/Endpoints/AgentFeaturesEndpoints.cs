@@ -186,7 +186,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             catch (HttpRequestException)
             {
-                var room = roomStore.GetByChat(agentId ?? "mons", chatId);
+                var room = !string.IsNullOrWhiteSpace(agentId) ? roomStore.GetByChat(agentId, chatId) : roomStore.GetByChatIdOnly(chatId);
                 if (room is not null)
                 {
                     return Results.Content(EnrichChatHistoryWithRoom("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId, roomStore), "application/json");
@@ -1066,90 +1066,81 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             catch {}
 
             var accumulatedContext = new System.Text.StringBuilder();
-            Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = null;
+            Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = baseRoom;
+            var firstCollab = mentionedCollaborators.FirstOrDefault() ?? agentTarget;
 
-            for (int collabIdx = 0; collabIdx < mentionedCollaborators.Count; collabIdx++)
+            if (!ct.IsCancellationRequested)
             {
-                var mentionedCollaborator = mentionedCollaborators[collabIdx];
-                var currentRoomState = latestRoom ?? baseRoom;
-                var collabFocus = triageDecision.CollaboratorFocuses is not null &&
-                                  triageDecision.CollaboratorFocuses.TryGetValue(mentionedCollaborator, out var cf)
-                    ? cf
-                    : null;
-
-                if (!ct.IsCancellationRequested)
+                var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
                 {
-                    var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        @object = "room_event",
-                        status = "collaborator_running",
-                        collaborator_id = mentionedCollaborator,
-                        step_index = collabIdx + 1,
-                        total_collaborators = mentionedCollaborators.Count,
-                        triage_mode = triageDecision.Mode,
-                        triage_reason = triageDecision.Reason,
-                        triage_confidence = triageDecision.Confidence,
-                        collaborator_focus = collabFocus,
-                        selected_collaborators = mentionedCollaborators,
-                        room = currentRoomState
-                    });
-                    try
-                    {
-                        await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
-                        await httpContext.Response.Body.FlushAsync(ct);
-                    }
-                    catch {}
-                }
-
-                var combinedContext = new System.Text.StringBuilder();
-                if (!string.IsNullOrWhiteSpace(collabFocus))
+                    @object = "room_event",
+                    status = "collaborator_running",
+                    collaborator_id = firstCollab,
+                    step_index = 1,
+                    total_collaborators = mentionedCollaborators.Count,
+                    execution_strategy = triageDecision.ExecutionStrategy,
+                    triage_mode = triageDecision.Mode,
+                    triage_reason = triageDecision.Reason,
+                    triage_confidence = triageDecision.Confidence,
+                    selected_collaborators = mentionedCollaborators,
+                    room = baseRoom
+                });
+                try
                 {
-                    combinedContext.AppendLine($"### Trọng tâm điều phối từ Chủ phòng (@{agentTarget}) dành riêng cho @{mentionedCollaborator}:");
-                    combinedContext.AppendLine($"- {collabFocus}");
+                    await httpContext.Response.WriteAsync($"data: {roomInitEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
                 }
-                if (recentSessionHistory.Length > 0)
-                {
-                    if (combinedContext.Length > 0) combinedContext.AppendLine();
-                    combinedContext.AppendLine("### Các lượt trao đổi gần đây trong phiên chat:");
-                    combinedContext.Append(recentSessionHistory);
-                }
-                if (accumulatedContext.Length > 0)
-                {
-                    if (combinedContext.Length > 0) combinedContext.AppendLine();
-                    combinedContext.AppendLine("### Ý kiến của các chuyên viên AI vừa phản hồi trước bạn:");
-                    combinedContext.Append(accumulatedContext);
-                }
-
-                var (completedRoom, collabTurn) = await roomOrchestrator.ExecuteCollaboratorTurnAsync(
-                    agentTarget,
-                    effectiveSessionId,
-                    mentionedCollaborator,
-                    rawUserText ?? "",
-                    combinedContext.Length > 0 ? combinedContext.ToString() : null,
-                    qwenPawSessionId,
-                    upstreamCts.Token);
-
-                latestRoom = completedRoom;
-                accumulatedContext.AppendLine($"- @{mentionedCollaborator} ({collabTurn.AuthorName}): {collabTurn.Text}");
-
-                if (!ct.IsCancellationRequested)
-                {
-                    var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        @object = "room_turn",
-                        status = completedRoom.Status,
-                        collaborator_id = mentionedCollaborator,
-                        room = completedRoom,
-                        turn = collabTurn
-                    });
-                    try
-                    {
-                        await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
-                        await httpContext.Response.Body.FlushAsync(ct);
-                    }
-                    catch {}
-                }
+                catch {}
             }
+
+            var baseHistorySnippet = recentSessionHistory.Length > 0
+                ? $"### Các lượt trao đổi gần đây trong phiên chat:\n{recentSessionHistory}"
+                : null;
+
+            int completedStepCount = 0;
+            var (waveRoom, waveTurns) = await roomOrchestrator.ExecuteCollaboratorWaveAsync(
+                agentTarget,
+                effectiveSessionId,
+                mentionedCollaborators,
+                rawUserText ?? "",
+                baseHistorySnippet,
+                qwenPawSessionId,
+                triageDecision.CollaboratorFocuses,
+                triageDecision.ExecutionStrategy,
+                async (completedRoom, collabTurn, finishedCollab) =>
+                {
+                    completedStepCount++;
+                    if (!ct.IsCancellationRequested)
+                    {
+                        var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            @object = "room_turn",
+                            status = completedRoom.Status,
+                            collaborator_id = finishedCollab,
+                            step_index = completedStepCount,
+                            total_collaborators = mentionedCollaborators.Count,
+                            execution_strategy = triageDecision.ExecutionStrategy,
+                            room = completedRoom,
+                            turn = collabTurn
+                        });
+                        try
+                        {
+                            await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
+                            await httpContext.Response.Body.FlushAsync(ct);
+                        }
+                        catch {}
+                    }
+                },
+                upstreamCts.Token);
+
+            latestRoom = waveRoom;
+            foreach (var ctTurn in waveTurns)
+            {
+                accumulatedContext.AppendLine($"- @{ctTurn.AuthorId} ({ctTurn.AuthorName}): {ctTurn.Text}");
+            }
+
+            var cleanUserObjective = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.StripCollaboratorMentions(rawUserText, mentionedCollaborators);
+            var managerSynthesisBrief = roomOrchestrator.BuildManagerSynthesisBrief(latestRoom ?? baseRoom, cleanUserObjective, triageDecision, waveTurns);
 
             if (latestRoom is not null && !ct.IsCancellationRequested)
             {
@@ -1158,6 +1149,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     @object = "room_event",
                     status = "synthesizing",
                     collaborator_id = agentTarget,
+                    manager_brief = managerSynthesisBrief,
                     room = latestRoom
                 });
                 try
@@ -1168,11 +1160,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 catch {}
             }
 
-            var cleanUserObjective = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.StripCollaboratorMentions(rawUserText, mentionedCollaborators);
             var triageHeader = triageDecision.Mode == "explicit_mention"
                 ? $"Các thẻ @{string.Join(", @", mentionedCollaborators)} ở trên là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng mời vào hỗ trợ phiên chat, KHÔNG PHẢI là tên sản phẩm hay thương hiệu người dùng đang hỏi."
                 : $"Với vai trò Chủ phòng (@{agentTarget}), bạn đã chủ động phân tích yêu cầu mới và kéo @{string.Join(", @", mentionedCollaborators)} trong Room của phiên chat vào cùng giải quyết ({triageDecision.Reason}).";
-            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\nNội dung câu hỏi thực chất của người dùng: \"{cleanUserObjective}\"\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn:\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
+            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\n{managerSynthesisBrief}\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn (đã qua kiểm định của AgentTeams Manager):\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên theo đúng Biên bản nghiệm thu của Manager thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
             effectiveRequest = effectiveRequest with
             {
                 Message = synthesizedInput,
