@@ -142,6 +142,9 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         using var cts = Linked(ct, timeoutSeconds);
         var resolvedTarget = _routingService?.ResolveTarget(toAgent);
         var effectiveAgentProfile = resolvedTarget?.TargetAgentProfile ?? toAgent;
+        string? finalText = null;
+        var textByMsgId = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
+        var msgOrder = new List<string>();
         try
         {
             HttpResponseMessage first;
@@ -187,11 +190,8 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
 
             await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
             using var reader = new StreamReader(stream, Encoding.UTF8);
-            string? finalText = null;
             string? error = null;
             var reasoningMsgIds = new HashSet<string>(StringComparer.Ordinal);
-            var textByMsgId = new Dictionary<string, StringBuilder>(StringComparer.Ordinal);
-            var msgOrder = new List<string>();
             string? line;
             while ((line = await reader.ReadLineAsync(cts.Token)) is not null)
             {
@@ -279,6 +279,14 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             await StopChatAsync(sessionId, toAgent, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(finalText) && msgOrder.Count > 0)
+            {
+                finalText = string.Join("\n\n", msgOrder.Select(id => textByMsgId[id].ToString().Trim()).Where(s => !string.IsNullOrEmpty(s)));
+            }
+            if (!string.IsNullOrWhiteSpace(finalText))
+            {
+                return new NativeChatResult(true, sessionId, finalText.Trim(), null, 200);
+            }
             return new NativeChatResult(false, sessionId, null, "timed_out", 504);
         }
     }

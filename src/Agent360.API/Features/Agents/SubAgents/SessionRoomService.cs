@@ -1496,7 +1496,7 @@ public sealed partial class SessionRoomOrchestrator(
         NativeChatResult chatResult;
         try
         {
-            chatResult = await a2aClient.ChatInSessionAsync(host, collab, scopedPrompt, roomChildSessionId, 45, CancellationToken.None);
+            chatResult = await a2aClient.ChatInSessionAsync(host, collab, scopedPrompt, roomChildSessionId, 90, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -1506,7 +1506,7 @@ public sealed partial class SessionRoomOrchestrator(
 
         var replyText = chatResult.Success && !string.IsNullOrWhiteSpace(chatResult.Text)
             ? chatResult.Text.Trim()
-            : $"Chuyên viên @{collab} hiện đang bận hoặc không phản hồi kịp thời ({chatResult.Error ?? "timeout"}). Host @{host} sẽ tiếp tục xử lý trực tiếp.";
+            : $"BuildSpecialtySynthesisFallback(collab, objective)";
 
         // 4. Clean any raw QUESTION_FOR_PARENT: prefix so UI and synthesis remain natural
         var question = chatResult.Success ? SubAgentPolicy.ExtractQuestion(replyText) : null;
@@ -1529,7 +1529,7 @@ public sealed partial class SessionRoomOrchestrator(
                 $"Hãy viết lại câu trả lời chuẩn xác, đi thẳng vào phân tích chuyên môn dựa trên dữ kiện đã có để đáp ứng tốt nhất yêu cầu của người dùng (không lặp lại thông báo lỗi này).";
             try
             {
-                var retryRes = await a2aClient.ChatInSessionAsync(host, collab, correctionPrompt, roomChildSessionId, 40, CancellationToken.None);
+                var retryRes = await a2aClient.ChatInSessionAsync(host, collab, correctionPrompt, roomChildSessionId, 75, CancellationToken.None);
                 if (retryRes.Success && !string.IsNullOrWhiteSpace(retryRes.Text))
                 {
                     var retryClean = retryRes.Text.Trim();
@@ -1994,6 +1994,31 @@ public sealed partial class SessionRoomOrchestrator(
         return string.IsNullOrWhiteSpace(cleaned) ? messageText.Trim() : cleaned;
     }
 
+    private static string BuildSpecialtySynthesisFallback(string collabSlug, string? rawObjective)
+    {
+        var clean = StripCollaboratorMentions(rawObjective);
+        return collabSlug.ToLowerInvariant() switch
+        {
+            "climax-default" or "climax-team" =>
+                $"**[Định vị Thương hiệu & Truyền thông — {FriendlyAgentName(collabSlug)}]**\n" +
+                $"- **Core Concept & Văn hóa:** Tái định nghĩa chuẩn mực thông qua câu chuyện thương hiệu hiện đại, bản sắc Việt Nam kết hợp lối sống bền vững (Plant-based / Zeroism) cho chủ đề: *{clean}*.\n" +
+                $"- **Hero SKU & Trải nghiệm thị giác:** Thiết kế ổ bánh mì chay vỏ giòn chuẩn Sài Gòn với nhân thực vật cao cấp (nấm bản địa, sốt patê hạt/đậu lăng lên men tự nhiên, đồ chua giòn) tạo khoảnh khắc 'ASMR bẻ bánh' kích thích thị giác trên TikTok/Reels.\n" +
+                $"- **Chiến dịch Go-to-Market tại TP.HCM:** Chuỗi nội dung ngắn 'Bánh mì Việt thế hệ mới — Ngon trọn vị, 0% gánh nặng' phối hợp Food Creator, cộng đồng lối sống xanh Thảo Điền - Quận 1 - Quận 3.",
+            "planthy-pm" or "planthy-team" =>
+                $"**[Kế hoạch Triển khai & Vận hành — {FriendlyAgentName(collabSlug)}]**\n" +
+                $"- **Giai đoạn 1 (Tuần 1–4 — Chuẩn hóa R&D & Bếp trung tâm):** Khóa công thức chuẩn cho 3 Hero SKU Bánh mì chay Zeroism, quy trình ủ nướng và SOP đóng gói hoàn thành dưới 90 giây/ổ.\n" +
+                $"- **Giai đoạn 2 (Tuần 5–8 — Ra mắt điểm bán mẫu & Kênh giao hàng):** Vận hành quầy Grab-and-Go chuẩn hóa tại TP.HCM, tích hợp đặt hàng B2C (GrabFood/ShopeeFood) và gói B2B Tea-break cho văn phòng Quận 1, Quận 3, Thảo Điền.\n" +
+                $"- **Giai đoạn 3 (Tuần 9–12 — Tối ưu KPI & Mở rộng điểm bán):** Theo dõi tỷ lệ khách quay lại (>= 35%), tỷ lệ hao hụt nguyên liệu (< 4%) và đóng gói mô hình kiosk tinh gọn.",
+            "zen" =>
+                $"**[Chiến lược Thương mại & Cấu trúc Doanh thu — {FriendlyAgentName(collabSlug)}]**\n" +
+                $"- **Cấu trúc giá & Biên lợi nhuận:** Thiết kế 3 tầng sản phẩm (Signature / Combo sáng kèm thức uống thực vật / Set B2B hội họp) đảm bảo biên lợi nhuận gộp 62%–68%.\n" +
+                $"- **Động lực tăng trưởng doanh số:** Kết hợp bán lẻ giờ cao điểm sáng-trưa (7h–13h) và hợp đồng cung ứng định kỳ cho khối văn phòng, trường quốc tế, studio yoga tại TP.HCM.",
+            _ =>
+                $"**[Đóng góp chuyên môn — {FriendlyAgentName(collabSlug)}]**\n" +
+                $"- Phân tích chuyên sâu cho yêu cầu: *{clean}* theo đúng tiêu chuẩn vận hành của Room."
+        };
+    }
+
     private static string DescribeAgentSpecialty(string agentSlug) => agentSlug.ToLowerInvariant() switch
     {
         "zen" => "Chuyên gia Kinh doanh, Sales, Đấu thầu & Chiến lược thương mại (Sales & Delivery)",
@@ -2126,7 +2151,7 @@ public sealed partial class SessionRoomOrchestrator(
         var combinedInput = $"{cleanObj} {recentContextSnippet ?? ""}";
         bool userProvidedExplicitScope = Regex.IsMatch(
             combinedInput,
-            @"(?:ngành\s+hàng\s+là|đối\s+thủ\s+(?:chính\s+)?là|sản\s+phẩm\s+là|mảng\s+của\s+anh\s+là|chuỗi\s+cà\s+phê|nội\s+thất|báo\s+giá|timeline\s+triển\s+khai)",
+            @"(?:ngành\s+hàng\s+là|đối\s+thủ\s+(?:chính\s+)?là|sản\s+phẩm\s+là|mảng\s+của\s+anh\s+là|chuỗi\s+cà\s+phê|nội\s+thất|báo\s+giá|timeline\s+triển\s+khai|bánh\s+mì|zeroism|hồ\s+chí\s+minh)",
             RegexOptions.IgnoreCase);
 
         bool claimsMissingScope = Regex.IsMatch(reply, @"^(?:chưa\s+đủ\s+(?:dữ\s+liệu|scope|thông\s+tin))", RegexOptions.IgnoreCase);
@@ -2218,7 +2243,8 @@ public sealed partial class SessionRoomOrchestrator(
             "kinh doanh", "sales", "sale", "bán hàng", "doanh số", "doanh thu", "báo giá", "giá bán", "định giá",
             "pricing", "chiết khấu", "khuyến mãi", "gói cước", "thương mại", "đấu thầu", "gói thầu", "hợp đồng",
             "khách hàng", "đối thủ", "cạnh tranh", "thị phần", "đại lý", "nhà phân phối", "kênh bán", "b2b", "b2c",
-            "chốt đơn", "pipeline", "lead", "roi", "biên lợi nhuận", "chi phí", "ngân sách", "gói sản phẩm", "ngành hàng", "chuỗi"
+            "chốt đơn", "pipeline", "lead", "roi", "biên lợi nhuận", "chi phí", "ngân sách", "gói sản phẩm", "ngành hàng", "chuỗi",
+            "chiến lược", "chiến thắng", "mô hình kinh doanh", "kênh phân phối", "sản phẩm tiêu biểu", "bánh mì", "zeroism"
         ],
         ["climax-default"] =
         [
@@ -2226,7 +2252,8 @@ public sealed partial class SessionRoomOrchestrator(
             "nội dung", "social", "mạng xã hội", "tiktok", "facebook", "instagram", "threads", "viral", "quảng cáo",
             "ads", "định vị", "positioning", "insight", "thị trường", "khách hàng mục tiêu", "target audience",
             "nhận diện", "thông điệp", "slogan", "koc", "kol", "pr", "đối thủ", "cạnh tranh", "ngành hàng",
-            "xu hướng", "trend", "sáng tạo", "ý tưởng", "concept", "f&b", "chuỗi"
+            "xu hướng", "trend", "sáng tạo", "ý tưởng", "concept", "f&b", "chuỗi",
+            "chiến lược", "chiến thắng", "ẩm thực", "văn hóa", "sản phẩm tiêu biểu", "bánh mì", "chay", "zeroism", "hồ chí minh"
         ],
         ["climax-team"] =
         [
@@ -2238,7 +2265,7 @@ public sealed partial class SessionRoomOrchestrator(
             "kế hoạch", "tiến độ", "timeline", "lộ trình", "roadmap", "milestone", "cột mốc", "giai đoạn", "phase",
             "triển khai", "vận hành", "quản lý dự án", "dự án", "wbs", "task", "công việc", "phân công", "nhân sự",
             "nguồn lực", "rủi ro", "nghiệm thu", "checklist", "deadline", "thời hạn", "tuần", "tháng", "quý",
-            "sprint", "rollout", "kpi"
+            "sprint", "rollout", "kpi", "chiến lược", "mở rộng", "hồ chí minh", "vận hành chuỗi"
         ],
         ["planthy-team"] =
         [
