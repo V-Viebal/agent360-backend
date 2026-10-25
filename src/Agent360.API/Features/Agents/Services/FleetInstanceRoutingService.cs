@@ -91,6 +91,8 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
             Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
             Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
+            Build("qwenpaw-test", "7th", "Test QwenPaw (Node 7th)", "http://100.99.201.47:8089", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
+            Build("qwenpaw-base-test", "7th", "Base Test QwenPaw (Node 7th)", "https://ai-qwenpaw-base-test.antares.vn", "https://ai-qwenpaw-base-test.antares.vn", true, ""),
         ];
     }
 
@@ -245,6 +247,29 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             return Target(Instance("gl"), raw, profile);
         }
 
+        if (id.StartsWith("qwenpaw-base-test"))
+        {
+            var profile = id switch
+            {
+                "qwenpaw-base-test" => "default",
+                "qwenpaw-base-test-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                _ => raw["qwenpaw-base-test-".Length..]
+            };
+            return Target(Instance("qwenpaw-base-test"), raw, profile);
+        }
+
+        if (id.StartsWith("qwenpaw-test-"))
+        {
+            var profile = id switch
+            {
+                "qwenpaw-test-ba" => "default",
+                "qwenpaw-test-acc" => "agentcore-acc",
+                "qwenpaw-test-qa" => "QwenPaw_QA_Agent_0.2",
+                _ => raw["qwenpaw-test-".Length..]
+            };
+            return Target(Instance("qwenpaw-test"), raw, profile);
+        }
+
         // Non-AgentCore runtimes or external agent types surfaced by Agent Guardian
         if (id.StartsWith("agentteams-") || id.StartsWith("llm360-") || id == "tsx-copaw")
         {
@@ -286,9 +311,24 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
     {
         if (_options.Instances.TryGetValue(key, out var inst) && !string.IsNullOrWhiteSpace(inst.Password))
         {
-            return (string.IsNullOrWhiteSpace(inst.Username) ? "admin" : inst.Username, inst.Password);
+            var pw = (key.Equals("gm", StringComparison.OrdinalIgnoreCase) && inst.Password == "6cXZ0iCDQoT1lzcSZw7uLvMvo1p4VFDR")
+                ? "ueNsWaSIKgaO2rKUPZ_ZaNuduQ6xRlD6"
+                : inst.Password;
+            return (string.IsNullOrWhiteSpace(inst.Username) ? "admin" : inst.Username, pw);
         }
-        // Fallback default infra credentials for 8th server runtimes
+        // Fallback default infra credentials for fleet runtimes
+        if (key.Equals("gm", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "ueNsWaSIKgaO2rKUPZ_ZaNuduQ6xRlD6");
+        }
+        if (key.Equals("climax", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "ZMl1H475CMtRNNao9upd1igI4yNBQMpE");
+        }
+        if (key.Equals("planthy", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "7adlpNekd4fNy8SPPulgTySSf0n6CfRr");
+        }
         if (key.Equals("its", StringComparison.OrdinalIgnoreCase))
         {
             return ("admin", "ueNsWaSIKgaO2rKUPZ_ZaNuduQ6xRlD6");
@@ -296,6 +336,14 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         if (key.Equals("gl", StringComparison.OrdinalIgnoreCase))
         {
             return ("admin", "0Y2flhbUfADQLd9kuJ79VCK7ooehgllK");
+        }
+        if (key.Equals("qwenpaw-test", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "f0gAhrJhXvblq7EINCLOiB-NwDGr9Za3");
+        }
+        if (key.Equals("qwenpaw-base-test", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "VpsQwenpawBaseTest-2026-10-03");
         }
         return (null, null);
     }
@@ -341,7 +389,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var effectiveTimeout = (baseUrl == instance.InternalUrl && instance.InternalUrl != instance.PublicUrl)
-                    ? TimeSpan.FromSeconds(3)
+                    ? (timeout is { TotalSeconds: < 8 } ? timeout.Value : TimeSpan.FromSeconds(8))
                     : (timeout ?? DefaultTimeout);
                 cts.CancelAfter(effectiveTimeout);
                 using var request = new HttpRequestMessage(method, new Uri(new Uri(baseUrl + "/"), path))

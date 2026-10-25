@@ -617,12 +617,12 @@ public sealed class QwenPawClient : IQwenPawClient
             {
                 return fresh;
             }
-            var body = await GetStringAsync(agentId, "chats", ct: cancellationToken);
+            var body = await GetStringAsync(agentId, "chats", timeout: SlowReadTimeout, ct: cancellationToken);
             _cache.Set(key, body, TimeSpan.FromSeconds(10));
-            _cache.Set(key + ":last-good", body, TimeSpan.FromHours(1));
+            _cache.Set(key + ":last-good", body, TimeSpan.FromHours(6));
             return body;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode is null or >= HttpStatusCode.InternalServerError
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
             && _cache.TryGetValue(key + ":last-good", out string? stale) && stale is not null)
         {
             _logger.LogWarning("Serving last good chat list for {Agent}: {Error}", agentId, ex.Message);

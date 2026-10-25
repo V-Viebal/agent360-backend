@@ -65,6 +65,29 @@ public sealed class AgentCacheWarmer(
             }
         });
 
+        // Also warm per-agent chat lists so last-good is always populated for every online agent
+        var chatAgents = agents
+            .Where(a => a.Enabled)
+            .Select(a => (a.Slug, Target: routing.ResolveTarget(a.Slug)))
+            .Where(x => x.Target.IsQwenPaw)
+            .GroupBy(x => x.Target.Instance?.Key ?? "")
+            .ToList();
+
+        await Parallel.ForEachAsync(chatAgents, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, chatAgents.Count), CancellationToken = ct }, async (group, gtoken) =>
+        {
+            foreach (var item in group)
+            {
+                try
+                {
+                    await client.GetAgentChatsRawAsync(item.Slug, gtoken);
+                }
+                catch (Exception ex) when (!gtoken.IsCancellationRequested)
+                {
+                    logger.LogDebug(ex, "Warm chats for {Agent} failed", item.Slug);
+                }
+            }
+        });
+
         async Task WarmOneAsync((string Slug, ResolvedInstanceTarget Target, string Route) t, CancellationToken token)
         {
             try
