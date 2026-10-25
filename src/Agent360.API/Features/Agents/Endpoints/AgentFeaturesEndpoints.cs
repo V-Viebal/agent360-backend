@@ -695,11 +695,16 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
                             if (!string.IsNullOrWhiteSpace(runtimeUrl))
                             {
+                                var mediaFileName = Path.GetFileName(runtimeUrl.Replace('\\', '/'));
+                                var previewUrl = !string.IsNullOrWhiteSpace(mediaFileName)
+                                    ? $"/api/agents/{Uri.EscapeDataString(targetAgent)}/console/files/{Uri.EscapeDataString(mediaFileName)}"
+                                    : null;
                                 uploadResponse = uploadResponse with
                                 {
                                     Url = runtimeUrl,
                                     FileName = !string.IsNullOrWhiteSpace(runtimeFileName) ? runtimeFileName : uploadResponse.FileName,
-                                    Size = runtimeSize
+                                    Size = runtimeSize,
+                                    PreviewUrl = previewUrl
                                 };
                             }
                         }
@@ -744,6 +749,111 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Upload file attachment scoped to a specific agent console workspace")
         .DisableAntiforgery()
         .AllowAnonymous();
+
+        static async Task<IResult> HandleConsoleFileServeAsync(
+            string? agentId,
+            string fileName,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct)
+        {
+            var safeFileName = Path.GetFileName((fileName ?? "").Replace('\\', '/'));
+            if (string.IsNullOrWhiteSpace(safeFileName) || safeFileName.Contains(".."))
+            {
+                return Results.BadRequest(new { error = "Invalid file name" });
+            }
+
+            var targetAgent = !string.IsNullOrWhiteSpace(agentId)
+                ? agentId
+                : (httpContext.Request.Query["agentId"].FirstOrDefault()
+                    ?? httpContext.Request.Headers["X-Agent-Id"].FirstOrDefault()
+                    ?? "default");
+            targetAgent = FleetInstanceRoutingService.NormalizeAgentId(targetAgent);
+
+            var ext = WorkspacePathAcl.ExtractExtension(safeFileName);
+            var fallbackContentType = WorkspacePathAcl.GetMimeType(ext);
+            var isDownload = string.Equals(httpContext.Request.Query["download"].FirstOrDefault(), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(httpContext.Request.Query["download"].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase);
+
+            // 1. Try local uploaded copy first (.tmp/agent360-uploads/{fileId}_{sanitizedName}.{ext})
+            try
+            {
+                var localUploadsDir = Path.Combine(env.ContentRootPath, ".tmp", "agent360-uploads");
+                if (Directory.Exists(localUploadsDir))
+                {
+                    var exactLocal = Path.Combine(localUploadsDir, safeFileName);
+                    if (File.Exists(exactLocal))
+                    {
+                        var bytes = await File.ReadAllBytesAsync(exactLocal, ct);
+                        httpContext.Response.Headers.ContentDisposition = $"{(isDownload ? "attachment" : "inline")}; filename=\"{safeFileName.Replace("\"", "")}\"";
+                        return Results.Bytes(bytes, fallbackContentType);
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore local lookup failure and fall through to QwenPaw workspace media
+            }
+
+            // 2. Fetch from QwenPaw workspace media/{safeFileName}
+            try
+            {
+                using var resp = await client.DownloadWorkspaceFileAsync($"media/{safeFileName}", targetAgent, ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                    var contentType = resp.Content.Headers.ContentType?.ToString();
+                    if (string.IsNullOrWhiteSpace(contentType) || contentType.Contains("octet-stream", StringComparison.OrdinalIgnoreCase))
+                    {
+                        contentType = fallbackContentType;
+                    }
+                    httpContext.Response.Headers.ContentDisposition = $"{(isDownload ? "attachment" : "inline")}; filename=\"{safeFileName.Replace("\"", "")}\"";
+                    return Results.Bytes(bytes, contentType);
+                }
+            }
+            catch
+            {
+                // Ignore and return 404 below
+            }
+
+            return Results.NotFound(new { message = $"Uploaded file '{safeFileName}' not found" });
+        }
+
+        routeBuilder.MapGet("console/files/{fileName}", (
+            string fileName,
+            [FromQuery] string? agentId,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct) => HandleConsoleFileServeAsync(agentId, fileName, httpContext, env, client, ct))
+            .MapToApiVersion(ApiVersion.Default)
+            .WithTags(EndpointTags.Agents)
+            .WithName("GetConsoleUploadedFileRoot")
+            .WithSummary("Stream or preview an uploaded console attachment inline")
+            .AllowAnonymous();
+
+        group.MapGet("console/files/{fileName}", (
+            string fileName,
+            [FromQuery] string? agentId,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct) => HandleConsoleFileServeAsync(agentId, fileName, httpContext, env, client, ct))
+            .WithName("GetConsoleUploadedFile")
+            .WithSummary("Stream or preview an uploaded console attachment inline")
+            .AllowAnonymous();
+
+        group.MapGet("{agentId}/console/files/{fileName}", (
+            string agentId,
+            string fileName,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct) => HandleConsoleFileServeAsync(agentId, fileName, httpContext, env, client, ct))
+            .WithName("GetAgentConsoleUploadedFile")
+            .WithSummary("Stream or preview an agent-scoped uploaded console attachment inline")
+            .AllowAnonymous();
 
         // Legacy unscoped core-browser stream: removed (it streamed one shared browser to any caller).
         group.MapGet("browser/stream", () => Results.Problem(

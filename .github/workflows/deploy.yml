@@ -82,7 +82,7 @@ jobs:
 
       - name: Test
         if: matrix.target == 'staging'
-        run: dotnet test tests/Agent360.API.ContractTests -c Release -p:TestingPlatformDotnetTestSupport=true
+        run: dotnet test tests/Agent360.API.ContractTests -c Release
 
       - name: Publish
         run: dotnet publish src/Agent360.API/Agent360.API.csproj -c Release -r linux-x64 --self-contained true -o "$RUNNER_TEMP/publish"

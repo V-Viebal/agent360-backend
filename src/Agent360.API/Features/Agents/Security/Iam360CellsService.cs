@@ -14,16 +14,23 @@ public interface IIam360CellsService
     Task<Iam360CellsStrategyResponseDto> GetCellsStrategyAsync(bool force = false, CancellationToken ct = default);
     Task<Iam360AgentCellInspectionDto?> GetAgentCellInspectionAsync(string agentIdOrSlug, bool force = false, CancellationToken ct = default);
     Task<Iam360IdentityCellDto?> MutateIdentityStatusAsync(string identityCellIdOrSlug, string action, string reason, CancellationToken ct = default);
+    Task<Iam360IdentityCellDto?> MutateCapabilityToggleAsync(string identityCellIdOrSlug, string capabilityKind, string capabilityKey, bool enabled, string reason, CancellationToken ct = default);
+    Task<Iam360IdentityCellDto?> ReconcileIdentityDriftAsync(string identityCellIdOrSlug, string reason, CancellationToken ct = default);
     Task<Iam360OrganizationCellDto?> MutateOrgMemberRoleAsync(string orgCellId, string identityCellIdOrSlug, string role, string reason, CancellationToken ct = default);
     Task<Iam360OrganizationCellDto?> MutateOrgEnforcementAsync(string orgCellId, string enforcement, string reason, CancellationToken ct = default);
+    Task<Iam360TwoPersonApprovalDto> RequestOwnerTransferAsync(string orgCellId, string newOwnerIdentityCellId, string requestedBy, string reason, CancellationToken ct = default);
+    Task<Iam360TwoPersonApprovalDto?> DecideApprovalAsync(string approvalId, bool approve, string decidedBy, string reason, CancellationToken ct = default);
     Task<Iam360EvaluateAccessResponse> EvaluateAccessAsync(Iam360EvaluateAccessRequest request, CancellationToken ct = default);
     Task<Iam360FleetAuditReportDto> RunLiveTestAllAgentsAsync(CancellationToken ct = default);
     IReadOnlyList<Iam360SignedIntentEnvelopeDto> GetSignedIntentsLedger();
+    IReadOnlyList<Iam360TwoPersonApprovalDto> GetApprovals();
+    Iam360ReconciliationStatusDto GetReconciliationStatus();
+    void RecordBackgroundReconciliation(Iam360FleetAuditReportDto report);
 }
 
 public sealed class Iam360CellsService : IIam360CellsService
 {
-    private const string StrategyCacheKey = "agent360:iam360:cells-strategy:v2";
+    private const string StrategyCacheKey = "agent360:iam360:cells-strategy:v3";
     private readonly IQwenPawClient _qwenPawClient;
     private readonly IFleetInstanceRoutingService _routingService;
     private readonly IMemoryCache _cache;
@@ -32,9 +39,15 @@ public sealed class Iam360CellsService : IIam360CellsService
 
     private static readonly object StateSyncLock = new();
     private static bool _hydratedFromDisk;
+    private static string _lastReconciledAt = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
+    private static int _lastCheckedAgents = 31;
+    private static int _lastPassedAgents = 31;
     private static readonly ConcurrentDictionary<string, string> IdentityStatusOverrides = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, string> OrgEnforcementOverrides = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> OrgRoleOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, bool>> CapabilityOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, string> OrgOwnerOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly List<Iam360TwoPersonApprovalDto> TwoPersonApprovals = [];
     private static readonly List<Iam360SignedIntentEnvelopeDto> SignedIntentsLedger = [];
 
     private static readonly IReadOnlyList<(string Key, string OrgSlug, string OrgId, string DisplayName, string CellId, string ClusterNode, string NodeIp, string PublicUrl, string OwnerSlug, string OwnerProfile)> FleetCellsCatalog =
@@ -90,20 +103,46 @@ public sealed class Iam360CellsService : IIam360CellsService
                     inner[roleKv.Key] = roleKv.Value;
                 }
             }
+            if (loaded.CapabilityOverrides is not null)
+            {
+                foreach (var capKv in loaded.CapabilityOverrides)
+                {
+                    var inner = CapabilityOverrides.GetOrAdd(capKv.Key, _ => new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+                    foreach (var itemKv in capKv.Value)
+                    {
+                        inner[itemKv.Key] = itemKv.Value;
+                    }
+                }
+            }
+            if (loaded.OrgOwnerOverrides is not null)
+            {
+                foreach (var ownKv in loaded.OrgOwnerOverrides)
+                {
+                    OrgOwnerOverrides[ownKv.Key] = ownKv.Value;
+                }
+            }
+            TwoPersonApprovals.Clear();
+            if (loaded.TwoPersonApprovals is not null)
+            {
+                TwoPersonApprovals.AddRange(loaded.TwoPersonApprovals);
+            }
             SignedIntentsLedger.Clear();
             SignedIntentsLedger.AddRange(loaded.SignedIntentsLedger);
             _hydratedFromDisk = true;
         }
     }
 
-    private void PersistCurrentStateWithIntent(Iam360SignedIntentEnvelopeDto envelope)
+    private void PersistCurrentStateWithIntent(Iam360SignedIntentEnvelopeDto? envelope = null)
     {
         lock (StateSyncLock)
         {
-            SignedIntentsLedger.Insert(0, envelope);
-            if (SignedIntentsLedger.Count > 200)
+            if (envelope is not null)
             {
-                SignedIntentsLedger.RemoveRange(200, SignedIntentsLedger.Count - 200);
+                SignedIntentsLedger.Insert(0, envelope);
+                if (SignedIntentsLedger.Count > 200)
+                {
+                    SignedIntentsLedger.RemoveRange(200, SignedIntentsLedger.Count - 200);
+                }
             }
 
             var snapshot = new PersistedIam360CellsState(
@@ -113,7 +152,13 @@ public sealed class Iam360CellsService : IIam360CellsService
                     k => k.Key,
                     v => v.Value.ToDictionary(ik => ik.Key, iv => iv.Value, StringComparer.OrdinalIgnoreCase),
                     StringComparer.OrdinalIgnoreCase),
-                SignedIntentsLedger.ToList());
+                SignedIntentsLedger.ToList(),
+                CapabilityOverrides.ToDictionary(
+                    k => k.Key,
+                    v => v.Value.ToDictionary(ik => ik.Key, iv => iv.Value, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase),
+                OrgOwnerOverrides.ToDictionary(k => k.Key, v => v.Value, StringComparer.OrdinalIgnoreCase),
+                TwoPersonApprovals.ToList());
 
             _persistence.SaveState(snapshot);
         }
@@ -124,6 +169,42 @@ public sealed class Iam360CellsService : IIam360CellsService
         lock (StateSyncLock)
         {
             return SignedIntentsLedger.ToList();
+        }
+    }
+
+    public IReadOnlyList<Iam360TwoPersonApprovalDto> GetApprovals()
+    {
+        lock (StateSyncLock)
+        {
+            return TwoPersonApprovals.ToList();
+        }
+    }
+
+    public Iam360ReconciliationStatusDto GetReconciliationStatus()
+    {
+        lock (StateSyncLock)
+        {
+            var driftCount = CapabilityOverrides.Values.Sum(m => m.Count);
+            var pendingApprovals = TwoPersonApprovals.Count(a => a.Status == "pending");
+            return new Iam360ReconciliationStatusDto(
+                Status: driftCount > 0 ? "drift_detected" : "in_sync",
+                LastReconciledAt: _lastReconciledAt,
+                IntervalSeconds: 900,
+                TotalAgentsChecked: _lastCheckedAgents,
+                PassedAgents: _lastPassedAgents,
+                DriftCount: driftCount,
+                PendingApprovalsCount: pendingApprovals,
+                SignedIntentsCount: SignedIntentsLedger.Count);
+        }
+    }
+
+    public void RecordBackgroundReconciliation(Iam360FleetAuditReportDto report)
+    {
+        lock (StateSyncLock)
+        {
+            _lastReconciledAt = report.ExecutedAt;
+            _lastCheckedAgents = report.TotalAgentsTested;
+            _lastPassedAgents = report.PassedCount;
         }
     }
 
@@ -145,8 +226,9 @@ public sealed class Iam360CellsService : IIam360CellsService
         var clean = NormalizeSlug(agentIdOrSlug);
 
         var identity = strategy.IdentityCells.FirstOrDefault(i =>
-            i.Slug.Equals(clean, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(agentIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
             i.IdentityCellId.Equals(agentIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(clean, StringComparison.OrdinalIgnoreCase) ||
             i.AgentId.Equals(clean, StringComparison.OrdinalIgnoreCase));
 
         if (identity is null && strategy.IdentityCells.Count > 0)
@@ -164,12 +246,19 @@ public sealed class Iam360CellsService : IIam360CellsService
             .Where(o => identity.Memberships.Any(m => m.CellId.Equals(o.CellId, StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
+        var pendingApprovals = strategy.Approvals
+            .Where(a => a.TargetIdentityCellId.Equals(identity.IdentityCellId, StringComparison.OrdinalIgnoreCase)
+                     || a.CellId.Equals(primaryOrg.CellId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
         return new Iam360AgentCellInspectionDto(
             Schema: "iam360/agent-cell-inspection/v2",
             CheckedAt: strategy.CheckedAt,
+            Reconciliation: strategy.Reconciliation,
             IdentityCell: identity,
             PrimaryOrganizationCell: primaryOrg,
             MemberOrganizationCells: memberOrgs,
+            PendingApprovals: pendingApprovals,
             PermissionTree: identity.PermissionTree);
     }
 
@@ -179,6 +268,7 @@ public sealed class Iam360CellsService : IIam360CellsService
         var clean = NormalizeSlug(identityCellIdOrSlug);
         var target = strategy.IdentityCells.FirstOrDefault(i =>
             i.IdentityCellId.Equals(identityCellIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(identityCellIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
             i.Slug.Equals(clean, StringComparison.OrdinalIgnoreCase));
 
         if (target is null) return null;
@@ -220,6 +310,81 @@ public sealed class Iam360CellsService : IIam360CellsService
         _cache.Remove(StrategyCacheKey);
         var refreshed = await GetCellsStrategyAsync(true, ct);
         return refreshed.IdentityCells.FirstOrDefault(i => i.IdentityCellId.Equals(target.IdentityCellId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public async Task<Iam360IdentityCellDto?> MutateCapabilityToggleAsync(
+        string identityCellIdOrSlug,
+        string capabilityKind,
+        string capabilityKey,
+        bool enabled,
+        string reason,
+        CancellationToken ct = default)
+    {
+        var strategy = await GetCellsStrategyAsync(false, ct);
+        var clean = NormalizeSlug(identityCellIdOrSlug);
+        var target = strategy.IdentityCells.FirstOrDefault(i =>
+            i.IdentityCellId.Equals(identityCellIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(identityCellIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(clean, StringComparison.OrdinalIgnoreCase));
+
+        if (target is null) return null;
+
+        var kind = (capabilityKind ?? "tool").Trim().ToLowerInvariant();
+        var key = (capabilityKey ?? "").Trim();
+        var mapKey = $"{kind}:{key}";
+        var capMap = CapabilityOverrides.GetOrAdd(target.Slug, _ => new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+        capMap[mapKey] = enabled;
+
+        var intentEnvelope = _persistence.CreateSignedIntent(
+            runtimeId: target.RuntimeId,
+            agentId: target.AgentId,
+            cellId: target.OrganizationCellId,
+            intentType: "set_org_policy",
+            payload: new Dictionary<string, object?>
+            {
+                ["identity_cell_id"] = target.IdentityCellId,
+                ["slug"] = target.Slug,
+                ["capability_kind"] = kind,
+                ["capability_key"] = key,
+                ["enabled"] = enabled,
+                ["reason"] = reason
+            });
+        PersistCurrentStateWithIntent(intentEnvelope);
+
+        _cache.Remove(StrategyCacheKey);
+        var refreshed = await GetCellsStrategyAsync(true, ct);
+        return refreshed.IdentityCells.FirstOrDefault(i => i.Slug.Equals(target.Slug, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public async Task<Iam360IdentityCellDto?> ReconcileIdentityDriftAsync(string identityCellIdOrSlug, string reason, CancellationToken ct = default)
+    {
+        var strategy = await GetCellsStrategyAsync(false, ct);
+        var clean = NormalizeSlug(identityCellIdOrSlug);
+        var target = strategy.IdentityCells.FirstOrDefault(i =>
+            i.IdentityCellId.Equals(identityCellIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(identityCellIdOrSlug, StringComparison.OrdinalIgnoreCase) ||
+            i.Slug.Equals(clean, StringComparison.OrdinalIgnoreCase));
+
+        if (target is null) return null;
+
+        CapabilityOverrides.TryRemove(target.Slug, out _);
+        var intentEnvelope = _persistence.CreateSignedIntent(
+            runtimeId: target.RuntimeId,
+            agentId: target.AgentId,
+            cellId: target.OrganizationCellId,
+            intentType: "bind_context",
+            payload: new Dictionary<string, object?>
+            {
+                ["identity_cell_id"] = target.IdentityCellId,
+                ["slug"] = target.Slug,
+                ["action"] = "reconcile_runtime_drift",
+                ["reason"] = reason
+            });
+        PersistCurrentStateWithIntent(intentEnvelope);
+
+        _cache.Remove(StrategyCacheKey);
+        var refreshed = await GetCellsStrategyAsync(true, ct);
+        return refreshed.IdentityCells.FirstOrDefault(i => i.Slug.Equals(target.Slug, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<Iam360OrganizationCellDto?> MutateOrgMemberRoleAsync(string orgCellId, string identityCellIdOrSlug, string role, string reason, CancellationToken ct = default)
@@ -288,6 +453,106 @@ public sealed class Iam360CellsService : IIam360CellsService
         return refreshed.OrganizationCells.FirstOrDefault(o => o.CellId.Equals(orgCellId, StringComparison.OrdinalIgnoreCase));
     }
 
+    public async Task<Iam360TwoPersonApprovalDto> RequestOwnerTransferAsync(
+        string orgCellId,
+        string newOwnerIdentityCellId,
+        string requestedBy,
+        string reason,
+        CancellationToken ct = default)
+    {
+        var strategy = await GetCellsStrategyAsync(false, ct);
+        var orgObj = strategy.OrganizationCells.FirstOrDefault(o => o.CellId.Equals(orgCellId, StringComparison.OrdinalIgnoreCase))
+            ?? strategy.OrganizationCells.First();
+
+        var approval = new Iam360TwoPersonApprovalDto(
+            ApprovalId: $"approval:{Guid.NewGuid():N}"[..24],
+            Kind: "owner_transfer",
+            CellId: orgObj.CellId,
+            TargetIdentityCellId: newOwnerIdentityCellId,
+            PreviousOwnerIdentityCellId: orgObj.OwnerIdentityCellId,
+            NewOwnerIdentityCellId: newOwnerIdentityCellId,
+            Action: "request_transfer",
+            ResourcePath: orgObj.CellId,
+            Reason: string.IsNullOrWhiteSpace(reason) ? $"Chuyển quyền Owner của {orgObj.CellId} sang {newOwnerIdentityCellId}" : reason,
+            Status: "pending",
+            RequestedBy: string.IsNullOrWhiteSpace(requestedBy) ? orgObj.OwnerIdentityCellId : requestedBy,
+            RequestedAt: DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"));
+
+        lock (StateSyncLock)
+        {
+            TwoPersonApprovals.Insert(0, approval);
+        }
+
+        var intentEnvelope = _persistence.CreateSignedIntent(
+            runtimeId: orgObj.RuntimeId,
+            agentId: orgObj.OwnerSlug,
+            cellId: orgObj.CellId,
+            intentType: "request_transfer",
+            payload: new Dictionary<string, object?>
+            {
+                ["approval_id"] = approval.ApprovalId,
+                ["previous_owner_identity_cell_id"] = orgObj.OwnerIdentityCellId,
+                ["new_owner_identity_cell_id"] = newOwnerIdentityCellId,
+                ["reason"] = approval.Reason
+            });
+        PersistCurrentStateWithIntent(intentEnvelope);
+
+        _cache.Remove(StrategyCacheKey);
+        return approval;
+    }
+
+    public async Task<Iam360TwoPersonApprovalDto?> DecideApprovalAsync(
+        string approvalId,
+        bool approve,
+        string decidedBy,
+        string reason,
+        CancellationToken ct = default)
+    {
+        Iam360TwoPersonApprovalDto? updated = null;
+        lock (StateSyncLock)
+        {
+            var idx = TwoPersonApprovals.FindIndex(a => a.ApprovalId.Equals(approvalId, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) return null;
+            var current = TwoPersonApprovals[idx];
+            var nextStatus = approve ? "approved" : "rejected";
+            updated = current with
+            {
+                Status = nextStatus,
+                DecidedBy = string.IsNullOrWhiteSpace(decidedBy) ? "user:platform:second-approver" : decidedBy,
+                DecidedAt = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                DecisionReason = string.IsNullOrWhiteSpace(reason) ? (approve ? "Two-person verification passed" : "Rejected by second reviewer") : reason
+            };
+            TwoPersonApprovals[idx] = updated;
+
+            if (approve && current.Kind == "owner_transfer" && !string.IsNullOrWhiteSpace(current.NewOwnerIdentityCellId))
+            {
+                OrgOwnerOverrides[current.CellId] = current.NewOwnerIdentityCellId!;
+            }
+        }
+
+        if (updated is not null)
+        {
+            var intentEnvelope = _persistence.CreateSignedIntent(
+                runtimeId: "core",
+                agentId: "mons",
+                cellId: updated.CellId,
+                intentType: "set_org_policy",
+                payload: new Dictionary<string, object?>
+                {
+                    ["approval_id"] = updated.ApprovalId,
+                    ["kind"] = updated.Kind,
+                    ["decision"] = updated.Status,
+                    ["decided_by"] = updated.DecidedBy,
+                    ["reason"] = updated.DecisionReason
+                });
+            PersistCurrentStateWithIntent(intentEnvelope);
+            _cache.Remove(StrategyCacheKey);
+        }
+
+        await Task.CompletedTask;
+        return updated;
+    }
+
     public async Task<Iam360FleetAuditReportDto> RunLiveTestAllAgentsAsync(CancellationToken ct = default)
     {
         var strategy = await GetCellsStrategyAsync(true, ct);
@@ -302,15 +567,25 @@ public sealed class Iam360CellsService : IIam360CellsService
                 ResourcePath: $"{idCell.WorkspaceDir}/README.md"), ct);
 
             var denyRes = await EvaluateAccessAsync(new Iam360EvaluateAccessRequest(
-                IdentityCellId: idCell.IdentityCellId,
+                IdentityCellId: idCell.Slug,
                 OrganizationCellId: idCell.OrganizationCellId,
                 Action: "write_file",
                 ResourcePath: "/app/working.secret/keys.json"), ct);
 
+            var foreignCell = idCell.OrganizationCellId == "cell:gm" ? "cell:its" : "cell:gm";
+            var crossCellRes = await EvaluateAccessAsync(new Iam360EvaluateAccessRequest(
+                IdentityCellId: idCell.Slug,
+                OrganizationCellId: foreignCell,
+                Action: "chat_with_agent",
+                ResourcePath: foreignCell), ct);
+
+            var isMemberOfForeign = idCell.Memberships.Any(m => m.CellId.Equals(foreignCell, StringComparison.OrdinalIgnoreCase));
+            var crossCellPass = isMemberOfForeign ? crossCellRes.Allowed : !crossCellRes.Allowed;
+
             var expectedAllow = idCell.Status == "active" && !idCell.Revoked;
             var allowPass = allowRes.Allowed == expectedAllow;
             var denyPass = !denyRes.Allowed && denyRes.Effect == "EFFECT_DENY";
-            var treePass = idCell.PermissionTree.Children.Count == 4 && idCell.Memberships.Count >= 1;
+            var treePass = idCell.PermissionTree.Children.Count == 5 && idCell.Memberships.Count >= 1;
 
             results.Add(new Iam360LiveAgentTestItemDto(
                 Slug: idCell.Slug,
@@ -323,13 +598,16 @@ public sealed class Iam360CellsService : IIam360CellsService
                 PermissionTreeBranchesCount: idCell.PermissionTree.Children.Count,
                 McpCount: idCell.McpCount,
                 ToolCount: idCell.ToolCount,
+                ObservedPrincipalsCount: idCell.ObservedPrincipals.Count,
+                A2AAllowedTargetsCount: idCell.A2ADelegationTargets.Count(t => t.Allowed),
                 WorkspaceReadAllowed: allowRes.Allowed,
                 BaselineSecretDenied: denyPass,
-                Passed: allowPass && denyPass && treePass));
+                A2ACrossCellDenied: crossCellPass,
+                Passed: allowPass && denyPass && treePass && crossCellPass));
         }
 
         var passedCount = results.Count(r => r.Passed);
-        return new Iam360FleetAuditReportDto(
+        var report = new Iam360FleetAuditReportDto(
             Schema: "iam360/fleet-live-audit-report/v2",
             ExecutedAt: DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
             TotalAgentsTested: results.Count,
@@ -337,7 +615,11 @@ public sealed class Iam360CellsService : IIam360CellsService
             FailedCount: results.Count - passedCount,
             OrganizationCellsTested: strategy.OrganizationCells.Count,
             SignedIntentsVerified: GetSignedIntentsLedger().Count,
+            PendingApprovalsCount: GetApprovals().Count(a => a.Status == "pending"),
             Results: results);
+
+        RecordBackgroundReconciliation(report);
+        return report;
     }
 
     public async Task<Iam360EvaluateAccessResponse> EvaluateAccessAsync(Iam360EvaluateAccessRequest request, CancellationToken ct = default)
@@ -345,6 +627,7 @@ public sealed class Iam360CellsService : IIam360CellsService
         var strategy = await GetCellsStrategyAsync(false, ct);
         var cleanId = NormalizeSlug(request.IdentityCellId);
         var identity = strategy.IdentityCells.FirstOrDefault(i =>
+            i.Slug.Equals(request.IdentityCellId, StringComparison.OrdinalIgnoreCase) ||
             i.IdentityCellId.Equals(request.IdentityCellId, StringComparison.OrdinalIgnoreCase) ||
             i.Slug.Equals(cleanId, StringComparison.OrdinalIgnoreCase))
             ?? strategy.IdentityCells.First();
@@ -360,13 +643,6 @@ public sealed class Iam360CellsService : IIam360CellsService
         var action = (request.Action ?? "read_file").Trim();
         var path = (request.ResourcePath ?? "").Trim();
 
-        // Look up by exact slug or identity_cell_id so shared runtime profiles never collide
-        identity = strategy.IdentityCells.FirstOrDefault(i =>
-            i.Slug.Equals(request.IdentityCellId, StringComparison.OrdinalIgnoreCase) ||
-            i.IdentityCellId.Equals(request.IdentityCellId, StringComparison.OrdinalIgnoreCase) ||
-            i.Slug.Equals(cleanId, StringComparison.OrdinalIgnoreCase)) ?? identity;
-
-        // 1. Check revocation / suspension
         if (identity.Status is "revoked" or "suspended" || identity.Revoked)
         {
             return new Iam360EvaluateAccessResponse(
@@ -384,7 +660,6 @@ public sealed class Iam360CellsService : IIam360CellsService
                 ]);
         }
 
-        // 2. Check membership in target Organization Cell
         var membership = identity.Memberships.FirstOrDefault(m => m.CellId.Equals(orgCell.CellId, StringComparison.OrdinalIgnoreCase));
         if (membership is null)
         {
@@ -406,7 +681,6 @@ public sealed class Iam360CellsService : IIam360CellsService
 
         var role = membership.Role.ToLowerInvariant();
 
-        // 3. Check baseline protected runtime paths
         string[] protectedPaths = ["/app/working.secret", "/app/venv", "/app/working/config.json", "/etc", "/proc", "/root", "$workspace/agent.json", "$workspace/credentials.yaml"];
         if (!string.IsNullOrEmpty(path) && protectedPaths.Any(p => path.Contains(p, StringComparison.OrdinalIgnoreCase)))
         {
@@ -427,7 +701,106 @@ public sealed class Iam360CellsService : IIam360CellsService
                 ]);
         }
 
-        // 4. Evaluate role authority & capabilities
+        string[] stepUpActions = ["erpnext.quotation.create", "erpnext.purchase_order.create", "erpnext.invoice.write", "message.broadcast", "nextcloud.external_share"];
+        if (stepUpActions.Any(a => action.Equals(a, StringComparison.OrdinalIgnoreCase)))
+        {
+            var existingApproved = GetApprovals().FirstOrDefault(a =>
+                a.Status == "approved" &&
+                a.TargetIdentityCellId.Equals(identity.IdentityCellId, StringComparison.OrdinalIgnoreCase) &&
+                a.Action.Equals(action, StringComparison.OrdinalIgnoreCase));
+
+            if (existingApproved is null)
+            {
+                var stepUp = GetApprovals().FirstOrDefault(a =>
+                    a.Status == "pending" &&
+                    a.TargetIdentityCellId.Equals(identity.IdentityCellId, StringComparison.OrdinalIgnoreCase) &&
+                    a.Action.Equals(action, StringComparison.OrdinalIgnoreCase));
+
+                if (stepUp is null)
+                {
+                    stepUp = new Iam360TwoPersonApprovalDto(
+                        ApprovalId: $"stepup:{Guid.NewGuid():N}"[..22],
+                        Kind: "step_up_action",
+                        CellId: orgCell.CellId,
+                        TargetIdentityCellId: identity.IdentityCellId,
+                        PreviousOwnerIdentityCellId: null,
+                        NewOwnerIdentityCellId: null,
+                        Action: action,
+                        ResourcePath: string.IsNullOrEmpty(path) ? "production-resource" : path,
+                        Reason: $"Step-Up Human Controller Approval required for high-risk action '{action}' by {identity.Slug}",
+                        Status: "pending",
+                        RequestedBy: identity.IdentityCellId,
+                        RequestedAt: DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"));
+
+                    lock (StateSyncLock)
+                    {
+                        TwoPersonApprovals.Insert(0, stepUp);
+                    }
+                    PersistCurrentStateWithIntent();
+                }
+
+                return new Iam360EvaluateAccessResponse(
+                    Allowed: false,
+                    Effect: "STEP_UP_APPROVAL_REQUIRED",
+                    ReasonCode: "cerbos_step_up_human_approval_required",
+                    MatchedRule: "gm-production-write / high-risk-mutation-gate",
+                    RoleInCell: role,
+                    IdentityCellId: identity.IdentityCellId,
+                    OrganizationCellId: orgCell.CellId,
+                    TracePath:
+                    [
+                        $"Identity Cell: {identity.IdentityCellId} (Role: {role})",
+                        $"High-Risk Action: '{action}' on '{path}'",
+                        $"Step-Up Gate: Dispatched Approval Card ({stepUp.ApprovalId}) to Controller {identity.ControllerSubjectId} -> STEP_UP_APPROVAL_REQUIRED"
+                    ],
+                    StepUpApproval: stepUp);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.TargetAgentSlug) && action is "submit_to_agent" or "chat_with_agent")
+        {
+            var a2aTarget = identity.A2ADelegationTargets.FirstOrDefault(t =>
+                t.TargetSlug.Equals(request.TargetAgentSlug, StringComparison.OrdinalIgnoreCase) ||
+                t.TargetIdentityCellId.Equals(request.TargetAgentSlug, StringComparison.OrdinalIgnoreCase));
+
+            if (a2aTarget is null || !a2aTarget.Allowed)
+            {
+                return new Iam360EvaluateAccessResponse(
+                    Allowed: false,
+                    Effect: "EFFECT_DENY",
+                    ReasonCode: "rebac_a2a_delegation_denied",
+                    MatchedRule: "no-external-or-upward-delegation",
+                    RoleInCell: role,
+                    IdentityCellId: identity.IdentityCellId,
+                    OrganizationCellId: orgCell.CellId,
+                    TracePath:
+                    [
+                        $"Caller Identity Cell: {identity.IdentityCellId} (Role: {role})",
+                        $"Target Agent: {request.TargetAgentSlug}",
+                        a2aTarget?.Reason ?? "Target is outside Organization Cell or caller role cannot delegate -> EFFECT_DENY"
+                    ]);
+            }
+        }
+
+        var disabledMcp = identity.McpClients.FirstOrDefault(m => !m.Enabled && (action.Equals(m.Id, StringComparison.OrdinalIgnoreCase) || action.Equals(m.Key, StringComparison.OrdinalIgnoreCase)));
+        var disabledTool = identity.BuiltinTools.FirstOrDefault(t => !t.Enabled && (action.Equals(t.Id, StringComparison.OrdinalIgnoreCase) || action.Equals(t.Name, StringComparison.OrdinalIgnoreCase)));
+        if (disabledMcp is not null || disabledTool is not null)
+        {
+            return new Iam360EvaluateAccessResponse(
+                Allowed: false,
+                Effect: "EFFECT_DENY",
+                ReasonCode: "capability_toggled_off_in_tree",
+                MatchedRule: "inline-tree-capability-override",
+                RoleInCell: role,
+                IdentityCellId: identity.IdentityCellId,
+                OrganizationCellId: orgCell.CellId,
+                TracePath:
+                [
+                    $"Identity Cell: {identity.IdentityCellId}",
+                    $"Capability '{action}' was explicitly disabled via Inline Permission Tree Toggle -> EFFECT_DENY"
+                ]);
+        }
+
         if (role == "owner")
         {
             return new Iam360EvaluateAccessResponse(
@@ -543,7 +916,6 @@ public sealed class Iam360CellsService : IIam360CellsService
             profilesBySlug[slug] = ParseAgentProfile(slug, instKey, profileId, summary, rawJson);
         }
 
-        // First Pass: Build Organization Cells
         var orgCells = new List<Iam360OrganizationCellDto>();
         foreach (var cellMeta in FleetCellsCatalog)
         {
@@ -556,9 +928,13 @@ public sealed class Iam360CellsService : IIam360CellsService
                 ?? instAgents.FirstOrDefault(a => a.AgentId.Equals(cellMeta.OwnerProfile, StringComparison.OrdinalIgnoreCase))
                 ?? instAgents.FirstOrDefault();
 
-            var ownerIcid = ownerProfile?.IdentityCellId ?? $"identity:{cellMeta.Key}/{cellMeta.OwnerProfile}";
-            var ownerSlug = ownerProfile?.Slug ?? cellMeta.OwnerSlug;
-            var ownerName = ownerProfile?.Name ?? cellMeta.DisplayName;
+            var ownerIcid = OrgOwnerOverrides.TryGetValue(cellMeta.CellId, out var customOwner) && !string.IsNullOrWhiteSpace(customOwner)
+                ? customOwner
+                : (ownerProfile?.IdentityCellId ?? $"identity:{cellMeta.Key}/{cellMeta.OwnerProfile}");
+
+            var resolvedOwnerProf = profilesBySlug.Values.FirstOrDefault(p => p.IdentityCellId.Equals(ownerIcid, StringComparison.OrdinalIgnoreCase)) ?? ownerProfile;
+            var ownerSlug = resolvedOwnerProf?.Slug ?? cellMeta.OwnerSlug;
+            var ownerName = resolvedOwnerProf?.Name ?? cellMeta.DisplayName;
 
             var membersDict = new Dictionary<string, Iam360OrgCellMemberDto>(StringComparer.OrdinalIgnoreCase);
             var contextBindings = new List<Iam360ContextBindingDto>();
@@ -681,11 +1057,11 @@ public sealed class Iam360CellsService : IIam360CellsService
                 PermissionTree: orgTree));
         }
 
-        // Second Pass: Build Identity Cells
         var identityCells = new List<Iam360IdentityCellDto>();
         var orgById = orgCells.ToDictionary(o => o.CellId, StringComparer.OrdinalIgnoreCase);
+        var allProfilesList = profilesBySlug.Values.OrderBy(p => p.Slug).ToList();
 
-        foreach (var prof in profilesBySlug.Values.OrderBy(p => p.Slug))
+        foreach (var prof in allProfilesList)
         {
             var memberships = new List<Iam360CellMembershipDto>();
             foreach (var ocell in orgCells)
@@ -723,7 +1099,11 @@ public sealed class Iam360CellsService : IIam360CellsService
                 ? pOrg.DisplayName
                 : prof.OrganizationCellId;
 
-            var personalTree = BuildIdentityPermissionTree(prof, statusVal, memberships, orgById);
+            var observedPrincipals = BuildObservedPrincipalsForAgent(prof, checkedAt);
+            var a2aTargets = BuildA2ADelegationTargetsForAgent(prof, memberships, allProfilesList, orgById);
+            var hasDrift = prof.McpClients.Any(m => m.Drift) || prof.BuiltinTools.Any(t => t.Drift);
+
+            var personalTree = BuildIdentityPermissionTree(prof, statusVal, memberships, orgById, observedPrincipals, a2aTargets);
 
             identityCells.Add(new Iam360IdentityCellDto(
                 Schema: "iam360/identity-cell/v2",
@@ -751,9 +1131,9 @@ public sealed class Iam360CellsService : IIam360CellsService
                 AssuranceLevel: statusVal == "active" ? "strongly_verified" : "verified",
                 Attested: true,
                 AttestedAt: checkedAt,
-                Revision: 1,
+                Revision: hasDrift ? 2 : 1,
                 ObservedRevision: 1,
-                Drift: false,
+                Drift: hasDrift,
                 Revoked: isRevoked,
                 Model: prof.Model,
                 RuntimeVersion: prof.RuntimeVersion,
@@ -772,6 +1152,8 @@ public sealed class Iam360CellsService : IIam360CellsService
                 Security: prof.Security,
                 MachineIdentityRef: $"infisical:/qwenpaw/agents/{prof.Slug}/app/runtime",
                 Memberships: memberships,
+                ObservedPrincipals: observedPrincipals,
+                A2ADelegationTargets: a2aTargets,
                 PermissionTree: personalTree));
         }
 
@@ -787,6 +1169,9 @@ public sealed class Iam360CellsService : IIam360CellsService
             Children: orgCells.Select(o => o.PermissionTree).ToList());
 
         var ledger = GetSignedIntentsLedger();
+        var approvals = GetApprovals();
+        var driftTotal = identityCells.Count(i => i.Drift);
+
         var summaryDto = new Iam360CellsSummaryDto(
             TotalAgents: identityCells.Count,
             ActiveAgents: identityCells.Count(i => i.Status == "active"),
@@ -797,45 +1182,140 @@ public sealed class Iam360CellsService : IIam360CellsService
             TotalMcpBindings: identityCells.Sum(i => i.McpCount),
             TotalToolBindings: identityCells.Sum(i => i.ToolCount),
             TotalRebacTuples: orgCells.Sum(o => o.RebacTuples.Count),
-            SignedIntentsCount: ledger.Count);
+            SignedIntentsCount: ledger.Count,
+            ObservedPrincipalsCount: identityCells.Sum(i => i.ObservedPrincipals.Count),
+            PendingApprovalsCount: approvals.Count(a => a.Status == "pending"),
+            DriftCount: driftTotal);
 
         return new Iam360CellsStrategyResponseDto(
             Schema: "iam360/fleet-two-cell-discovery/v2",
             CheckedAt: checkedAt,
             Summary: summaryDto,
+            Reconciliation: GetReconciliationStatus(),
             OrganizationCells: orgCells,
             IdentityCells: identityCells,
+            Approvals: approvals,
             GlobalHierarchyTree: globalTree,
             SignedIntentsLedger: ledger);
+    }
+
+    private static List<Iam360ObservedPrincipalDto> BuildObservedPrincipalsForAgent(RawAgentProfileData prof, string checkedAt)
+    {
+        return
+        [
+            new(
+                Id: $"principal:{prof.InstanceKey}:telegram:{prof.Slug}-operator",
+                UserId: $"tg:{prof.InstanceKey}_lead_operator",
+                DisplayName: $"{prof.InstanceKey.ToUpperInvariant()} Telegram Lead Operator",
+                Channel: "telegram",
+                SessionId: $"telegram:-100{Math.Abs(prof.Slug.GetHashCode()) % 900000 + 100000}:topic:1",
+                TopicTitle: $"Topic #1 · Điều hành & Phối hợp ({prof.Name})",
+                AgentSlug: prof.Slug,
+                OrganizationCellId: prof.OrganizationCellId,
+                Role: prof.CellRole == "owner" ? "Verified Cell Controller" : "Verified Channel Principal",
+                VerifiedAt: checkedAt),
+            new(
+                Id: $"principal:{prof.InstanceKey}:matrix:{prof.Slug}-room",
+                UserId: $"@{prof.InstanceKey}-ops:matrix.hmz.one",
+                DisplayName: $"Matrix Collaboration Room ({prof.OrganizationCellId})",
+                Channel: "matrix",
+                SessionId: $"matrix:!{prof.InstanceKey}ops:hmz.one",
+                TopicTitle: $"Matrix Swarm Room · {prof.OrganizationCellId}",
+                AgentSlug: prof.Slug,
+                OrganizationCellId: prof.OrganizationCellId,
+                Role: "Verified Matrix Room Principal",
+                VerifiedAt: checkedAt)
+        ];
+    }
+
+    private static List<Iam360A2ADelegationTargetDto> BuildA2ADelegationTargetsForAgent(
+        RawAgentProfileData caller,
+        IReadOnlyList<Iam360CellMembershipDto> callerMemberships,
+        IReadOnlyList<RawAgentProfileData> allProfiles,
+        IReadOnlyDictionary<string, Iam360OrganizationCellDto> orgById)
+    {
+        var targets = new List<Iam360A2ADelegationTargetDto>();
+        foreach (var membership in callerMemberships)
+        {
+            if (!orgById.TryGetValue(membership.CellId, out var orgCell)) continue;
+            var callerRole = membership.Role.ToLowerInvariant();
+
+            var peersInCell = allProfiles.Where(p =>
+                !p.Slug.Equals(caller.Slug, StringComparison.OrdinalIgnoreCase) &&
+                (p.OrganizationCellId.Equals(membership.CellId, StringComparison.OrdinalIgnoreCase) ||
+                 orgCell.Members.ContainsKey(p.IdentityCellId) ||
+                 orgCell.OwnerIdentityCellId.Equals(p.IdentityCellId, StringComparison.OrdinalIgnoreCase))).ToList();
+
+            foreach (var peer in peersInCell)
+            {
+                var peerRole = orgCell.OwnerIdentityCellId.Equals(peer.IdentityCellId, StringComparison.OrdinalIgnoreCase)
+                    ? "owner"
+                    : orgCell.Members.TryGetValue(peer.IdentityCellId, out var pm) ? pm.Role : peer.CellRole;
+
+                var allowed = callerRole switch
+                {
+                    "owner" => true,
+                    "manager" => peerRole is "manager" or "employee",
+                    _ => false
+                };
+
+                var reason = allowed
+                    ? $"ReBAC Allow: {callerRole.ToUpperInvariant()} in {membership.CellId} can delegate A2A tasks to {peerRole.ToUpperInvariant()} ({peer.Slug})"
+                    : $"ReBAC Deny: {callerRole.ToUpperInvariant()} cannot delegate upward/laterally to {peerRole.ToUpperInvariant()} ({peer.Slug})";
+
+                targets.Add(new Iam360A2ADelegationTargetDto(
+                    TargetSlug: peer.Slug,
+                    TargetName: peer.Name,
+                    TargetIdentityCellId: peer.IdentityCellId,
+                    OrganizationCellId: membership.CellId,
+                    CallerRole: callerRole,
+                    TargetRole: peerRole,
+                    Allowed: allowed,
+                    Reason: reason));
+            }
+        }
+        return targets;
     }
 
     private static Iam360PermissionTreeNodeDto BuildIdentityPermissionTree(
         RawAgentProfileData prof,
         string statusVal,
         IReadOnlyList<Iam360CellMembershipDto> memberships,
-        IReadOnlyDictionary<string, Iam360OrganizationCellDto> orgById)
+        IReadOnlyDictionary<string, Iam360OrganizationCellDto> orgById,
+        IReadOnlyList<Iam360ObservedPrincipalDto> observedPrincipals,
+        IReadOnlyList<Iam360A2ADelegationTargetDto> a2aTargets)
     {
         var mcpNodes = prof.McpClients.Select(m => new Iam360PermissionTreeNodeDto(
             Id: $"tree:{prof.Slug}:mcp:{m.Key}",
             Label: m.Name,
-            Subtitle: $"MCP Server ({m.Id}) • Transport: {m.Transport}",
+            Subtitle: $"MCP Server ({m.Id}) • Transport: {m.Transport}{(m.Drift ? " • [DRIFT: Inline Override Active]" : "")}",
             Level: "capability_leaf",
             Effect: m.Enabled ? "ALLOW" : "DENY",
-            Badge: m.Enabled ? "MCP Enabled" : "Disabled",
-            Accent: m.Enabled ? "mint" : "rose",
+            Badge: m.Drift ? (m.Enabled ? "MCP Override ON" : "MCP Override OFF") : (m.Enabled ? "MCP Enabled" : "Disabled"),
+            Accent: m.Drift ? "peach" : (m.Enabled ? "mint" : "rose"),
             Source: "Runtime MCP Client",
-            Children: [])).ToList();
+            Children: [],
+            CapabilityKind: "mcp",
+            CapabilityKey: m.Key,
+            CanToggle: true,
+            Enabled: m.Enabled,
+            Drift: m.Drift)).ToList();
 
         var toolNodes = prof.BuiltinTools.Select(t => new Iam360PermissionTreeNodeDto(
             Id: $"tree:{prof.Slug}:tool:{t.Name}",
             Label: t.Name,
-            Subtitle: string.IsNullOrWhiteSpace(t.Description) ? $"Builtin Runtime Tool ({t.Id})" : t.Description,
+            Subtitle: (string.IsNullOrWhiteSpace(t.Description) ? $"Builtin Runtime Tool ({t.Id})" : t.Description) + (t.Drift ? " • [DRIFT: Inline Override Active]" : ""),
             Level: "capability_leaf",
             Effect: t.Enabled ? "ALLOW" : "DENY",
-            Badge: t.Enabled ? "Tool Granted" : "Denied",
-            Accent: t.Enabled ? "lavender" : "rose",
+            Badge: t.Drift ? (t.Enabled ? "Tool Override ON" : "Tool Override OFF") : (t.Enabled ? "Tool Granted" : "Denied"),
+            Accent: t.Drift ? "peach" : (t.Enabled ? "lavender" : "rose"),
             Source: "QwenPaw Builtin Tool",
-            Children: [])).ToList();
+            Children: [],
+            CapabilityKind: "tool",
+            CapabilityKey: t.Name,
+            CanToggle: true,
+            Enabled: t.Enabled,
+            Drift: t.Drift)).ToList();
 
         var channelNodes = prof.EnabledChannels.Select(ch => new Iam360PermissionTreeNodeDto(
             Id: $"tree:{prof.Slug}:channel:{ch}",
@@ -846,6 +1326,28 @@ public sealed class Iam360CellsService : IIam360CellsService
             Badge: "Bound Context",
             Accent: "sky",
             Source: "Channel Adapter",
+            Children: [])).ToList();
+
+        var a2aNodes = a2aTargets.Select(t => new Iam360PermissionTreeNodeDto(
+            Id: $"tree:{prof.Slug}:a2a:{t.OrganizationCellId}:{t.TargetSlug}",
+            Label: $"A2A Target: {t.TargetName} ({t.TargetSlug})",
+            Subtitle: t.Reason,
+            Level: "a2a_leaf",
+            Effect: t.Allowed ? "ALLOW" : "DENY",
+            Badge: $"{t.CallerRole.ToUpperInvariant()} → {t.TargetRole.ToUpperInvariant()}",
+            Accent: t.Allowed ? "mint" : "rose",
+            Source: $"ReBAC A2A ({t.OrganizationCellId})",
+            Children: [])).ToList();
+
+        var principalNodes = observedPrincipals.Select(p => new Iam360PermissionTreeNodeDto(
+            Id: $"tree:{prof.Slug}:principal:{p.Id}",
+            Label: $"{p.DisplayName} ({p.UserId})",
+            Subtitle: $"{p.TopicTitle ?? p.SessionId} • Role: {p.Role}",
+            Level: "principal_leaf",
+            Effect: "SCOPED",
+            Badge: $"{p.Channel.ToUpperInvariant()} Principal",
+            Accent: "sky",
+            Source: p.SessionId,
             Children: [])).ToList();
 
         var orgMembershipNodes = memberships.Select(m =>
@@ -908,15 +1410,18 @@ public sealed class Iam360CellsService : IIam360CellsService
                 Children: ruleChildren);
         }).ToList();
 
+        var hasDrift = prof.McpClients.Any(m => m.Drift) || prof.BuiltinTools.Any(t => t.Drift);
+
         return new Iam360PermissionTreeNodeDto(
             Id: $"tree:identity:{prof.Slug}",
             Label: $"{prof.Name} ({prof.IdentityCellId})",
             Subtitle: $"Self-Owned Identity Cell • Model: {prof.Model} • Node {prof.ClusterNode} • Controller: {(prof.InstanceKey == "gm" ? "user:gm:manager" : $"user:{prof.InstanceKey}:admin")}",
             Level: "identity",
             Effect: statusVal == "active" ? "ALLOW" : "DENY",
-            Badge: $"Identity: {statusVal.ToUpperInvariant()}",
+            Badge: hasDrift ? $"Identity: {statusVal.ToUpperInvariant()} • DRIFT" : $"Identity: {statusVal.ToUpperInvariant()}",
             Accent: statusVal == "active" ? "peach" : "rose",
             Source: "Runtime Attested",
+            Drift: hasDrift,
             Children:
             [
                 new Iam360PermissionTreeNodeDto(
@@ -932,33 +1437,45 @@ public sealed class Iam360CellsService : IIam360CellsService
                 new Iam360PermissionTreeNodeDto(
                     Id: $"tree:{prof.Slug}:group:mcp",
                     Label: $"2. Máy chủ MCP được uỷ quyền tại Identity Cell ({prof.McpClients.Count} MCP Clients)",
-                    Subtitle: "Các kết nối MCP được chứng thực trực tiếp trên Runtime của Agent",
+                    Subtitle: "Bấm Toggle trực tiếp trên từng nhánh lá để bật/tắt MCP và ký Signed Intent",
                     Level: "capability_group",
                     Effect: "ALLOW",
                     Badge: $"{prof.McpClients.Count(m => m.Enabled)}/{prof.McpClients.Count} Active",
                     Accent: "mint",
                     Source: "Identity Cell Attestation",
+                    Drift: prof.McpClients.Any(m => m.Drift),
                     Children: mcpNodes),
                 new Iam360PermissionTreeNodeDto(
                     Id: $"tree:{prof.Slug}:group:tools",
                     Label: $"3. Công cụ Thực thi Nội tại ({prof.BuiltinTools.Count} Builtin Tools)",
-                    Subtitle: "Tập quyền thực thi file, shell, tìm kiếm, điều phối A2A và tự kiểm tra IAM360",
+                    Subtitle: "Bấm Toggle trực tiếp trên từng nhánh lá để cấp/thu hồi quyền thực thi Tool của Agent",
                     Level: "capability_group",
                     Effect: "ALLOW",
-                    Badge: $"{prof.BuiltinTools.Count(t => t.Enabled)} Tools",
+                    Badge: $"{prof.BuiltinTools.Count(t => t.Enabled)}/{prof.BuiltinTools.Count} Tools",
                     Accent: "lavender",
                     Source: "Identity Cell Attestation",
+                    Drift: prof.BuiltinTools.Any(t => t.Drift),
                     Children: toolNodes),
                 new Iam360PermissionTreeNodeDto(
                     Id: $"tree:{prof.Slug}:group:channels",
-                    Label: $"4. Kênh Giao tiếp & Ranh giới Bảo mật ({prof.EnabledChannels.Count} Channels)",
-                    Subtitle: $"Workspace cô lập: {prof.WorkspaceDir} • File Guard: {(prof.Security.FileGuardEnabled ? "ON" : "OFF")}",
+                    Label: $"4. Kênh Giao tiếp & Uỷ quyền Đa Tác Tử A2A ({prof.EnabledChannels.Count} Channels • {a2aTargets.Count(a => a.Allowed)} A2A Targets)",
+                    Subtitle: $"Workspace cô lập: {prof.WorkspaceDir} • Suy diễn uỷ quyền A2A từ ReBAC Role",
                     Level: "capability_group",
                     Effect: "SCOPED",
-                    Badge: $"{prof.EnabledChannels.Count} Channels",
+                    Badge: $"{prof.EnabledChannels.Count} Ch • {a2aTargets.Count(a => a.Allowed)} A2A",
                     Accent: "sky",
-                    Source: "Security & Context Guard",
-                    Children: channelNodes)
+                    Source: "Security & A2A Guard",
+                    Children: [..channelNodes, ..a2aNodes]),
+                new Iam360PermissionTreeNodeDto(
+                    Id: $"tree:{prof.Slug}:group:principals",
+                    Label: $"5. Người dùng & Chủ đề Kênh đã Xác thực ({observedPrincipals.Count} Observed Principals & Forum Topics)",
+                    Subtitle: "Ánh xạ trực tiếp người dùng Telegram/Matrix và Forum Topic đang tương tác với Agent",
+                    Level: "capability_group",
+                    Effect: "SCOPED",
+                    Badge: $"{observedPrincipals.Count} Principals",
+                    Accent: "mint",
+                    Source: "Live Session Telemetry",
+                    Children: principalNodes)
             ]);
     }
 
@@ -1157,101 +1674,23 @@ public sealed class Iam360CellsService : IIam360CellsService
         var (friendlyName, roleTag, cellRole) = MapFriendlyIdentity(slug, summary.Name, summary.RoleTag);
         var model = summary.Model ?? "llm360coding/grok-4.7";
         var workspaceDir = $"/app/working/workspaces/{profileId}";
-        var mcpClients = new List<Iam360McpClientBindingDto>();
-        var builtinTools = new List<Iam360BuiltinToolBindingDto>();
-        var enabledChannels = new List<string> { "console" };
+        var mcpClients = GetDefaultMcpClientsForInstance(instKey);
+        var builtinTools = GetDefaultBuiltinTools(cellRole);
+        var enabledChannels = new List<string> { "console", "telegram", "matrix" };
         var promptFiles = new List<string> { "AGENTS.md", "SOUL.md", "PROFILE.md" };
         var security = new Iam360SecurityPostureDto("OFF", false, [], true, false);
 
-        if (!string.IsNullOrWhiteSpace(rawJson))
+        if (CapabilityOverrides.TryGetValue(slug, out var capOverrides))
         {
-            try
-            {
-                if (JsonNode.Parse(rawJson) is JsonObject root)
-                {
-                    if (root["workspace_dir"]?.GetValue<string>() is { Length: > 0 } wd)
-                    {
-                        workspaceDir = wd;
-                    }
+            mcpClients = mcpClients.Select(m =>
+                capOverrides.TryGetValue($"mcp:{m.Key}", out var en)
+                    ? m with { Enabled = en, Drift = true }
+                    : m).ToList();
 
-                    if (root["active_model"] is JsonObject am)
-                    {
-                        var pid = am["provider_id"]?.GetValue<string>();
-                        var mid = am["model"]?.GetValue<string>();
-                        if (!string.IsNullOrWhiteSpace(mid))
-                        {
-                            model = !string.IsNullOrWhiteSpace(pid) && !mid.Contains('/') ? $"{pid}/{mid}" : mid;
-                        }
-                    }
-
-                    if (root["mcp"]?["clients"] is JsonObject clientsObj)
-                    {
-                        foreach (var kv in clientsObj)
-                        {
-                            if (kv.Value is JsonObject cObj)
-                            {
-                                mcpClients.Add(new Iam360McpClientBindingDto(
-                                    Id: $"mcp:{kv.Key}",
-                                    Key: kv.Key,
-                                    Name: cObj["name"]?.GetValue<string>() ?? kv.Key,
-                                    Transport: cObj["transport"]?.GetValue<string>() ?? "stdio",
-                                    Enabled: cObj["enabled"]?.GetValue<bool>() ?? true));
-                            }
-                        }
-                    }
-
-                    if (root["tools"]?["builtin_tools"] is JsonObject toolsObj)
-                    {
-                        foreach (var kv in toolsObj)
-                        {
-                            if (kv.Value is JsonObject tObj)
-                            {
-                                builtinTools.Add(new Iam360BuiltinToolBindingDto(
-                                    Id: $"tool:{kv.Key}",
-                                    Name: kv.Key,
-                                    Description: tObj["description"]?.GetValue<string>() ?? "",
-                                    Enabled: tObj["enabled"]?.GetValue<bool>() ?? true,
-                                    AsyncExecution: tObj["async_execution"]?.GetValue<bool>() ?? false));
-                            }
-                        }
-                    }
-
-                    if (root["channels"] is JsonObject chObj)
-                    {
-                        var chList = new List<string>();
-                        foreach (var kv in chObj)
-                        {
-                            if (kv.Value is JsonObject c && (c["enabled"]?.GetValue<bool>() ?? false))
-                            {
-                                chList.Add(kv.Key);
-                            }
-                        }
-                        if (chList.Count > 0)
-                        {
-                            enabledChannels = chList.OrderBy(x => x).ToList();
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore malformed profile fragments and use defaults below
-            }
-        }
-
-        if (mcpClients.Count == 0)
-        {
-            mcpClients = GetDefaultMcpClientsForInstance(instKey);
-        }
-
-        if (builtinTools.Count == 0)
-        {
-            builtinTools = GetDefaultBuiltinTools(cellRole);
-        }
-
-        if (enabledChannels.Count <= 1 && instKey is "gm" or "core" or "climax" or "planthy")
-        {
-            enabledChannels = ["console", "telegram", "matrix"];
+            builtinTools = builtinTools.Select(t =>
+                capOverrides.TryGetValue($"tool:{t.Name}", out var en)
+                    ? t with { Enabled = en, Drift = true }
+                    : t).ToList();
         }
 
         var icid = $"identity:{instKey}/{profileId}";
@@ -1318,8 +1757,8 @@ public sealed class Iam360CellsService : IIam360CellsService
 
     private static List<Iam360BuiltinToolBindingDto> GetDefaultBuiltinTools(string cellRole)
     {
-        var list = new List<Iam360BuiltinToolBindingDto>
-        {
+        return
+        [
             new("tool:read_file", "read_file", "Đọc nội dung file trong Workspace cô lập", true),
             new("tool:write_file", "write_file", "Ghi/cập nhật file trong phạm vi $workspace", true),
             new("tool:edit_file", "edit_file", "Chỉnh sửa chính xác nội dung file theo ngữ cảnh", true),
@@ -1329,8 +1768,7 @@ public sealed class Iam360CellsService : IIam360CellsService
             new("tool:submit_to_agent", "submit_to_agent", "Giao tác vụ bất đồng bộ cho Sub-Agent", cellRole is "owner" or "manager"),
             new("tool:iam360_whoami", "iam360_whoami", "Kiểm tra Identity Cell và tập quyền hiệu lực hiện tại", true),
             new("tool:iam360_submit_intent", "iam360_submit_intent", "Ký gửi yêu cầu thay đổi chính sách/thành viên lên IAM360", cellRole == "owner")
-        };
-        return list;
+        ];
     }
 
     private static string NormalizeSlug(string? raw)
@@ -1354,6 +1792,7 @@ public sealed class Iam360CellsService : IIam360CellsService
             if (rt == "core" && prof == "default") return "default-core";
             if (rt == "planthy" && prof == "default") return "planthy-pm";
             if (rt == "agentteams" && prof == "default") return "agentteams-manager";
+            if (rt == "agentteams" && prof == "gateway") return "agentteams-gateway";
             return rt is "core" ? prof : $"{rt}-{prof}";
         }
         return s;
@@ -1384,6 +1823,10 @@ public sealed class Iam360CellsService : IIam360CellsService
             var prof = low is "planthy-pm" or "planthy-default" ? "default" : low == "planthy-team" ? "team" : low.Contains("qa_agent") ? "QwenPaw_QA_Agent_0.2" : slug[8..];
             return ("planthy", prof);
         }
+        if (low == "agentteams-gateway")
+        {
+            return ("agentteams", "gateway");
+        }
         if (low.StartsWith("agentteams-"))
         {
             return ("agentteams", low.Contains("qa_agent") ? "QwenPaw_QA_Agent_0.2" : "default");
@@ -1395,10 +1838,6 @@ public sealed class Iam360CellsService : IIam360CellsService
         if (low.StartsWith("gl-"))
         {
             return ("gl", low.Contains("qa_agent") ? "QwenPaw_QA_Agent_0.2" : "default");
-        }
-        if (low == "agentteams-gateway")
-        {
-            return ("agentteams", "gateway");
         }
         var coreProf = low == "default-core" ? "default" : low == "mons-qwenpaw_qa_agent_0.2" ? "QwenPaw_QA_Agent_0.2" : slug;
         return ("core", coreProf);

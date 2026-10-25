@@ -8,7 +8,10 @@ public sealed record PersistedIam360CellsState(
     Dictionary<string, string> IdentityStatusOverrides,
     Dictionary<string, string> OrgEnforcementOverrides,
     Dictionary<string, Dictionary<string, string>> OrgRoleOverrides,
-    List<Iam360SignedIntentEnvelopeDto> SignedIntentsLedger);
+    List<Iam360SignedIntentEnvelopeDto> SignedIntentsLedger,
+    Dictionary<string, Dictionary<string, bool>>? CapabilityOverrides = null,
+    Dictionary<string, string>? OrgOwnerOverrides = null,
+    List<Iam360TwoPersonApprovalDto>? TwoPersonApprovals = null);
 
 public sealed class Iam360CellsPersistence
 {
@@ -43,6 +46,9 @@ public sealed class Iam360CellsPersistence
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase),
+                    [],
+                    new Dictionary<string, Dictionary<string, bool>>(StringComparer.OrdinalIgnoreCase),
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                     []);
             }
 
@@ -59,7 +65,13 @@ public sealed class Iam360CellsPersistence
                             k => k.Key,
                             v => new Dictionary<string, string>(v.Value ?? [], StringComparer.OrdinalIgnoreCase),
                             StringComparer.OrdinalIgnoreCase),
-                        loaded.SignedIntentsLedger ?? []);
+                        loaded.SignedIntentsLedger ?? [],
+                        (loaded.CapabilityOverrides ?? []).ToDictionary(
+                            k => k.Key,
+                            v => new Dictionary<string, bool>(v.Value ?? [], StringComparer.OrdinalIgnoreCase),
+                            StringComparer.OrdinalIgnoreCase),
+                        new Dictionary<string, string>(loaded.OrgOwnerOverrides ?? [], StringComparer.OrdinalIgnoreCase),
+                        loaded.TwoPersonApprovals ?? []);
                 }
             }
             catch
@@ -71,6 +83,9 @@ public sealed class Iam360CellsPersistence
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                 new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase),
+                [],
+                new Dictionary<string, Dictionary<string, bool>>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
                 []);
         }
     }

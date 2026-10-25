@@ -101,6 +101,7 @@ public class SecureUploadStorageService(
         }
 
         var resolvedMime = file.ContentType ?? "application/octet-stream";
+        var localPreviewUrl = $"/api/agents/console/files/{Uri.EscapeDataString(storageFilename)}";
         var response = new FileUploadResponse(
             FileId: fileId,
             Filename: $"{sanitizedFilename}{ext}",
@@ -112,7 +113,8 @@ public class SecureUploadStorageService(
             Url = publicUri,
             FileName = file.FileName ?? $"{sanitizedFilename}{ext}",
             Size = file.Length,
-            MimeType = resolvedMime
+            MimeType = resolvedMime,
+            PreviewUrl = localPreviewUrl
         };
 
         return (true, null, response);

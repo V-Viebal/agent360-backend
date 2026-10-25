@@ -16,7 +16,8 @@ public sealed record FileUploadResponse
         string? Url = null,
         string? FileName = null,
         long? Size = null,
-        string? MimeType = null)
+        string? MimeType = null,
+        string? PreviewUrl = null)
     {
         this.FileId = FileId;
         this.Filename = Filename;
@@ -28,6 +29,7 @@ public sealed record FileUploadResponse
         this.FileName = FileName;
         this.Size = Size;
         this.MimeType = MimeType;
+        this.PreviewUrl = PreviewUrl;
     }
 
     [JsonPropertyName("file_id")]
@@ -59,4 +61,7 @@ public sealed record FileUploadResponse
 
     [JsonPropertyName("mime_type")]
     public string? MimeType { get; init; }
+
+    [JsonPropertyName("preview_url")]
+    public string? PreviewUrl { get; init; }
 }
