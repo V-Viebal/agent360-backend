@@ -107,11 +107,13 @@ public class SecureUploadStorageService(
             VirtualUri: publicUri,
             SizeBytes: file.Length,
             ContentType: resolvedMime,
-            UploadedAt: DateTime.UtcNow,
-            Url: publicUri,
-            FileName: file.FileName ?? $"{sanitizedFilename}{ext}",
-            Size: file.Length,
-            MimeType: resolvedMime);
+            UploadedAt: DateTime.UtcNow)
+        {
+            Url = publicUri,
+            FileName = file.FileName ?? $"{sanitizedFilename}{ext}",
+            Size = file.Length,
+            MimeType = resolvedMime
+        };
 
         return (true, null, response);
     }

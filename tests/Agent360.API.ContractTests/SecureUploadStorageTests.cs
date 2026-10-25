@@ -1,7 +1,13 @@
 using System.Text;
 using Agent360.API.Features.Agents.Security;
 using Agent360.API.Options;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -108,6 +114,71 @@ public sealed class SecureUploadStorageTests
             {
                 Directory.Delete(tempRoot, recursive: true);
             }
+        }
+    }
+
+    [Fact]
+    public async Task ConsoleUploadEndpoints_RootAndAgentGroup_ForwardToLiveQwenPawAndReturnUnifiedSchema()
+    {
+        var b = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(new Microsoft.AspNetCore.Builder.WebApplicationOptions { EnvironmentName = "Production" });
+        b.WebHost.UseUrls("http://127.0.0.1:0");
+        b.Configuration["QwenPaw:BaseUrl"] = "http://100.76.185.111:33148";
+        b.Configuration["QwenPaw:Instances:core:InternalUrl"] = "http://100.76.185.111:33148";
+        b.Configuration["QwenPaw:Instances:core:PublicUrl"] = "https://ai.hmz.one";
+        b.Services.AddRouting();
+        b.Services.AddApiVersioning(o => o.DefaultApiVersion = new Asp.Versioning.ApiVersion(1));
+        b.Services.AddMemoryCache();
+        b.Services.AddOptions<Agent360.API.Options.QwenPawOptions>().BindConfiguration(Agent360.API.Options.QwenPawOptions.Section);
+        b.Services.AddOptions<StorageOptions>();
+        b.Services.AddSingleton<Agent360.API.Features.Agents.Services.FleetRoutingState>();
+        b.Services.AddHttpClient<Agent360.API.Features.Agents.Services.IFleetInstanceRoutingService, Agent360.API.Features.Agents.Services.FleetInstanceRoutingService>();
+        b.Services.AddHttpClient<Agent360.API.Features.Agents.Services.IQwenPawClient, Agent360.API.Features.Agents.Services.QwenPawClient>();
+        b.Services.AddSingleton<Agent360.API.Features.Agents.Services.SessionQueueManager>();
+        b.Services.AddSingleton<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+        b.Services.AddSingleton<Agent360.API.Features.Agents.Endpoints.AgentLoopModeStore>();
+        b.Services.AddScoped<SecureUploadStorageService>();
+
+        await using var app = b.Build();
+        var api = app.NewVersionedApi().MapGroup("api/v{version:apiVersion}").HasApiVersion(1);
+        new Agent360.API.Features.Agents.Endpoints.AgentFeaturesEndpoints().MapEndpoint(api);
+        await app.StartAsync(TestContext.Current.CancellationToken);
+
+        try
+        {
+            var baseUri = new Uri(app.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>()
+                .Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()!.Addresses.First());
+            using var http = new HttpClient { BaseAddress = baseUri };
+
+            foreach (var route in new[] { "api/v1/console/upload", "api/v1/agents/console/upload", "api/v1/agents/mkai/console/upload" })
+            {
+                using var form = new MultipartFormDataContent();
+                var fileBytes = Encoding.UTF8.GetBytes($"# Live Upload Test ({route})\nHello QwenPaw mkai workspace.");
+                var byteContent = new ByteArrayContent(fileBytes);
+                byteContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/markdown");
+                form.Add(byteContent, "file", "live_chat_upload.md");
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, route) { Content = form };
+                req.Headers.Add("X-Agent-Id", "mkai");
+
+                using var resp = await http.SendAsync(req, TestContext.Current.CancellationToken);
+                Assert.Equal(System.Net.HttpStatusCode.OK, resp.StatusCode);
+
+                var json = await resp.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                Assert.Equal("live_chat_upload.md", root.GetProperty("file_name").GetString());
+                Assert.Equal("live_chat_upload.md", root.GetProperty("filename").GetString());
+                Assert.Equal(fileBytes.Length, root.GetProperty("size").GetInt64());
+                Assert.Equal(fileBytes.Length, root.GetProperty("size_bytes").GetInt64());
+                var url = root.GetProperty("url").GetString();
+                Assert.False(string.IsNullOrWhiteSpace(url));
+                Assert.StartsWith("/app/working/workspaces/mkai/media/", url);
+            }
+        }
+        finally
+        {
+            await app.StopAsync(TestContext.Current.CancellationToken);
         }
     }
 }
