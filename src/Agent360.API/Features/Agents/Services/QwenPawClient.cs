@@ -448,6 +448,43 @@ public sealed class QwenPawClient : IQwenPawClient
         return req;
     }
 
+    public async Task<SetActiveModelResponseDto?> GetAgentActiveModelAsync(string agentId, CancellationToken cancellationToken = default)
+    {
+        var target = Resolve(agentId);
+        if (target.IsQwenPaw)
+        {
+            try
+            {
+                using var response = await SendAsync(target, HttpMethod.Get, "models/active", global: true, timeout: ReadTimeout, ct: cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    var dto = await response.Content.ReadFromJsonAsync<SetActiveModelResponseDto>(cancellationToken: cancellationToken);
+                    if (dto is not null)
+                    {
+                        return dto;
+                    }
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Direct models/active lookup failed for {AgentId}; falling back to fleet snapshot", agentId);
+            }
+        }
+
+        var agents = await GetAgentsAsync(cancellationToken);
+        var cleanSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        var match = agents.FirstOrDefault(a => a.Slug.Equals(cleanSlug, StringComparison.OrdinalIgnoreCase) || a.Id.Equals(agentId, StringComparison.OrdinalIgnoreCase));
+        if (match is null)
+        {
+            return null;
+        }
+
+        var rawModel = match.Model ?? "";
+        var prov = rawModel.Contains('/') ? rawModel.Split('/')[0] : "";
+        var mod = rawModel.Contains('/') ? rawModel.Split('/')[1] : rawModel;
+        return new SetActiveModelResponseDto(new QwenPawActiveModel(prov, mod), 500000);
+    }
+
     public async Task<SetActiveModelResponseDto?> SetAgentActiveModelAsync(string agentId, string providerId, string model, CancellationToken cancellationToken = default)
     {
         var target = Resolve(agentId);
