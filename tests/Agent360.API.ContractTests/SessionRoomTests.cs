@@ -23,8 +23,13 @@ public sealed class FakeRoomA2AClient : IQwenPawA2AClient
     public Task<NativeChatResult> ChatAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct) =>
         Task.FromResult(new NativeChatResult(true, $"room:{fromAgent}:{toAgent}", ReplyQueue.Count > 0 ? ReplyQueue.Dequeue() : NextReply, null, 200));
 
-    public Task<NativeChatResult> ChatInSessionAsync(string fromAgent, string toAgent, string text, string? sessionId, int timeoutSeconds, CancellationToken ct) =>
-        Task.FromResult(new NativeChatResult(true, sessionId ?? $"room:{fromAgent}:{toAgent}", ReplyQueue.Count > 0 ? ReplyQueue.Dequeue() : NextReply, null, 200));
+    public string? LastMessageSent { get; private set; }
+
+    public Task<NativeChatResult> ChatInSessionAsync(string fromAgent, string toAgent, string text, string? sessionId, int timeoutSeconds, CancellationToken ct)
+    {
+        LastMessageSent = text;
+        return Task.FromResult(new NativeChatResult(true, sessionId ?? $"room:{fromAgent}:{toAgent}", ReplyQueue.Count > 0 ? ReplyQueue.Dequeue() : NextReply, null, 200));
+    }
 
     public Task<NativeSubmitResult> SubmitAsync(string fromAgent, string toAgent, string text, int timeoutSeconds, CancellationToken ct) =>
         Task.FromResult(new NativeSubmitResult(true, $"room:{fromAgent}:{toAgent}", "task_1", timeoutSeconds, null, 200));
@@ -777,5 +782,63 @@ public class SessionRoomTests
         profile.LearnedKeywordWeights.Should().NotContainKey("mooncake");
         profile.LearnedKeywordWeights.Should().ContainKey("sourdough");
         profile.LearnedKeywordWeights["sourdough"].Should().Be(2);
+    }
+
+    [Fact]
+    public async Task SmartSoloToMultiAgentTransition_PreservesSoloMemoryAndSuggestsSpecialistsSmoothly()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            NextReply = "- **[Đề xuất từ chuyên viên]**: Khung báo giá B2B và truyền thông dựa trên ngữ cảnh phiên solo trước."
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-solo-to-multi-01";
+        var soloQuery = "Anh đang chuẩn bị ra mắt dòng bánh mì chay sourdough tại TP.HCM, cần tính toán bảng báo giá đại lý B2B và chiến dịch truyền thông thương hiệu TikTok";
+
+        // 1. In Solo Mode (before any collaborators join the Room), Manager keeps ShouldUseRoom=false (0ms solo latency)
+        // while detecting cross-domain specialists (zen, climax-default) in SuggestedCollaborators!
+        var soloDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, soloQuery);
+        soloDecision.ShouldUseRoom.Should().BeFalse();
+        soloDecision.Mode.Should().Be("no_room_collaborators");
+        soloDecision.SuggestedCollaborators.Should().NotBeNull();
+        soloDecision.SuggestedCollaborators.Should().Contain(["zen", "climax-default"]);
+
+        var soloContext = orchestrator.BuildSoloSmartContextInjection("gm-boc", chatId, chatId, soloQuery, soloDecision);
+        soloContext.Should().NotBeNullOrWhiteSpace();
+        soloContext.Should().Contain("[SHARED SESSION ROOM CONTEXT]");
+        soloContext.Should().Contain("Smart Solo Mode");
+
+        // Record Turn 1 (Solo Request + Solo Host Synthesis) in the session's Room
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, null, chatId, ct);
+        await orchestrator.RecordManagerTriageTurnAsync("gm-boc", chatId, chatId, soloQuery, soloDecision, ct);
+        await orchestrator.RecordHostSynthesisTurnAsync("gm-boc", chatId, "Dưới góc độ điều hành, anh nên chia 2 giai đoạn B2B và truyền thông.", "Phân tích solo đa chiều", null, chatId, ct);
+
+        // 2. Smooth Switch to Multi-Agent in the SAME session: User now pulls in @zen and @climax-default
+        var multiQuery = "@zen @climax-default triển khai chi tiết phương án vừa thống nhất ở trên nhé";
+        var multiDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, multiQuery);
+        multiDecision.ShouldUseRoom.Should().BeTrue();
+        multiDecision.SelectedCollaborators.Should().BeEquivalentTo(["zen", "climax-default"]);
+
+        var (waveRoom, waveTurns) = await orchestrator.ExecuteCollaboratorWaveAsync(
+            "gm-boc", chatId, multiDecision.SelectedCollaborators, multiQuery, null, chatId, multiDecision.CollaboratorFocuses, "sequential", null, ct);
+
+        waveTurns.Should().HaveCount(2);
+        // Collaborators received the prior solo request & synthesis from Turn 1 in their scoped prompt!
+        a2a.LastMessageSent.Should().Contain("Dưới góc độ điều hành, anh nên chia 2 giai đoạn B2B và truyền thông.");
+
+        // 3. Smooth Switch back to Host Solo in the SAME session: Host retains verified collaborator insights
+        var backToSoloQuery = "Chỉ mình bạn trả lời thôi: chọn giúp anh 1 ưu tiên số 1 trong tuần đầu tiên từ ý kiến của phòng";
+        var backToSoloDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, backToSoloQuery);
+        backToSoloDecision.ShouldUseRoom.Should().BeFalse();
+        backToSoloDecision.Mode.Should().Be("host_solo");
+
+        var continuityContext = orchestrator.BuildSoloSmartContextInjection("gm-boc", chatId, chatId, backToSoloQuery, backToSoloDecision);
+        continuityContext.Should().NotBeNullOrWhiteSpace();
+        continuityContext.Should().Contain("Khung báo giá B2B và truyền thông dựa trên ngữ cảnh phiên solo trước");
     }
 }

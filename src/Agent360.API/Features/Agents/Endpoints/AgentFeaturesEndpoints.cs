@@ -960,10 +960,29 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             : new Agent360.API.Features.Agents.SubAgents.HostRoomTriageDecision(explicitMentions.Count > 0, explicitMentions, explicitMentions.Count > 0 ? "explicit_mention" : "no_room_collaborators", "");
         var mentionedCollaborators = triageDecision.ShouldUseRoom ? triageDecision.SelectedCollaborators : [];
 
+        Task? soloRoomInitTask = null;
         if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null)
         {
+            var soloSmartContext = roomOrchestrator.BuildSoloSmartContextInjection(
+                agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision);
+            if (!string.IsNullOrWhiteSpace(soloSmartContext) && !string.IsNullOrWhiteSpace(rawUserText))
+            {
+                var enrichedSoloInput = $"{rawUserText}\n\n{soloSmartContext}";
+                effectiveRequest = effectiveRequest with
+                {
+                    Message = enrichedSoloInput,
+                    Input =
+                    [
+                        new ConsoleChatInputItem(
+                            "user",
+                            "message",
+                            [new ConsoleChatContentItem("text", enrichedSoloInput)])
+                    ]
+                };
+            }
+
             // Non-collaborator turn: dispatch room provisioning/title sync and Manager intake turn in background so QwenPaw receives the prompt with 0ms delay
-            _ = Task.Run(async () =>
+            soloRoomInitTask = Task.Run(async () =>
             {
                 try
                 {
@@ -1197,12 +1216,17 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             response.Dispose();
             upstreamCts.Dispose();
 
-            if (mentionedCollaborators.Count > 0 && roomOrchestrator is not null)
+            if (roomOrchestrator is not null)
             {
+                var capturedSoloInit = soloRoomInitTask;
                 _ = Task.Run(async () =>
                 {
                     try
                     {
+                        if (capturedSoloInit is not null)
+                        {
+                            try { await capturedSoloInit; } catch {}
+                        }
                         client.InvalidateChatList(agentTarget);
                         var histRaw = await client.GetChatHistoryRawAsync(effectiveSessionId, agentTarget, CancellationToken.None);
                         if (!string.IsNullOrWhiteSpace(histRaw))

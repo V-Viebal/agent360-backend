@@ -131,7 +131,8 @@ public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("triage_owner_id")] string TriageOwnerId = "agentteams-manager",
     [property: JsonPropertyName("assigned_agents")] IReadOnlyList<string>? AssignedAgents = null,
     [property: JsonPropertyName("auto_recruited_collaborators")] IReadOnlyList<string>? AutoRecruitedCollaborators = null,
-    [property: JsonPropertyName("adaptive_scores")] IReadOnlyDictionary<string, int>? AdaptiveScores = null);
+    [property: JsonPropertyName("adaptive_scores")] IReadOnlyDictionary<string, int>? AdaptiveScores = null,
+    [property: JsonPropertyName("suggested_collaborators")] IReadOnlyList<string>? SuggestedCollaborators = null);
 
 public sealed record AdaptiveSpecialtyProfileDto(
     [property: JsonPropertyName("collaborator_id")] string CollaboratorId,
@@ -1831,6 +1832,8 @@ public sealed partial class SessionRoomOrchestrator(
                             confidence = decision.Confidence,
                             assigned_agents = assigned,
                             selected_collaborators = decision.SelectedCollaborators,
+                            suggested_collaborators = decision.SuggestedCollaborators,
+                            adaptive_scores = decision.AdaptiveScores,
                             execution_strategy = decision.ExecutionStrategy,
                             reason = decision.Reason
                         }),
@@ -3021,18 +3024,41 @@ public sealed partial class SessionRoomOrchestrator(
         }
 
         // 2. If the session Room has no collaborators yet and none were @mentioned, Manager assigns directly to Host
+        // while scanning cross-domain specialist relevance so solo agent chat becomes smarter and can suggest smooth multi-agent expansion.
         if (roomCollaborators.Count == 0)
         {
+            var soloPool = new[] { "zen", "climax-default", "planthy-pm", "mons", "ken", "gm-gao", "gm-lua" };
+            var soloAdaptiveScores = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var suggestedForSolo = soloPool
+                .Where(c => !string.Equals(c, host, StringComparison.OrdinalIgnoreCase))
+                .Select(c =>
+                {
+                    var (sc, _, _) = EvaluateAdaptiveCollaboratorSpecialty(c, userBodyText, host);
+                    if (sc > 0) soloAdaptiveScores[c] = sc;
+                    return (Collab: c, Score: sc);
+                })
+                .Where(x => x.Score >= 4)
+                .OrderByDescending(x => x.Score)
+                .Take(3)
+                .Select(x => x.Collab)
+                .ToList();
+
+            var soloReason = suggestedForSolo.Count > 0
+                ? $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu: Phiên đang ở chế độ Cá nhân (@{host} — {DescribeAgentSpecialty(host)}) nên phân định @{host} trực tiếp xử lý đa góc độ (Gợi ý chuyên viên có thể kéo thêm vào Room: @{string.Join(", @", suggestedForSolo)})."
+                : $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu: Room hiện chỉ có Chủ phòng (@{host}) nên phân định @{host} trực tiếp xử lý.";
+
             return new HostRoomTriageDecision(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "no_room_collaborators",
-                Reason: $"AgentTeams Manager (@{ManagerAgentId}) tiếp nhận yêu cầu: Room hiện chỉ có Chủ phòng (@{host}) nên phân định @{host} trực tiếp xử lý.",
+                Reason: soloReason,
                 Confidence: 1.0,
                 CollaboratorFocuses: null,
                 ExecutionStrategy: "sequential",
                 TriageOwnerId: ManagerAgentId,
-                AssignedAgents: [host]);
+                AssignedAgents: [host],
+                AdaptiveScores: soloAdaptiveScores.Count > 0 ? soloAdaptiveScores : null,
+                SuggestedCollaborators: suggestedForSolo.Count > 0 ? suggestedForSolo : null);
         }
 
         // 3. Check if user is explicitly instructing the Host to answer solo or only reformat/summarize existing output
@@ -3356,6 +3382,74 @@ public sealed partial class SessionRoomOrchestrator(
             ExecutionStrategy: "sequential",
             TriageOwnerId: ManagerAgentId,
             AssignedAgents: [host]);
+    }
+
+    /// <summary>
+    /// Enhances individual (solo) agent turns and Multi-Agent -> Solo transitions in the same session:
+    /// 1) When a session with an active Multi-Agent Room routes a turn to Host Solo, injects the latest verified Room insights so the Host retains seamless team continuity.
+    /// 2) When an individual (solo) chat turn spans multiple specialist domains (SuggestedCollaborators), provides a concise structured framing brief so the solo agent answers with multi-angle depth and smooth readiness to expand into a Room.
+    /// Uses the [SHARED SESSION ROOM CONTEXT] marker so EnrichChatHistoryJson and frontend stripSharedRoomContext keep the visible user bubble 100% clean.
+    /// </summary>
+    public string? BuildSoloSmartContextInjection(
+        string hostAgentId,
+        string hostChatId,
+        string? hostSessionId,
+        string? rawUserText,
+        HostRoomTriageDecision decision)
+    {
+        if (string.IsNullOrWhiteSpace(rawUserText) ||
+            rawUserText.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase) ||
+            rawUserText.Contains("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var trimmed = rawUserText.Trim();
+        if (trimmed.Length <= 24)
+        {
+            return null;
+        }
+
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var room = roomStore.GetByChat(host, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
+
+        var recentCollabTurns = room?.Turns
+            .Where(t => t.Kind is "collaborator_reply" or "question")
+            .TakeLast(4)
+            .ToList() ?? [];
+
+        var suggested = decision.SuggestedCollaborators ?? [];
+        if (recentCollabTurns.Count == 0 && suggested.Count == 0)
+        {
+            return null;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("[SHARED SESSION ROOM CONTEXT]");
+        sb.AppendLine($"Lưu ý hệ thống: {decision.Reason}");
+        sb.AppendLine($"- Vai trò chủ đạo của bạn: @{host} ({FriendlyAgentName(host)} — {DescribeAgentSpecialty(host)}).");
+
+        if (recentCollabTurns.Count > 0)
+        {
+            sb.AppendLine("- Ngữ cảnh liên tục từ các chuyên viên AI trong Room của phiên chat này (hãy kế thừa mạch lạc khi phản hồi độc lập cho người dùng):");
+            foreach (var ct in recentCollabTurns)
+            {
+                var snippet = StripCollaboratorMentions(ct.Text);
+                if (snippet.Length > 340) snippet = snippet[..340] + "...";
+                sb.AppendLine($"  * @{ct.AuthorId} ({ct.AuthorName}): {snippet}");
+            }
+        }
+
+        if (suggested.Count > 0)
+        {
+            var angleDescriptions = suggested
+                .Select(s => $"@{s} ({FriendlyAgentName(s)} — {DescribeAgentSpecialty(s)})")
+                .ToList();
+            sb.AppendLine($"- Phân tích thông minh đa chiều (Smart Solo Mode): Yêu cầu này có giao thoa với các mảng chuyên sâu ({string.Join("; ", angleDescriptions)}). Hãy chủ động phân tích câu trả lời có cấu trúc rõ ràng bao quát cả góc nhìn chuyên môn của @{host} lẫn các khía cạnh liên quan trên, và có thể gợi ý ngắn gọn ở dòng cuối nếu người dùng muốn tag thêm @{string.Join(", @", suggested)} vào phiên chat để phối hợp sâu hơn.");
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     private static void BroadcastRoomTurnToHostSession(
