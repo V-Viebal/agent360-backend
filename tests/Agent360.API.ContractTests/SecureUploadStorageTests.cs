@@ -174,6 +174,16 @@ public sealed class SecureUploadStorageTests
                 var url = root.GetProperty("url").GetString();
                 Assert.False(string.IsNullOrWhiteSpace(url));
                 Assert.StartsWith("/app/working/workspaces/mkai/media/", url);
+
+                var previewUrl = root.GetProperty("preview_url").GetString();
+                Assert.False(string.IsNullOrWhiteSpace(previewUrl));
+                Assert.StartsWith("/api/agents/mkai/console/files/", previewUrl);
+
+                var v1PreviewRoute = previewUrl!.Replace("/api/agents/", "api/v1/agents/");
+                using var previewResp = await http.GetAsync(v1PreviewRoute, TestContext.Current.CancellationToken);
+                Assert.Equal(System.Net.HttpStatusCode.OK, previewResp.StatusCode);
+                var downloadedBytes = await previewResp.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken);
+                Assert.Equal(fileBytes, downloadedBytes);
             }
         }
         finally

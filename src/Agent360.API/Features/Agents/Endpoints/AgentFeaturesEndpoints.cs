@@ -911,10 +911,25 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
                 return Results.Ok(list);
             }
-            catch (Exception)
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                // Never leak other agents' chats when an agent has no chats or is disabled/unhosted
+                // Non-AgentCore runtimes or unhosted agents legitimately have no chats
                 return TypedResults.Ok(Array.Empty<AgentSessionResponse>());
+            }
+            catch (HttpRequestException ex)
+            {
+                var status = (int)(ex.StatusCode ?? System.Net.HttpStatusCode.BadGateway);
+                return Results.Problem(
+                    detail: ex.Message,
+                    statusCode: status is >= 400 and < 600 ? status : StatusCodes.Status502BadGateway,
+                    title: "Agent chat list temporarily unavailable");
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                return Results.Problem(
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status502BadGateway,
+                    title: "Agent chat list temporarily unavailable");
             }
         })
         .WithName("GetAgentChats")
