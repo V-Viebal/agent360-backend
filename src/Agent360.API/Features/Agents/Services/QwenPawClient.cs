@@ -419,10 +419,41 @@ public sealed class QwenPawClient : IQwenPawClient
             () => GetStringAsync(slug, "", ct: cancellationToken));
     }
 
+    private static string ResolveInstanceDefaultProvider(string? instanceKey, string? requestedProvider)
+    {
+        var key = (instanceKey ?? "core").ToLowerInvariant();
+        var defaultProvider = key switch
+        {
+            "gm" => "llm360-gm",
+            "climax" => "llm360",
+            "planthy" => "llm360",
+            "its" => "llm360-its",
+            "gl" => "llm360-gl",
+            _ => "llm360coding"
+        };
+
+        if (string.IsNullOrWhiteSpace(requestedProvider))
+        {
+            return defaultProvider;
+        }
+
+        var req = requestedProvider.Trim();
+        if (req.StartsWith("llm360", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(req, "opencode", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(req, "kilo", StringComparison.OrdinalIgnoreCase))
+        {
+            return defaultProvider;
+        }
+
+        return req;
+    }
+
     public async Task<SetActiveModelResponseDto?> SetAgentActiveModelAsync(string agentId, string providerId, string model, CancellationToken cancellationToken = default)
     {
         var target = Resolve(agentId);
-        var payload = new SetActiveModelRequestDto("agent", target.TargetAgentProfile, providerId, model);
+        var cleanModel = model.Contains('/') ? model.Split('/').Last() : model;
+        var effectiveProvider = ResolveInstanceDefaultProvider(target.Instance?.Key, providerId);
+        var payload = new SetActiveModelRequestDto("agent", target.TargetAgentProfile, effectiveProvider, cleanModel);
         using var response = await SendAsync(target, HttpMethod.Put, "models/active", () => JsonContent.Create(payload), global: true, timeout: SlowReadTimeout, ct: cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -431,6 +462,10 @@ public sealed class QwenPawClient : IQwenPawClient
         }
 
         InvalidateAgent(agentId);
+        if (target.Instance is not null)
+        {
+            _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
+        }
         return await response.Content.ReadFromJsonAsync<SetActiveModelResponseDto>(cancellationToken: cancellationToken);
     }
 

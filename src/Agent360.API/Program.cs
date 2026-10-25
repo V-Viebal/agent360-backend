@@ -227,9 +227,8 @@ try
     app.UseRouting(); // Noted: By default, it will run this middleware at the beginning of the pipeline
     app.UseCors();
     app.UseRateLimiter();
-    app.UseMiddleware<Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware>();
-
     app.UseAuthentication();
+    app.UseMiddleware<Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware>();
     app.UseMiddleware<Agent360.API.Features.Agents.Security.SensitiveReadGuardMiddleware>();
     app.UseMiddleware<UserResolutionMiddleware>();
     app.UseAuthorization();

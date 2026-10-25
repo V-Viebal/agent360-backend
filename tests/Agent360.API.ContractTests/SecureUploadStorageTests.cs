@@ -62,6 +62,10 @@ public sealed class SecureUploadStorageTests
             Assert.NotNull(response);
             Assert.StartsWith("virtual://workspace/uploads/", response.VirtualUri);
             Assert.DoesNotContain(tempRoot, response.VirtualUri); // Never leak server paths
+            Assert.Equal(response.VirtualUri, response.Url);
+            Assert.Equal("my_script.js", response.FileName);
+            Assert.Equal(bytes.Length, response.Size);
+            Assert.Equal("application/javascript", response.MimeType);
         }
         finally
         {

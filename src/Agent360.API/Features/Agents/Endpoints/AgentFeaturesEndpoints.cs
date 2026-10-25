@@ -633,26 +633,115 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Revoke a Bot identity cell")
         .AllowAnonymous();
 
-        group.MapPost("console/upload", async (
+        static async Task<IResult> HandleConsoleUploadAsync(
             IFormFile file,
+            HttpContext httpContext,
             IWebHostEnvironment env,
             Agent360.API.Features.Agents.Security.SecureUploadStorageService storageService,
-            CancellationToken ct) =>
+            IFleetInstanceRoutingService routing,
+            CancellationToken ct)
         {
             var (success, error, uploadResponse) = await storageService.StoreFileAsync(
                 file,
                 env.ContentRootPath,
                 ct);
 
-            if (!success)
+            if (!success || uploadResponse is null)
             {
-                return Results.BadRequest(new { error });
+                return Results.BadRequest(new { error, detail = error });
+            }
+
+            var targetAgent = httpContext.Request.Headers["X-Agent-Id"].FirstOrDefault()
+                ?? httpContext.Request.Query["agentId"].FirstOrDefault()
+                ?? "default";
+            targetAgent = FleetInstanceRoutingService.NormalizeAgentId(targetAgent);
+
+            var target = routing.ResolveTarget(targetAgent);
+            if (target.IsQwenPaw && target.Instance is not null)
+            {
+                try
+                {
+                    await using var ms = new MemoryStream();
+                    await file.CopyToAsync(ms, ct);
+                    var fileBytes = ms.ToArray();
+                    var fileName = string.IsNullOrWhiteSpace(file.FileName) ? uploadResponse.Filename : file.FileName;
+                    var contentType = string.IsNullOrWhiteSpace(file.ContentType) ? uploadResponse.ContentType : file.ContentType;
+
+                    using var runtimeResp = await routing.SendAsync(
+                        target.Instance,
+                        HttpMethod.Post,
+                        $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/console/upload",
+                        () =>
+                        {
+                            var multipart = new MultipartFormDataContent();
+                            var byteContent = new ByteArrayContent(fileBytes);
+                            byteContent.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(contentType);
+                            multipart.Add(byteContent, "file", fileName);
+                            return multipart;
+                        },
+                        target.TargetAgentProfile,
+                        TimeSpan.FromSeconds(30),
+                        ct: ct);
+
+                    if (runtimeResp.IsSuccessStatusCode)
+                    {
+                        var runtimeJson = await runtimeResp.Content.ReadAsStringAsync(ct);
+                        using var doc = System.Text.Json.JsonDocument.Parse(runtimeJson);
+                        if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            var runtimeUrl = doc.RootElement.TryGetProperty("url", out var uEl) ? uEl.GetString() : null;
+                            var runtimeFileName = doc.RootElement.TryGetProperty("file_name", out var fnEl) ? fnEl.GetString() : null;
+                            var runtimeSize = doc.RootElement.TryGetProperty("size", out var sEl) && sEl.TryGetInt64(out var sz) ? sz : uploadResponse.SizeBytes;
+
+                            if (!string.IsNullOrWhiteSpace(runtimeUrl))
+                            {
+                                uploadResponse = uploadResponse with
+                                {
+                                    Url = runtimeUrl,
+                                    FileName = !string.IsNullOrWhiteSpace(runtimeFileName) ? runtimeFileName : uploadResponse.FileName,
+                                    Size = runtimeSize
+                                };
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Graceful fallback to local/S3 uploadResponse if QwenPaw runtime upload is unreachable
+                }
             }
 
             return TypedResults.Ok(uploadResponse);
+        }
+
+        routeBuilder.MapPost("console/upload", HandleConsoleUploadAsync)
+            .MapToApiVersion(ApiVersion.Default)
+            .WithTags(EndpointTags.Agents)
+            .WithName("SecureConsoleUploadRoot")
+            .WithSummary("Upload file attachment to agent console workspace with extension security check")
+            .DisableAntiforgery()
+            .AllowAnonymous();
+
+        group.MapPost("console/upload", HandleConsoleUploadAsync)
+            .WithName("SecureConsoleUpload")
+            .WithSummary("Upload file attachment with virtual path masking and extension security check")
+            .DisableAntiforgery()
+            .AllowAnonymous();
+
+        group.MapPost("{agentId}/console/upload", (
+            string agentId,
+            IFormFile file,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            Agent360.API.Features.Agents.Security.SecureUploadStorageService storageService,
+            IFleetInstanceRoutingService routing,
+            CancellationToken ct) =>
+        {
+            httpContext.Request.Headers["X-Agent-Id"] = agentId;
+            return HandleConsoleUploadAsync(file, httpContext, env, storageService, routing, ct);
         })
-        .WithName("SecureConsoleUpload")
-        .WithSummary("Upload file attachment with virtual path masking and extension security check")
+        .WithName("SecureAgentConsoleUpload")
+        .WithSummary("Upload file attachment scoped to a specific agent console workspace")
         .DisableAntiforgery()
         .AllowAnonymous();
 
@@ -823,6 +912,38 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         })
         .WithName("GetAgentFileContent")
         .WithSummary("Read workspace file content for specific agent")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/active-model", async (
+            string agentId,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
+            if (!accessAllowed)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+            }
+
+            var agents = await client.GetAgentsAsync(ct);
+            var cleanSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+            var match = agents.FirstOrDefault(a => a.Slug.Equals(cleanSlug, StringComparison.OrdinalIgnoreCase) || a.Id.Equals(agentId, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+            {
+                return Results.NotFound(new { detail = $"Agent '{cleanSlug}' not found in fleet" });
+            }
+
+            var rawModel = match.Model ?? "";
+            var prov = rawModel.Contains('/') ? rawModel.Split('/')[0] : "";
+            var mod = rawModel.Contains('/') ? rawModel.Split('/')[1] : rawModel;
+            return TypedResults.Ok(new SetActiveModelResponseDto(new QwenPawActiveModel(prov, mod), 500000));
+        })
+        .WithName("GetAgentActiveModel")
+        .WithSummary("Get current active LLM model provider and model for agent")
         .AllowAnonymous();
 
         group.MapPut("{agentId}/active-model", async (
@@ -1021,7 +1142,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     selected_collaborators = mentionedCollaborators,
                     assigned_agents = triageDecision.AssignedAgents,
                     auto_recruited_collaborators = triageDecision.AutoRecruitedCollaborators,
-                    collaborator_focuses = triageDecision.CollaboratorFocuses
+                    collaborator_focuses = triageDecision.CollaboratorFocuses,
+                    synthesis_owner_id = triageDecision.SynthesisOwnerId ?? agentTarget,
+                    host_should_self_execute = triageDecision.HostShouldSelfExecute,
+                    host_execution_role = triageDecision.HostExecutionRole,
+                    host_execution_focus = triageDecision.HostExecutionFocus
                 });
                 try
                 {
@@ -1172,6 +1297,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     @object = "room_event",
                     status = "synthesizing",
                     collaborator_id = agentTarget,
+                    synthesis_owner_id = triageDecision.SynthesisOwnerId ?? agentTarget,
+                    host_should_self_execute = triageDecision.HostShouldSelfExecute,
+                    host_execution_role = triageDecision.HostExecutionRole,
+                    host_execution_focus = triageDecision.HostExecutionFocus,
                     manager_brief = managerSynthesisBrief,
                     room = latestRoom
                 });
@@ -1183,10 +1312,13 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 catch {}
             }
 
+            var hostSelfExecNote = triageDecision.HostShouldSelfExecute
+                ? $"Manager quyết định bạn (@{agentTarget}) VỪA TỰ THỰC THI phần việc chuyên môn của riêng mình ({triageDecision.HostExecutionFocus}) VỪA LÀ NGƯỜI ĐẠI DIỆN ROOM TỔNG HỢP CUỐI sau khi các thành viên khác đã chạy xong."
+                : $"Manager quyết định các thành viên trong Room (@{string.Join(", @", mentionedCollaborators)}) đã chạy xong (done) toàn bộ phần việc chuyên môn; bạn (@{agentTarget}) KHÔNG cần tự chạy lại nhánh công cụ riêng mà tập trung 100% vào vai trò NGƯỜI ĐẠI DIỆN ROOM TỔNG HỢP CUỐI.";
             var triageHeader = triageDecision.Mode == "explicit_mention"
-                ? $"AgentTeams Manager (@agentteams-manager) đã tiếp nhận yêu cầu trong Room và phân công @{string.Join(", @", mentionedCollaborators)} xử lý theo thẻ chỉ định của người dùng (lưu ý: các thẻ này là ĐỊNH DANH ĐỒNG NGHIỆP AI, KHÔNG PHẢI là tên sản phẩm hay thương hiệu)."
-                : $"AgentTeams Manager (@agentteams-manager) đã tiếp nhận yêu cầu mới trong Room, phân định giao @{string.Join(", @", mentionedCollaborators)} xử lý chuyên môn và giao Chủ phòng (@{agentTarget}) tổng hợp kết quả cuối ({triageDecision.Reason}).";
-            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\n{managerSynthesisBrief}\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn (đã qua kiểm định của AgentTeams Manager):\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên theo đúng Biên bản nghiệm thu của Manager thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
+                ? $"AgentTeams Manager (@agentteams-manager) đã tiếp nhận yêu cầu trong Room, điều phối @{string.Join(", @", mentionedCollaborators)} chạy xong phần việc được chỉ định và ưu tiên Chủ session (@{agentTarget}) làm Người đại diện Room tổng hợp kết quả cuối. {hostSelfExecNote}"
+                : $"AgentTeams Manager (@agentteams-manager) đã điều phối @{string.Join(", @", mentionedCollaborators)} trong Room chạy xong chuyên môn và ưu tiên Chủ session (@{agentTarget}) làm Người đại diện Room tổng hợp kết quả cuối ({triageDecision.Reason}). {hostSelfExecNote}";
+            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\n{managerSynthesisBrief}\n\nCác chuyên viên AI trong Room đã hoàn tất (done) phần chạy của mình và qua kiểm định của AgentTeams Manager:\n{accumulatedContext}\nVới vai trò Chủ session kiêm Người đại diện Room (@{agentTarget}), hãy thực hiện đúng quyết định của Manager ở trên và đưa ra câu phản hồi tổng hợp cuối cùng hoàn chỉnh, mạch lạc và trực tiếp nhất cho người dùng.";
             effectiveRequest = effectiveRequest with
             {
                 Message = synthesizedInput,

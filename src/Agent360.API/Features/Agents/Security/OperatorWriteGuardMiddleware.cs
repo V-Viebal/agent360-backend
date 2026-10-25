@@ -34,7 +34,12 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
         if (!opt.ProtectRuntimeProxyWrites) return next(http);
         var rel = Relative(http.Request.Path.Value);
         if (rel is null || !IsProtected(rel)) return next(http);
-        if (OperatorAuthFilter.IsAuthorized(http, opt, env) || OperatorAuthFilter.IsSignedInAdmin(http, opt)) return next(http);
+        if (OperatorAuthFilter.IsAuthorized(http, opt, env)
+            || OperatorAuthFilter.IsSignedInAdmin(http, opt)
+            || (http.User.Identity?.IsAuthenticated == true && IsUserOwnedAgentWrite(rel)))
+        {
+            return next(http);
+        }
         http.Response.StatusCode = StatusCodes.Status401Unauthorized;
         return http.Response.WriteAsJsonAsync(new
         {
@@ -59,6 +64,12 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
         }
         return p.TrimEnd('/');
     }
+
+    internal static bool IsUserOwnedAgentWrite(string rel) =>
+        rel.StartsWith("agents/", StringComparison.OrdinalIgnoreCase) &&
+        (rel.EndsWith("/active-model", StringComparison.OrdinalIgnoreCase) ||
+         rel.EndsWith("/compact-context", StringComparison.OrdinalIgnoreCase) ||
+         rel.EndsWith("/toggle", StringComparison.OrdinalIgnoreCase));
 
     internal static bool IsProtected(string rel)
     {

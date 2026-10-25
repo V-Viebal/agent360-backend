@@ -8,4 +8,8 @@ public sealed record FileUploadResponse(
     [property: JsonPropertyName("virtual_uri")] string VirtualUri,
     [property: JsonPropertyName("size_bytes")] long SizeBytes,
     [property: JsonPropertyName("content_type")] string ContentType,
-    [property: JsonPropertyName("uploaded_at")] DateTime UploadedAt);
+    [property: JsonPropertyName("uploaded_at")] DateTime UploadedAt,
+    [property: JsonPropertyName("url")] string? Url = null,
+    [property: JsonPropertyName("file_name")] string? FileName = null,
+    [property: JsonPropertyName("size")] long? Size = null,
+    [property: JsonPropertyName("mime_type")] string? MimeType = null);

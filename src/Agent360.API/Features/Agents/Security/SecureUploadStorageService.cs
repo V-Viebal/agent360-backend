@@ -12,9 +12,12 @@ public class SecureUploadStorageService(
 {
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
-        ".pdf", ".txt", ".md", ".json", ".csv", ".yaml", ".yml",
-        ".py", ".ts", ".tsx", ".js", ".cs", ".html", ".css"
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+        ".pdf", ".txt", ".md", ".mdx", ".json", ".csv", ".tsv", ".yaml", ".yml", ".xml", ".toml", ".ini", ".log",
+        ".docx", ".doc", ".xlsx", ".xls", ".xlsm", ".pptx", ".ppt",
+        ".zip", ".tar", ".gz", ".7z", ".rar",
+        ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm", ".mov",
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".cs", ".go", ".rs", ".java", ".cpp", ".c", ".h", ".sh", ".sql", ".html", ".htm", ".css", ".scss"
     };
 
     private const long MaxFileSizeBytes = 25 * 1024 * 1024; // 25 MB
@@ -97,13 +100,18 @@ public class SecureUploadStorageService(
             }
         }
 
+        var resolvedMime = file.ContentType ?? "application/octet-stream";
         var response = new FileUploadResponse(
             FileId: fileId,
             Filename: $"{sanitizedFilename}{ext}",
             VirtualUri: publicUri,
             SizeBytes: file.Length,
-            ContentType: file.ContentType ?? "application/octet-stream",
-            UploadedAt: DateTime.UtcNow);
+            ContentType: resolvedMime,
+            UploadedAt: DateTime.UtcNow,
+            Url: publicUri,
+            FileName: file.FileName ?? $"{sanitizedFilename}{ext}",
+            Size: file.Length,
+            MimeType: resolvedMime);
 
         return (true, null, response);
     }

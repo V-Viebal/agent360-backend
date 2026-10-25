@@ -88,6 +88,8 @@ public sealed class ApiSecurityHardeningTests
     [InlineData("/api/console/chat", false)]
     [InlineData("/api/v1/agents/console/chat/stop", false)]
     [InlineData("/api/v1/agents/console/upload", false)]
+    [InlineData("/api/v1/console/upload", false)]
+    [InlineData("/api/console/upload", false)]
     [InlineData("/api/v1/agents/analytics/turn-telemetry", false)]
     [InlineData("/api/v1/agents/mons/browser/focus", false)]
     [InlineData("/health", false)]
@@ -95,6 +97,17 @@ public sealed class ApiSecurityHardeningTests
     {
         var rel = OperatorWriteGuardMiddleware.Relative(path);
         (rel is not null && OperatorWriteGuardMiddleware.IsProtected(rel)).Should().Be(protectedRoute);
+    }
+
+    [Theory]
+    [InlineData("agents/mons/active-model", true)]
+    [InlineData("agents/mons/compact-context", true)]
+    [InlineData("agents/mons/toggle", true)]
+    [InlineData("agents/iam/revoke", false)]
+    [InlineData("mcps/x/toggle", false)]
+    public void OperatorWriteGuard_AllowsAuthenticatedUserOnOwnedAgentWriteRoutes(string rel, bool expected)
+    {
+        OperatorWriteGuardMiddleware.IsUserOwnedAgentWrite(rel).Should().Be(expected);
     }
 
     [Theory]

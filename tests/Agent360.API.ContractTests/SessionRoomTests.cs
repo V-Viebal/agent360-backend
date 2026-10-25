@@ -841,4 +841,45 @@ public class SessionRoomTests
         continuityContext.Should().NotBeNullOrWhiteSpace();
         continuityContext.Should().Contain("Khung báo giá B2B và truyền thông dựa trên ngữ cảnh phiên solo trước");
     }
+
+    [Fact]
+    public async Task ManagerHostRepresentativeGovernance_DecidesHostSelfExecution_AndAlwaysGuaranteesHostAsFinalRoomSynthesizer()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient();
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-host-rep-governance-01";
+        await orchestrator.EnsureRoomAsync("mons", chatId, "zen", chatId, ct, ["ken"]);
+
+        // Case 1: Request in @mons session only covers Sales (@zen) + Product (@ken), NOT @mons Dev/Infra specialty.
+        // Manager decides: @mons does NOT need to self-execute ("synthesize_only"), but is GUARANTEED as SynthesisOwnerId ("mons") to synthesize after Room is done!
+        var synthOnlyQuery = "@zen @ken lên bảng báo giá đại lý B2B và danh mục user story nghiệm thu sản phẩm";
+        var synthOnlyDecision = orchestrator.DecideRoomCollaboratorsForTurn("mons", chatId, chatId, synthOnlyQuery);
+        synthOnlyDecision.ShouldUseRoom.Should().BeTrue();
+        synthOnlyDecision.SynthesisOwnerId.Should().Be("mons");
+        synthOnlyDecision.HostShouldSelfExecute.Should().BeFalse();
+        synthOnlyDecision.HostExecutionRole.Should().Be("synthesize_only");
+
+        var room = roomStore.GetByChat("mons", chatId)!;
+        var synthOnlyBrief = orchestrator.BuildManagerSynthesisBrief(room, synthOnlyQuery, synthOnlyDecision, []);
+        synthOnlyBrief.Should().Contain("[KHÔNG CẦN TỰ CHẠY LẶP LẠI]");
+        synthOnlyBrief.Should().Contain("[ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]");
+
+        // Case 2: Request in @mons session covers Sales (@zen) AND Backend/Docker Architecture (@mons specialty).
+        // Manager decides: @mons BOTH self-executes its own specialty ("co_execute_and_synthesize") AND acts as the Room Representative synthesizer ("mons")!
+        var coExecQuery = "@zen báo giá gói B2B và thiết kế kiến trúc backend API database docker deploy trên server";
+        var coExecDecision = orchestrator.DecideRoomCollaboratorsForTurn("mons", chatId, chatId, coExecQuery);
+        coExecDecision.ShouldUseRoom.Should().BeTrue();
+        coExecDecision.SynthesisOwnerId.Should().Be("mons");
+        coExecDecision.HostShouldSelfExecute.Should().BeTrue();
+        coExecDecision.HostExecutionRole.Should().Be("co_execute_and_synthesize");
+
+        var coExecBrief = orchestrator.BuildManagerSynthesisBrief(room, coExecQuery, coExecDecision, []);
+        coExecBrief.Should().Contain("[TỰ THỰC THI PHẦN VIỆC CỦA CHỦ SESSION]");
+        coExecBrief.Should().Contain("[ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]");
+    }
 }

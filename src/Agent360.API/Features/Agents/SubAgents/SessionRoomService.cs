@@ -132,7 +132,11 @@ public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("assigned_agents")] IReadOnlyList<string>? AssignedAgents = null,
     [property: JsonPropertyName("auto_recruited_collaborators")] IReadOnlyList<string>? AutoRecruitedCollaborators = null,
     [property: JsonPropertyName("adaptive_scores")] IReadOnlyDictionary<string, int>? AdaptiveScores = null,
-    [property: JsonPropertyName("suggested_collaborators")] IReadOnlyList<string>? SuggestedCollaborators = null);
+    [property: JsonPropertyName("suggested_collaborators")] IReadOnlyList<string>? SuggestedCollaborators = null,
+    [property: JsonPropertyName("synthesis_owner_id")] string? SynthesisOwnerId = null,
+    [property: JsonPropertyName("host_should_self_execute")] bool HostShouldSelfExecute = true,
+    [property: JsonPropertyName("host_execution_role")] string HostExecutionRole = "solo_execute_and_respond", // "co_execute_and_synthesize" | "synthesize_only" | "solo_execute_and_respond"
+    [property: JsonPropertyName("host_execution_focus")] string? HostExecutionFocus = null);
 
 public sealed record AdaptiveSpecialtyProfileDto(
     [property: JsonPropertyName("collaborator_id")] string CollaboratorId,
@@ -1834,6 +1838,10 @@ public sealed partial class SessionRoomOrchestrator(
                             selected_collaborators = decision.SelectedCollaborators,
                             suggested_collaborators = decision.SuggestedCollaborators,
                             adaptive_scores = decision.AdaptiveScores,
+                            synthesis_owner_id = decision.SynthesisOwnerId ?? host,
+                            host_should_self_execute = decision.HostShouldSelfExecute,
+                            host_execution_role = decision.HostExecutionRole,
+                            host_execution_focus = decision.HostExecutionFocus,
                             execution_strategy = decision.ExecutionStrategy,
                             reason = decision.Reason
                         }),
@@ -2731,14 +2739,19 @@ public sealed partial class SessionRoomOrchestrator(
         IReadOnlyList<SessionRoomTurn> collaboratorTurns)
     {
         var sb = new StringBuilder();
+        var hostRoleDesc = triageDecision.HostShouldSelfExecute
+            ? $"TỰ THỰC THI CHUYÊN MÔN + ĐẠI DIỆN ROOM TỔNG HỢP CUỐI ({triageDecision.HostExecutionFocus ?? DescribeAgentSpecialty(room.HostAgentId)})"
+            : $"ĐẠI DIỆN ROOM TỔNG HỢP CUỐI (Các chuyên viên khác trong Room đã chạy xong phần chuyên môn; @{room.HostAgentId} không cần tự chạy nhánh riêng mà tập trung tổng hợp toàn diện)";
+
         sb.AppendLine($"[BIÊN BẢN NGHIỆM THU & ĐIỀU PHỐI TỔNG HỢP TỪ AGENTTEAMS MANAGER (@{ManagerAgentId})]");
-        sb.AppendLine($"- Mã Room: {room.MatrixRoomId} | Chủ phòng tổng hợp cuối: @{room.HostAgentId} ({FriendlyAgentName(room.HostAgentId)})");
+        sb.AppendLine($"- Mã Room: {room.MatrixRoomId} | Người đại diện Room & Chủ session tổng hợp cuối (Ưu tiên cố định): @{room.HostAgentId} ({FriendlyAgentName(room.HostAgentId)})");
+        sb.AppendLine($"- Quyết định của Manager cho Chủ session (@{room.HostAgentId}): {hostRoleDesc}");
         sb.AppendLine($"- Chế độ điều phối: {triageDecision.Mode} (Độ tin cậy: {Math.Round(triageDecision.Confidence * 100)}%) — {triageDecision.Reason}");
         sb.AppendLine($"- Yêu cầu gốc của người dùng cần đáp ứng trọn vẹn: \"{cleanUserObjective}\"");
 
         if (collaboratorTurns.Count > 0)
         {
-            sb.AppendLine("- Kết quả kiểm định chất lượng từng chuyên viên trong Room:");
+            sb.AppendLine("- Kết quả kiểm định chất lượng từng chuyên viên trong Room (Đã chạy Done):");
             foreach (var ct in collaboratorTurns)
             {
                 var audit = ct.ManagerAudit;
@@ -2753,10 +2766,18 @@ public sealed partial class SessionRoomOrchestrator(
             }
         }
 
-        sb.AppendLine("- Chỉ thị của Manager dành cho Chủ phòng khi tổng hợp câu trả lời cuối:");
-        sb.AppendLine("  1. Kết hợp mạch lạc các góc nhìn chuyên môn đã được Manager nghiệm thu ở trên thành một phương án thống nhất, trả lời thẳng vào câu hỏi của người dùng.");
-        sb.AppendLine("  2. Loại bỏ mọi sự trùng lặp giữa các chuyên viên; làm nổi bật các đề xuất hành động cụ thể (Actionable Takeaways).");
-        sb.AppendLine("  3. Nếu các chuyên viên đang cần người dùng xác nhận thêm 1-2 thông tin phạm vi (ngành hàng, đối thủ, ngân sách), hãy gom lại thành 1 câu hỏi gợi mở ngắn gọn, lịch sự ở cuối bài.");
+        sb.AppendLine($"- Chỉ thị bắt buộc của Manager dành cho Chủ session (@{room.HostAgentId} — Người đại diện Room đưa ra phản hồi cuối sau khi cả Room đã chạy done):");
+        if (triageDecision.HostShouldSelfExecute)
+        {
+            sb.AppendLine($"  1. [TỰ THỰC THI PHẦN VIỆC CỦA CHỦ SESSION]: Manager quyết định yêu cầu này có phần việc thuộc chuyên môn của chính bạn (@{room.HostAgentId}: {triageDecision.HostExecutionFocus ?? DescribeAgentSpecialty(room.HostAgentId)}). Hãy thực thi và đóng góp góc nhìn chuyên môn của riêng bạn.");
+            sb.AppendLine($"  2. [ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]: Hợp nhất phần tự thực thi của bạn với toàn bộ kết quả đã nghiệm thu từ các agents khác trong Room thành một câu phản hồi tổng hợp cuối cùng hoàn chỉnh, mạch lạc nhất cho người dùng.");
+        }
+        else
+        {
+            sb.AppendLine($"  1. [KHÔNG CẦN TỰ CHẠY LẶP LẠI]: Manager quyết định các agents trong Room đã thực thi xong (done) toàn bộ các nhánh chuyên môn cần thiết; bạn (@{room.HostAgentId}) không cần tự chạy lại công cụ hay phân tích lại từ đầu.");
+            sb.AppendLine($"  2. [ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]: Với tư cách Chủ session kiêm Người đại diện Room, hãy ưu tiên đúc kết và tổng hợp các kết quả đã chạy xong từ các agents trong Room thành câu phản hồi cuối cùng thống nhất, trực diện nhất cho người dùng.");
+        }
+        sb.AppendLine("  3. Loại bỏ mọi sự trùng lặp giữa các chuyên viên; làm nổi bật các đề xuất hành động cụ thể (Actionable Takeaways) và gom các câu hỏi làm rõ phạm vi (nếu có) thành 1 ý ngắn gọn ở cuối bài.");
         return sb.ToString();
     }
 
@@ -2825,6 +2846,11 @@ public sealed partial class SessionRoomOrchestrator(
         ["gl-default"] =
         [
             "dữ liệu", "data", "analytics", "phân tích số liệu", "báo cáo", "dashboard", "bi", "tự động hóa", "automation", "workflow", "script", "thống kê"
+        ],
+        ["gm-boc"] =
+        [
+            "điều hành", "ban giám đốc", "phê duyệt", "quyết định", "chủ trương", "ngân sách tổng", "gia mộc",
+            "nhân sự", "chính sách", "worktime", "chấm công", "nghỉ phép", "nội quy", "định hướng chung"
         ]
     };
 
@@ -2941,7 +2967,117 @@ public sealed partial class SessionRoomOrchestrator(
     /// 2) Which specific collaborator agent(s) in the Room should be pulled in (filtering out low-signal secondary noise via Dominant Specialty Pruning).
     /// 3) Conversational momentum / Active Collaborator Affinity when drilling down into the latest collaborator's answer.
     /// </summary>
+    /// <summary>
+    /// Manager Decision on Session Owner (HostAgentId) Execution Role during a Multi-Agent Room Wave:
+    /// - The Session Owner is ALWAYS guaranteed to be the final synthesizer and Room Representative (SynthesisOwnerId = host) after all Room agents finish.
+    /// - Manager additionally decides whether the Session Owner should ALSO self-execute its own domain work ("co_execute_and_synthesize")
+    ///   or rely purely on the other collaborators' completed runs and synthesize ("synthesize_only").
+    /// </summary>
+    private (bool HostShouldSelfExecute, string HostExecutionRole, string HostExecutionFocus, int HostScore) DecideHostExecutionDirectiveForMultiAgentWave(
+        string host,
+        string userBodyText,
+        string? rawUserText,
+        IReadOnlyList<string> selectedCollaborators)
+    {
+        var (hostScore, hostMatchedKws, _) = EvaluateAdaptiveCollaboratorSpecialty(host, userBodyText, host);
+
+        // Check if the user explicitly @mentioned or naturally requested the Host agent alongside collaborators
+        bool hostExplicitlyMentioned = !string.IsNullOrWhiteSpace(rawUserText) &&
+            Regex.IsMatch(rawUserText, $@"(?:^|\s)@{Regex.Escape(host)}\b|(?:cùng\s+với|kết\s+hợp\s+với|cả)\s+@{Regex.Escape(host)}\b", RegexOptions.IgnoreCase);
+
+        if (!hostExplicitlyMentioned && AgentNaturalNamePatterns.TryGetValue(host, out var hostPatterns))
+        {
+            foreach (var pat in hostPatterns)
+            {
+                if (Regex.IsMatch(userBodyText, $@"\b(?:cả\s+|cùng\s+)?{Regex.Escape(pat)}\b", RegexOptions.IgnoreCase))
+                {
+                    hostExplicitlyMentioned = true;
+                    break;
+                }
+            }
+        }
+
+        bool shouldSelfExecute = hostExplicitlyMentioned || hostScore >= 4;
+        if (shouldSelfExecute)
+        {
+            var focus = BuildCollaboratorFocusBrief(host, hostMatchedKws);
+            return (
+                HostShouldSelfExecute: true,
+                HostExecutionRole: "co_execute_and_synthesize",
+                HostExecutionFocus: $"Chủ session @{host} vừa tự thực thi phần chuyên môn riêng ({focus}) vừa đại diện Room tổng hợp kết quả cuối từ @{string.Join(", @", selectedCollaborators)} sau khi cả Room chạy xong.",
+                HostScore: Math.Max(hostScore, hostExplicitlyMentioned ? 6 : hostScore));
+        }
+
+        return (
+            HostShouldSelfExecute: false,
+            HostExecutionRole: "synthesize_only",
+            HostExecutionFocus: $"Chủ session @{host} không cần tự chạy nhánh chuyên môn riêng (do @{string.Join(", @", selectedCollaborators)} đã đảm nhiệm), nhưng giữ quyền ưu tiên đại diện Room tổng hợp câu trả lời cuối cùng sau khi cả Room chạy done.",
+            HostScore: hostScore);
+    }
+
+    private HostRoomTriageDecision WithHostRepresentativeGovernance(
+        string host,
+        string userBodyText,
+        string? rawUserText,
+        HostRoomTriageDecision decision)
+    {
+        if (!decision.ShouldUseRoom || decision.SelectedCollaborators.Count == 0)
+        {
+            return decision with
+            {
+                SynthesisOwnerId = host,
+                HostShouldSelfExecute = true,
+                HostExecutionRole = "solo_execute_and_respond",
+                HostExecutionFocus = $"Chủ session @{host} trực tiếp tự thực thi và đại diện phiên đưa ra câu trả lời cuối cùng."
+            };
+        }
+
+        var (selfExec, execRole, execFocus, hostScore) = DecideHostExecutionDirectiveForMultiAgentWave(
+            host, userBodyText, rawUserText, decision.SelectedCollaborators);
+
+        var updatedFocuses = decision.CollaboratorFocuses is not null
+            ? new Dictionary<string, string>(decision.CollaboratorFocuses, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        updatedFocuses[host] = execFocus;
+
+        var updatedScores = decision.AdaptiveScores is not null
+            ? new Dictionary<string, int>(decision.AdaptiveScores, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (hostScore > 0) updatedScores[host] = hostScore;
+
+        var hostRoleSummary = selfExec
+            ? $"Chủ session @{host} được Manager phân định vừa tự chạy phần chuyên môn riêng vừa đại diện Room tổng hợp cuối sau khi cả Room chạy done"
+            : $"Chủ session @{host} được Manager phân định không cần tự chạy nhánh riêng mà đại diện Room tổng hợp câu trả lời cuối cùng sau khi @{string.Join(", @", decision.SelectedCollaborators)} chạy done";
+
+        var enrichedReason = decision.Reason.EndsWith('.')
+            ? $"{decision.Reason[..^1]} ({hostRoleSummary})."
+            : $"{decision.Reason} ({hostRoleSummary}).";
+
+        return decision with
+        {
+            Reason = enrichedReason,
+            CollaboratorFocuses = updatedFocuses,
+            AdaptiveScores = updatedScores.Count > 0 ? updatedScores : decision.AdaptiveScores,
+            SynthesisOwnerId = host,
+            HostShouldSelfExecute = selfExec,
+            HostExecutionRole = execRole,
+            HostExecutionFocus = execFocus
+        };
+    }
+
     public HostRoomTriageDecision DecideRoomCollaboratorsForTurn(
+        string hostAgentId,
+        string hostChatId,
+        string? hostSessionId,
+        string? rawUserText,
+        IReadOnlyList<string>? explicitMentions = null)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var coreDecision = DecideRoomCollaboratorsForTurnCore(hostAgentId, hostChatId, hostSessionId, rawUserText, explicitMentions);
+        return WithHostRepresentativeGovernance(host, (rawUserText ?? "").Trim(), rawUserText, coreDecision);
+    }
+
+    private HostRoomTriageDecision DecideRoomCollaboratorsForTurnCore(
         string hostAgentId,
         string hostChatId,
         string? hostSessionId,

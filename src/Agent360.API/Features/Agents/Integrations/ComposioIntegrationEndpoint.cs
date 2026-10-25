@@ -12,11 +12,11 @@ namespace Agent360.API.Features.Agents.Integrations;
 
 public sealed class ComposioIntegrationEndpoint : IEndpoint
 {
-    private const string ComposioMcpUrl = "https://connect.composio.dev/mcp";
+    private const string ComposioMcpHubUrl = "https://connect.composio.dev/mcp";
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
-        // 1. Get MCP clients for an agent (proxy to QwenPaw /api/mcp with X-Agent-Id)
+        // 1. Get MCP clients for an agent (proxy to QwenPaw /api/agents/{agent}/mcp with X-Agent-Id)
         routeBuilder.MapGet(
             "mcp",
             async (
@@ -43,8 +43,6 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                     return Results.Ok(new JsonArray());
                 }
 
-                // Same cache the background warmer and the agent proxy use: answer instantly when warm,
-                // fall back to the last good copy when the runtime is slow or down.
                 var key = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(targetAgent, "mcp");
                 if (cache.TryGetValue(key, out Agent360.API.Features.Agents.Endpoints.CachedResponse? fresh) && fresh is not null)
                 {
@@ -82,13 +80,18 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
             .WithSummary("List MCP clients configured on an agent")
             .AllowAnonymous();
 
-        // 2. Connect Composio Tool / App: Registers MCP driver card and materializes dedicated Skill with Dynamic Schema Tool Discovery
+        // 2. Connect Composio Tool / App:
+        //    - Uses Composio MANAGE_CONNECTIONS to initiate authentication / get redirect_url
+        //    - Discovers tools from dedicated MCP endpoint (https://connect.composio.dev/mcp/{appSlug})
+        //    - Registers the app independently into QwenPaw agent MCP layer (/api/agents/{agentId}/mcp)
+        //    - Provisions matching skill in agent workspace with dynamic schemas
         routeBuilder.MapPost(
             "integrations/composio/connect",
             async (
                 [FromBody] ComposioConnectRequest request,
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
+                IMemoryCache cache,
                 CancellationToken ct) =>
             {
                 if (string.IsNullOrWhiteSpace(request.AppSlug))
@@ -102,8 +105,7 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                     targetAgent = targetAgent.Split(':').Last();
                 }
 
-                // Resolve per-agent isolated credential from Infisical / process environment
-                var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent);
+                var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent, allowWorkspaceFallback: true);
                 if (string.IsNullOrWhiteSpace(effectiveToken))
                 {
                     return Results.Problem(
@@ -112,25 +114,34 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                 }
                 var target = routing.ResolveTarget(targetAgent);
 
-                var clientKey = $"composio_{request.AppSlug.ToLowerInvariant().Trim()}";
                 var displayName = request.AppSlug.ToLowerInvariant().Trim();
+                var clientKey = $"composio_{displayName}";
+                var appMcpUrl = $"https://connect.composio.dev/mcp/{displayName}";
 
-                // 2a. Call QwenPaw to register the MCP Driver Card
+                // 2a. Initiate connection via Composio Hub MCP protocol to obtain OAuth/credential redirect link
+                var connectionInfo = await InitiateComposioConnectionAsync(httpClient, displayName, effectiveToken, ct);
+
+                // 2b. Discover tools schema (prefer app-specific MCP endpoint, fallback to COMPOSIO_SEARCH_TOOLS)
+                var discoveredFunctions = await DiscoverComposioToolsAsync(httpClient, displayName, effectiveToken, ct);
+
+                // 2c. Register or update the app independently in QwenPaw Agent MCP layer
+                var mcpClientPayload = new
+                {
+                    name = clientKey,
+                    description = $"Composio {displayName} integration for {targetAgent}",
+                    transport = "sse",
+                    url = appMcpUrl,
+                    headers = new Dictionary<string, string>
+                    {
+                        ["Authorization"] = $"Bearer {effectiveToken}"
+                    },
+                    enabled = true
+                };
+
                 var mcpCreateBody = new
                 {
                     client_key = clientKey,
-                    client = new
-                    {
-                        name = displayName,
-                        description = $"Composio {displayName} integration for {targetAgent}",
-                        transport = "sse",
-                        url = ComposioMcpUrl,
-                        headers = new Dictionary<string, string>
-                        {
-                            ["Authorization"] = $"Bearer {effectiveToken}"
-                        },
-                        enabled = true
-                    }
+                    client = mcpClientPayload
                 };
 
                 using var mcpReq = new HttpRequestMessage(HttpMethod.Post, AgentUri(target, "mcp"))
@@ -140,17 +151,24 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                 mcpReq.Headers.Add("X-Agent-Id", targetAgent);
 
                 var mcpResp = await SendRoutedAsync(httpClient, routing, targetAgent, mcpReq, ct);
-                if (!mcpResp.IsSuccessStatusCode && mcpResp.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                if (!mcpResp.IsSuccessStatusCode)
                 {
-                    using var toggleReq = new HttpRequestMessage(HttpMethod.Patch, AgentUri(target, $"mcp/toggle/{Uri.EscapeDataString(clientKey)}"));
-                    toggleReq.Headers.Add("X-Agent-Id", targetAgent);
-                    await SendRoutedAsync(httpClient, routing, targetAgent, toggleReq, ct);
+                    // If client already exists (400 or 409), update it via PUT /api/agents/{agent}/mcp/{clientKey}
+                    var mcpUpdateBody = new { client = mcpClientPayload };
+                    using var mcpPutReq = new HttpRequestMessage(HttpMethod.Put, AgentUri(target, $"mcp/{Uri.EscapeDataString(clientKey)}"))
+                    {
+                        Content = JsonContent.Create(mcpUpdateBody)
+                    };
+                    mcpPutReq.Headers.Add("X-Agent-Id", targetAgent);
+                    await SendRoutedAsync(httpClient, routing, targetAgent, mcpPutReq, ct);
                 }
 
-                // 2b. Dynamic Schema Discovery from Composio SSE endpoint (tools/call COMPOSIO_SEARCH_TOOLS)
-                var discoveredFunctions = await DiscoverComposioToolsAsync(httpClient, displayName, effectiveToken, ct);
+                // Invalidate agent MCP cache
+                var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(targetAgent, "mcp");
+                cache.Remove(cacheKey);
+                cache.Remove(cacheKey + ":last-good");
 
-                // 2c. Materialize skill in agent workspace with ## Available Functions populated
+                // 2d. Materialize / update skill in agent workspace with ## Available Functions populated
                 var skillName = $"composio-{displayName}";
                 var functionsMarkdown = FormatFunctionsMarkdown(discoveredFunctions);
 
@@ -167,9 +185,10 @@ version: 1.0.0
 This skill provides autonomous capabilities for interacting with {displayName} through the connected Composio MCP driver.
 
 ## Available Tool Protocol
-- **Transport**: Remote SSE via Composio Hub ({ComposioMcpUrl})
+- **Transport**: Remote SSE via Composio Dedicated MCP ({appMcpUrl})
 - **MCP Client Key**: `{clientKey}`
 - **Discovered Functions Count**: {discoveredFunctions.Count}
+- **Connection Status**: {connectionInfo.Status}
 
 ## Available Functions
 {functionsMarkdown}
@@ -177,7 +196,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
 ## Usage Guidelines
 1. When a task requires {displayName} actions, inspect available functions from `{clientKey}`.
 2. Execute requests with verified parameter schemas matching the discovered endpoints above.
-3. Handle return receipts and escalate authorization prompts when required.
+3. If authorization is required or connection is pending, prompt user with connection verification.
 ";
 
                 var createSkillBody = new
@@ -187,7 +206,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                     enable = true
                 };
 
-                using var skillReq = new HttpRequestMessage(HttpMethod.Post, AgentUri(target, "skills"))
+                using var skillReq = new HttpRequestMessage(HttpMethod.Post, new Uri($"{target.BaseUrl.TrimEnd('/')}/api/skills"))
                 {
                     Content = JsonContent.Create(createSkillBody)
                 };
@@ -196,8 +215,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 var skillResp = await SendRoutedAsync(httpClient, routing, targetAgent, skillReq, ct);
                 var skillCreated = skillResp.IsSuccessStatusCode;
 
-                // If already existed (409 conflict), update via PUT /api/skills/save
-                if (!skillCreated && skillResp.StatusCode == System.Net.HttpStatusCode.Conflict)
+                if (!skillCreated && (skillResp.StatusCode == System.Net.HttpStatusCode.Conflict || skillResp.StatusCode == System.Net.HttpStatusCode.BadRequest))
                 {
                     var saveSkillBody = new
                     {
@@ -205,7 +223,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                         content = skillContent,
                         overwrite = true
                     };
-                    using var saveReq = new HttpRequestMessage(HttpMethod.Put, AgentUri(target, "skills/save"))
+                    using var saveReq = new HttpRequestMessage(HttpMethod.Put, new Uri($"{target.BaseUrl.TrimEnd('/')}/api/skills/save"))
                     {
                         Content = JsonContent.Create(saveSkillBody)
                     };
@@ -217,7 +235,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 // Ensure skill is enabled
                 try
                 {
-                    using var enableReq = new HttpRequestMessage(HttpMethod.Post, AgentUri(target, $"skills/{Uri.EscapeDataString(skillName)}/enable"));
+                    using var enableReq = new HttpRequestMessage(HttpMethod.Post, new Uri($"{target.BaseUrl.TrimEnd('/')}/api/skills/{Uri.EscapeDataString(skillName)}/enable"));
                     enableReq.Headers.Add("X-Agent-Id", targetAgent);
                     await SendRoutedAsync(httpClient, routing, targetAgent, enableReq, ct);
                 }
@@ -234,6 +252,8 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                     skill_name = skillName,
                     skill_provisioned = skillCreated,
                     tools_discovered_count = discoveredFunctions.Count,
+                    redirect_url = connectionInfo.RedirectUrl,
+                    status = connectionInfo.Status,
                     message = $"Successfully connected {displayName} to {targetAgent} and provisioned skill {skillName} with {discoveredFunctions.Count} discovered functions"
                 });
             })
@@ -263,7 +283,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                     targetAgent = targetAgent.Split(':').Last();
                 }
 
-                var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent);
+                var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent, allowWorkspaceFallback: true);
                 if (string.IsNullOrWhiteSpace(effectiveToken))
                 {
                     return Results.Problem(
@@ -272,8 +292,9 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 }
                 var target = routing.ResolveTarget(targetAgent);
 
-                var clientKey = $"composio_{request.AppSlug.ToLowerInvariant().Trim()}";
                 var displayName = request.AppSlug.ToLowerInvariant().Trim();
+                var clientKey = $"composio_{displayName}";
+                var appMcpUrl = $"https://connect.composio.dev/mcp/{displayName}";
 
                 // Dynamic Re-Discovery from SSE
                 var discoveredFunctions = await DiscoverComposioToolsAsync(httpClient, displayName, effectiveToken, ct);
@@ -294,7 +315,7 @@ version: 1.0.0
 This skill provides autonomous capabilities for interacting with {displayName} through the connected Composio MCP driver.
 
 ## Available Tool Protocol
-- **Transport**: Remote SSE via Composio Hub ({ComposioMcpUrl})
+- **Transport**: Remote SSE via Composio Dedicated MCP ({appMcpUrl})
 - **MCP Client Key**: `{clientKey}`
 - **Discovered Functions Count**: {discoveredFunctions.Count}
 - **Last Refreshed At**: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC
@@ -315,7 +336,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                     overwrite = true
                 };
 
-                using var saveReq = new HttpRequestMessage(HttpMethod.Put, AgentUri(target, "skills/save"))
+                using var saveReq = new HttpRequestMessage(HttpMethod.Put, new Uri($"{target.BaseUrl.TrimEnd('/')}/api/skills/save"))
                 {
                     Content = JsonContent.Create(saveSkillBody)
                 };
@@ -347,6 +368,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 [FromHeader(Name = "X-Agent-Id")] string? agentIdHeader,
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
+                IMemoryCache cache,
                 CancellationToken ct) =>
             {
                 var targetAgent = !string.IsNullOrWhiteSpace(agentIdHeader) ? agentIdHeader : "mons";
@@ -366,13 +388,18 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                     return Results.StatusCode((int)resp.StatusCode);
                 }
 
+                // Invalidate agent MCP cache
+                var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(targetAgent, "mcp");
+                cache.Remove(cacheKey);
+                cache.Remove(cacheKey + ":last-good");
+
                 if (clientKey.StartsWith("composio_"))
                 {
                     var appSlug = clientKey.Substring("composio_".Length);
                     var skillName = $"composio-{appSlug}";
                     try
                     {
-                        using var skillDelReq = new HttpRequestMessage(HttpMethod.Delete, AgentUri(target, $"skills/{Uri.EscapeDataString(skillName)}"));
+                        using var skillDelReq = new HttpRequestMessage(HttpMethod.Delete, new Uri($"{target.BaseUrl.TrimEnd('/')}/api/skills/{Uri.EscapeDataString(skillName)}"));
                         skillDelReq.Headers.Add("X-Agent-Id", targetAgent);
                         await SendRoutedAsync(httpClient, routing, targetAgent, skillDelReq, ct);
                     }
@@ -391,7 +418,6 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             .AllowAnonymous();
     }
 
-
     private static IResult? StaleOr(IMemoryCache cache, string key, HttpContext http)
     {
         if (!cache.TryGetValue(key + ":last-good", out Agent360.API.Features.Agents.Endpoints.CachedResponse? stale) || stale is null)
@@ -407,7 +433,6 @@ This skill provides autonomous capabilities for interacting with {displayName} t
 
     private static async Task<HttpResponseMessage> SendRoutedAsync(HttpClient httpClient, IFleetInstanceRoutingService routing, string agentId, HttpRequestMessage request, CancellationToken ct)
     {
-        // Re-issue through the fleet router so auth, internal endpoint and public failover apply.
         var target = routing.ResolveTarget(agentId);
         var relative = request.RequestUri!.AbsolutePath.Replace("/api/", "", StringComparison.Ordinal).TrimStart('/') + request.RequestUri.Query;
         var body = request.Content is null ? null : await request.Content.ReadAsByteArrayAsync(ct);
@@ -427,10 +452,132 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             ct: ct);
     }
 
+    private static async Task<ComposioConnectionResult> InitiateComposioConnectionAsync(HttpClient client, string appSlug, string token, CancellationToken ct)
+    {
+        try
+        {
+            var serialized = JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                method = "tools/call",
+                @params = new
+                {
+                    name = "COMPOSIO_MANAGE_CONNECTIONS",
+                    arguments = new { toolkits = new[] { appSlug } }
+                },
+                id = 1
+            });
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, ComposioMcpHubUrl)
+            {
+                Content = new StringContent(serialized, System.Text.Encoding.UTF8, "application/json")
+            };
+            req.Headers.Add("Authorization", $"Bearer {token}");
+            req.Headers.Add("Accept", "application/json, text/event-stream");
+
+            using var resp = await client.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return new ComposioConnectionResult(null, "error");
+            }
+
+            var rawStream = await resp.Content.ReadAsStringAsync(ct);
+            foreach (var line in rawStream.Split((char)10, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (line.StartsWith("data: "))
+                {
+                    var dataStr = line.Substring(6).Trim();
+                    using var doc = JsonDocument.Parse(dataStr);
+                    if (doc.RootElement.TryGetProperty("result", out var resultEl) &&
+                        resultEl.TryGetProperty("content", out var contentArray) &&
+                        contentArray.GetArrayLength() > 0)
+                    {
+                        var textJson = contentArray[0].GetProperty("text").GetString();
+                        if (!string.IsNullOrWhiteSpace(textJson))
+                        {
+                            using var innerDoc = JsonDocument.Parse(textJson);
+                            if (innerDoc.RootElement.TryGetProperty("data", out var dataEl) &&
+                                dataEl.TryGetProperty("results", out var resultsEl) &&
+                                resultsEl.TryGetProperty(appSlug, out var appResEl))
+                            {
+                                var redirectUrl = appResEl.TryGetProperty("redirect_url", out var r) ? r.GetString() : null;
+                                var status = appResEl.TryGetProperty("status", out var s) ? s.GetString() : "initiated";
+                                return new ComposioConnectionResult(redirectUrl, status ?? "initiated");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Fallback gracefully
+        }
+
+        return new ComposioConnectionResult(null, "unknown");
+    }
+
     private static async Task<List<DiscoveredToolInfo>> DiscoverComposioToolsAsync(HttpClient client, string appSlug, string token, CancellationToken ct)
     {
         var results = new List<DiscoveredToolInfo>();
 
+        // 1. Try direct app-specific MCP endpoint: https://connect.composio.dev/mcp/{appSlug}
+        try
+        {
+            var appMcpEndpoint = $"https://connect.composio.dev/mcp/{appSlug}";
+            var serializedList = JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                method = "tools/list",
+                @params = new { },
+                id = 1
+            });
+
+            using var directReq = new HttpRequestMessage(HttpMethod.Post, appMcpEndpoint)
+            {
+                Content = new StringContent(serializedList, System.Text.Encoding.UTF8, "application/json")
+            };
+            directReq.Headers.Add("Authorization", $"Bearer {token}");
+            directReq.Headers.Add("Accept", "application/json, text/event-stream");
+
+            using var directResp = await client.SendAsync(directReq, ct);
+            if (directResp.IsSuccessStatusCode)
+            {
+                var raw = await directResp.Content.ReadAsStringAsync(ct);
+                foreach (var line in raw.Split((char)10, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (line.StartsWith("data: "))
+                    {
+                        var dataStr = line.Substring(6).Trim();
+                        using var doc = JsonDocument.Parse(dataStr);
+                        if (doc.RootElement.TryGetProperty("result", out var resultEl) &&
+                            resultEl.TryGetProperty("tools", out var toolsArray) &&
+                            toolsArray.GetArrayLength() > 0)
+                        {
+                            foreach (var tool in toolsArray.EnumerateArray())
+                            {
+                                var name = tool.TryGetProperty("name", out var n) ? n.GetString() : "";
+                                var desc = tool.TryGetProperty("description", out var d) ? d.GetString() : "";
+                                if (!string.IsNullOrWhiteSpace(name))
+                                {
+                                    results.Add(new DiscoveredToolInfo(name, desc ?? ""));
+                                }
+                            }
+                            if (results.Count > 0)
+                            {
+                                return results;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // fallback to search
+        }
+
+        // 2. Fallback to COMPOSIO_SEARCH_TOOLS on hub
         try
         {
             var serialized = JsonSerializer.Serialize(new
@@ -445,7 +592,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 id = 1
             });
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, ComposioMcpUrl)
+            using var req = new HttpRequestMessage(HttpMethod.Post, ComposioMcpHubUrl)
             {
                 Content = new StringContent(serialized, System.Text.Encoding.UTF8, "application/json")
             };
@@ -502,9 +649,16 @@ This skill provides autonomous capabilities for interacting with {displayName} t
         }
 
         var sb = new System.Text.StringBuilder();
-        foreach (var fn in functions)
+        foreach (var fn in functions.Take(50))
         {
-            sb.AppendLine($"- **`{fn.Name}`**: {fn.Description}");
+            var cleanDesc = fn.Description.Replace("\r", "").Replace("\n", " ").Trim();
+            if (cleanDesc.Length > 160) cleanDesc = cleanDesc.Substring(0, 157) + "...";
+            sb.AppendLine($"- **`{fn.Name}`**: {cleanDesc}");
+        }
+        if (functions.Count > 50)
+        {
+            var prefix = functions[0].Name.Contains('_') ? functions[0].Name.Split('_')[0] : "TOOL";
+            sb.AppendLine($"- _... and {functions.Count - 50} more tools available via `{prefix}` protocol._");
         }
         return sb.ToString().TrimEnd();
     }
@@ -513,3 +667,4 @@ This skill provides autonomous capabilities for interacting with {displayName} t
 public sealed record ComposioConnectRequest(string AppSlug, string? AgentId, string? Action);
 public sealed record ComposioRefreshSchemaRequest(string AppSlug, string? AgentId);
 public sealed record DiscoveredToolInfo(string Name, string Description);
+public sealed record ComposioConnectionResult(string? RedirectUrl, string Status);
