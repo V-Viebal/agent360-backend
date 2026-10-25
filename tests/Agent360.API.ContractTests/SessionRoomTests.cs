@@ -722,4 +722,60 @@ public class SessionRoomTests
         adaptiveDecision.AdaptiveScores.Should().NotBeNull();
         adaptiveDecision.AdaptiveScores!["zen"].Should().BeGreaterThan(0);
     }
+
+    [Fact]
+    public async Task AdaptiveSpecialtyTimeDecay_AgesOutStaleCampaignKeywords_WhilePreservingFreshCampaignKeywords()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var now = DateTimeOffset.UtcNow;
+        var staleTime = now.AddDays(-45); // > 3 half-lives (45 days old -> decay factor ~0.108, 2.0 * 0.108 = 0.21 < 0.5 -> rounds to 0)
+
+        var auditPass = new ManagerOutputAuditRecord(
+            Passed: true,
+            QualityScore: 0.95,
+            Verdict: "approved",
+            ChecklistPassed: ["substantive_output", "clean_identity_boundary"],
+            IssuesDetected: [],
+            ManagerDirective: "Approved",
+            AutoRetried: false);
+
+        var room = new SessionCollaborationRoom(
+            RoomId: "room_gm-boc_decay01",
+            MatrixRoomId: "!decay01:agentteams-gateway.hmz.one",
+            ElementRoomUrl: "https://chat.hmz.one/#/room/!decay01",
+            HostAgentId: "gm-boc",
+            HostChatId: "chat-decay-01",
+            HostSessionId: "chat-decay-01",
+            Participants:
+            [
+                new SessionRoomParticipant("gm-boc", "GM Bốc", "host", "@gm-default:agentteams-gateway.hmz.one", "idle", staleTime),
+                new SessionRoomParticipant("climax-default", "Climax Default", "collaborator", "@climax-default:agentteams-gateway.hmz.one", "completed", staleTime)
+            ],
+            Status: "completed",
+            ActiveCollaboratorId: null,
+            MaxRoomTurns: 4,
+            CurrentTurnCount: 4,
+            Turns:
+            [
+                new SessionRoomTurn("rt_old_req", 1, "gm-boc", "GM Bốc", "host", "request", "@climax-default thiết kế hộp bánh mooncake cổ truyền", "climax-default", staleTime),
+                new SessionRoomTurn("rt_old_rep", 2, "climax-default", "Climax Default", "collaborator", "collaborator_reply", "Phương án mooncake cổ truyền.", "gm-boc", staleTime, ManagerAudit: auditPass),
+                new SessionRoomTurn("rt_new_req", 3, "gm-boc", "GM Bốc", "host", "request", "@climax-default thiết kế bao bì sourdough artisanal", "climax-default", now),
+                new SessionRoomTurn("rt_new_rep", 4, "climax-default", "Climax Default", "collaborator", "collaborator_reply", "Phương án sourdough artisanal.", "gm-boc", now, ManagerAudit: auditPass)
+            ],
+            CreatedAt: staleTime,
+            UpdatedAt: now);
+
+        await roomStore.SaveAsync(room);
+
+        var profile = roomStore.GetAdaptiveSpecialtyProfile("climax-default", "gm-boc", now, halfLifeDays: 14.0);
+        profile.AuditedTurnsCount.Should().Be(2);
+        profile.DecayHalfLifeDays.Should().Be(14.0);
+        profile.AgedOutKeywordsCount.Should().BeGreaterThan(0);
+
+        // Stale 45-day-old campaign keyword ("mooncake") has aged out, while fresh keyword ("sourdough" / "artisanal") is active!
+        profile.LearnedKeywordWeights.Should().NotContainKey("mooncake");
+        profile.LearnedKeywordWeights.Should().ContainKey("sourdough");
+        profile.LearnedKeywordWeights["sourdough"].Should().Be(2);
+    }
 }

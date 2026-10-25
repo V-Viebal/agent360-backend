@@ -139,7 +139,9 @@ public sealed record AdaptiveSpecialtyProfileDto(
     [property: JsonPropertyName("average_quality_score")] double AverageQualityScore,
     [property: JsonPropertyName("approval_rate")] double ApprovalRate,
     [property: JsonPropertyName("reliability_bonus")] int ReliabilityBonus,
-    [property: JsonPropertyName("learned_keyword_weights")] IReadOnlyDictionary<string, int> LearnedKeywordWeights);
+    [property: JsonPropertyName("learned_keyword_weights")] IReadOnlyDictionary<string, int> LearnedKeywordWeights,
+    [property: JsonPropertyName("decay_half_life_days")] double DecayHalfLifeDays = 14.0,
+    [property: JsonPropertyName("aged_out_keywords_count")] int AgedOutKeywordsCount = 0);
 
 
 public static class AgentReactionClassifier
@@ -558,19 +560,37 @@ public sealed class SessionRoomStore
         "em", "bạn", "mình", "tụi", "chúng", "phân", "tích", "kiểm", "tra", "xem", "làm", "gì"
     };
 
-    public AdaptiveSpecialtyProfileDto GetAdaptiveSpecialtyProfile(string collaboratorId, string? hostAgentId = null)
+    public const double DefaultKeywordHalfLifeDays = 14.0;
+
+    public static double ComputeTimeDecayFactor(
+        DateTimeOffset turnCreatedAt,
+        DateTimeOffset referenceNow,
+        double halfLifeDays = DefaultKeywordHalfLifeDays)
+    {
+        if (halfLifeDays <= 0) return 1.0;
+        var ageDays = Math.Max(0.0, (referenceNow - turnCreatedAt).TotalDays);
+        return Math.Pow(0.5, ageDays / halfLifeDays);
+    }
+
+    public AdaptiveSpecialtyProfileDto GetAdaptiveSpecialtyProfile(
+        string collaboratorId,
+        string? hostAgentId = null,
+        DateTimeOffset? referenceNow = null,
+        double halfLifeDays = DefaultKeywordHalfLifeDays)
     {
         var normCollab = SubAgentService.NormalizeAgentId(collaboratorId).ToLowerInvariant();
+        var now = referenceNow ?? DateTimeOffset.UtcNow;
         var rooms = string.IsNullOrWhiteSpace(hostAgentId)
             ? ConsolidateRoomsList(_roomsByChatKey.Values)
             : ListByHostAgent(hostAgentId);
 
         int auditedCount = 0;
         int passedCount = 0;
-        double qualitySum = 0;
-        var keywordWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        double weightedQualitySum = 0;
+        double decayWeightSum = 0;
+        var rawKeywordScores = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var room in rooms)
+        foreach (var room in rooms.OrderBy(r => r.CreatedAt))
         {
             string? activeWaveRequestText = null;
             foreach (var turn in room.Turns.OrderBy(t => t.TurnNo))
@@ -586,9 +606,11 @@ public sealed class SessionRoomStore
                     turn.ManagerAudit is not null)
                 {
                     var audit = turn.ManagerAudit;
+                    double decay = ComputeTimeDecayFactor(turn.CreatedAt, now, halfLifeDays);
                     auditedCount++;
-                    qualitySum += audit.QualityScore;
                     if (audit.Passed) passedCount++;
+                    weightedQualitySum += audit.QualityScore * decay;
+                    decayWeightSum += decay;
 
                     if (!string.IsNullOrWhiteSpace(activeWaveRequestText))
                     {
@@ -598,23 +620,25 @@ public sealed class SessionRoomStore
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .ToList();
 
-                        int delta = audit.Passed && audit.QualityScore >= 0.85 ? 2 : (!audit.Passed ? -1 : 1);
+                        double baseDelta = audit.Passed && audit.QualityScore >= 0.85 ? 2.0 : (!audit.Passed ? -1.0 : 1.0);
+                        double decayedDelta = baseDelta * decay;
+
                         foreach (var tok in tokens)
                         {
-                            var nextW = Math.Clamp(keywordWeights.GetValueOrDefault(tok) + delta, 0, 6);
-                            if (nextW > 0) keywordWeights[tok] = nextW;
-                            else keywordWeights.Remove(tok);
+                            var nextW = Math.Clamp(rawKeywordScores.GetValueOrDefault(tok) + decayedDelta, 0.0, 6.0);
+                            if (nextW > 0.01) rawKeywordScores[tok] = nextW;
+                            else rawKeywordScores.Remove(tok);
                         }
 
-                        // Also learn high-signal bigrams from approved objectives
-                        if (delta > 0 && tokens.Count >= 2)
+                        // Also learn high-signal bigrams from approved objectives with time-decay aging
+                        if (baseDelta > 0 && tokens.Count >= 2)
                         {
                             for (int i = 0; i < Math.Min(tokens.Count - 1, 8); i++)
                             {
                                 var bigram = $"{tokens[i]} {tokens[i + 1]}";
                                 if (activeWaveRequestText.Contains(bigram, StringComparison.OrdinalIgnoreCase))
                                 {
-                                    keywordWeights[bigram] = Math.Clamp(keywordWeights.GetValueOrDefault(bigram) + delta, 1, 6);
+                                    rawKeywordScores[bigram] = Math.Clamp(rawKeywordScores.GetValueOrDefault(bigram) + decayedDelta, 0.01, 6.0);
                                 }
                             }
                         }
@@ -623,7 +647,22 @@ public sealed class SessionRoomStore
             }
         }
 
-        double avgQuality = auditedCount > 0 ? Math.Round(qualitySum / auditedCount, 2) : 0.9;
+        var keywordWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        int agedOutCount = 0;
+        foreach (var (kw, rawScore) in rawKeywordScores)
+        {
+            int rounded = (int)Math.Round(rawScore, MidpointRounding.AwayFromZero);
+            if (rounded >= 1)
+            {
+                keywordWeights[kw] = Math.Clamp(rounded, 1, 6);
+            }
+            else
+            {
+                agedOutCount++;
+            }
+        }
+
+        double avgQuality = decayWeightSum > 0 ? Math.Round(weightedQualitySum / decayWeightSum, 2) : 0.9;
         double approvalRate = auditedCount > 0 ? Math.Round((double)passedCount / auditedCount, 2) : 1.0;
         int reliabilityBonus = 0;
         if (auditedCount > 0)
@@ -639,7 +678,9 @@ public sealed class SessionRoomStore
             AverageQualityScore: avgQuality,
             ApprovalRate: approvalRate,
             ReliabilityBonus: reliabilityBonus,
-            LearnedKeywordWeights: keywordWeights);
+            LearnedKeywordWeights: keywordWeights,
+            DecayHalfLifeDays: halfLifeDays,
+            AgedOutKeywordsCount: agedOutCount);
     }
 
     public IReadOnlyList<AdaptiveSpecialtyProfileDto> GetAllAdaptiveSpecialtyProfiles(string? hostAgentId = null)
