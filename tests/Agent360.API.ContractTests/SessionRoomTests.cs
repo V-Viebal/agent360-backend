@@ -665,4 +665,61 @@ public class SessionRoomTests
         updatedRoom.RoomId.Should().Be(initialRoom.RoomId);
         updatedRoom.Participants.Select(p => p.AgentId).Should().Contain("planthy-pm");
     }
+
+    [Fact]
+    public async Task ManagerAdaptiveSpecialtyLearning_LearnsNovelProjectKeywordsFromQualityGate_AndRoutesSubsequentTurns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            NextReply = "- **Phân tích dòng sản phẩm Sourdough Kombucha:**\n  + Định mức lên men tự nhiên đạt chuẩn."
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-adaptive-learning-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["planthy-pm"]);
+
+        // 1. Wave 1: Explicit @zen call on a novel project topic ("sourdough kombucha") not in static keywords
+        await orchestrator.ExecuteCollaboratorTurnAsync(
+            "gm-boc",
+            chatId,
+            "zen",
+            "@zen đánh giá dòng sourdough kombucha",
+            null,
+            chatId,
+            ct);
+        await orchestrator.RecordHostSynthesisTurnAsync(
+            "gm-boc",
+            chatId,
+            "Đã tổng hợp đánh giá sourdough kombucha.",
+            null,
+            null,
+            chatId,
+            ct);
+
+        // 2. Verify AdaptiveSpecialtyProfile learned "sourdough" and "kombucha" from the approved manager_quality_gate audit!
+        var zenProfile = roomStore.GetAdaptiveSpecialtyProfile("zen", "gm-boc");
+        zenProfile.AuditedTurnsCount.Should().Be(1);
+        zenProfile.ApprovalRate.Should().Be(1.0);
+        zenProfile.ReliabilityBonus.Should().Be(2);
+        zenProfile.LearnedKeywordWeights.Should().ContainKey("sourdough");
+        zenProfile.LearnedKeywordWeights.Should().ContainKey("kombucha");
+
+        // 3. Wave 2: User asks about "sourdough kombucha" WITHOUT @mention and WITHOUT static sales keywords
+        // -> AgentTeams Manager uses the learned keyword weights to route directly to @zen!
+        var adaptiveDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc",
+            chatId,
+            chatId,
+            "Kiểm tra lại thông số sourdough kombucha giúp anh nhé");
+
+        adaptiveDecision.TriageOwnerId.Should().Be("agentteams-manager");
+        adaptiveDecision.ShouldUseRoom.Should().BeTrue();
+        adaptiveDecision.SelectedCollaborators.Should().Equal(["zen"]);
+        adaptiveDecision.AdaptiveScores.Should().NotBeNull();
+        adaptiveDecision.AdaptiveScores!["zen"].Should().BeGreaterThan(0);
+    }
 }

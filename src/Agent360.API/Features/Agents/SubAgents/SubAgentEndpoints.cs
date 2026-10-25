@@ -92,6 +92,19 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("ListAgentSessionRooms")
             .WithSummary("List all AgentTeams collaboration rooms bound to chat sessions of this host agent");
 
+        agents.MapGet("rooms/adaptive-profiles", (string agentId, HttpContext http) =>
+            {
+                var roomStore = http.RequestServices.GetService<SessionRoomStore>() ?? new SessionRoomStore();
+                return Results.Ok(new
+                {
+                    host_agent_id = SubAgentService.NormalizeAgentId(agentId),
+                    manager_agent_id = SessionRoomOrchestrator.ManagerAgentId,
+                    profiles = roomStore.GetAllAdaptiveSpecialtyProfiles(agentId)
+                });
+            })
+            .WithName("GetAdaptiveRoomSpecialtyProfiles")
+            .WithSummary("Retrieve adaptive collaborator specialty weights and quality-gate reliability profiles learned by AgentTeams Manager");
+
         agents.MapGet("chats/{chatId}/room", async (string agentId, string chatId, [FromQuery] bool? ensure, HttpContext http, CancellationToken ct) =>
             {
                 var roomStore = http.RequestServices.GetService<SessionRoomStore>() ?? new SessionRoomStore();

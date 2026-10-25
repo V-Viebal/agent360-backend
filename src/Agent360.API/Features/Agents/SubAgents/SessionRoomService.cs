@@ -130,7 +130,16 @@ public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("execution_strategy")] string ExecutionStrategy = "parallel",
     [property: JsonPropertyName("triage_owner_id")] string TriageOwnerId = "agentteams-manager",
     [property: JsonPropertyName("assigned_agents")] IReadOnlyList<string>? AssignedAgents = null,
-    [property: JsonPropertyName("auto_recruited_collaborators")] IReadOnlyList<string>? AutoRecruitedCollaborators = null);
+    [property: JsonPropertyName("auto_recruited_collaborators")] IReadOnlyList<string>? AutoRecruitedCollaborators = null,
+    [property: JsonPropertyName("adaptive_scores")] IReadOnlyDictionary<string, int>? AdaptiveScores = null);
+
+public sealed record AdaptiveSpecialtyProfileDto(
+    [property: JsonPropertyName("collaborator_id")] string CollaboratorId,
+    [property: JsonPropertyName("audited_turns_count")] int AuditedTurnsCount,
+    [property: JsonPropertyName("average_quality_score")] double AverageQualityScore,
+    [property: JsonPropertyName("approval_rate")] double ApprovalRate,
+    [property: JsonPropertyName("reliability_bonus")] int ReliabilityBonus,
+    [property: JsonPropertyName("learned_keyword_weights")] IReadOnlyDictionary<string, int> LearnedKeywordWeights);
 
 
 public static class AgentReactionClassifier
@@ -538,6 +547,108 @@ public sealed class SessionRoomStore
         var norm = SubAgentService.NormalizeAgentId(hostAgentId);
         return ConsolidateRoomsList(_roomsByChatKey.Values.Where(r => string.Equals(r.HostAgentId, norm, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(r => r.UpdatedAt)
+            .ToList();
+    }
+
+    private static readonly HashSet<string> VietnameseStopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "nhưng", "hoặc", "của", "trong", "ngoài", "trên", "dưới", "cùng", "giúp", "nhé", "nha",
+        "thêm", "cho", "với", "các", "những", "một", "hai", "này", "đó", "đây", "khi", "nếu",
+        "thì", "mà", "là", "và", "để", "từ", "về", "theo", "như", "thế", "nào", "sao", "anh",
+        "em", "bạn", "mình", "tụi", "chúng", "phân", "tích", "kiểm", "tra", "xem", "làm", "gì"
+    };
+
+    public AdaptiveSpecialtyProfileDto GetAdaptiveSpecialtyProfile(string collaboratorId, string? hostAgentId = null)
+    {
+        var normCollab = SubAgentService.NormalizeAgentId(collaboratorId).ToLowerInvariant();
+        var rooms = string.IsNullOrWhiteSpace(hostAgentId)
+            ? ConsolidateRoomsList(_roomsByChatKey.Values)
+            : ListByHostAgent(hostAgentId);
+
+        int auditedCount = 0;
+        int passedCount = 0;
+        double qualitySum = 0;
+        var keywordWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var room in rooms)
+        {
+            string? activeWaveRequestText = null;
+            foreach (var turn in room.Turns.OrderBy(t => t.TurnNo))
+            {
+                if (turn.Kind == "request" && !string.Equals(turn.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
+                {
+                    activeWaveRequestText = SessionRoomOrchestrator.StripCollaboratorMentions(turn.Text);
+                    continue;
+                }
+
+                if (turn.Kind == "collaborator_reply" &&
+                    string.Equals(SubAgentService.NormalizeAgentId(turn.AuthorId), normCollab, StringComparison.OrdinalIgnoreCase) &&
+                    turn.ManagerAudit is not null)
+                {
+                    var audit = turn.ManagerAudit;
+                    auditedCount++;
+                    qualitySum += audit.QualityScore;
+                    if (audit.Passed) passedCount++;
+
+                    if (!string.IsNullOrWhiteSpace(activeWaveRequestText))
+                    {
+                        var tokens = Regex.Matches(activeWaveRequestText.ToLowerInvariant(), @"[\p{L}\p{N}_\-]{4,}")
+                            .Select(m => m.Value)
+                            .Where(t => !VietnameseStopWords.Contains(t))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        int delta = audit.Passed && audit.QualityScore >= 0.85 ? 2 : (!audit.Passed ? -1 : 1);
+                        foreach (var tok in tokens)
+                        {
+                            var nextW = Math.Clamp(keywordWeights.GetValueOrDefault(tok) + delta, 0, 6);
+                            if (nextW > 0) keywordWeights[tok] = nextW;
+                            else keywordWeights.Remove(tok);
+                        }
+
+                        // Also learn high-signal bigrams from approved objectives
+                        if (delta > 0 && tokens.Count >= 2)
+                        {
+                            for (int i = 0; i < Math.Min(tokens.Count - 1, 8); i++)
+                            {
+                                var bigram = $"{tokens[i]} {tokens[i + 1]}";
+                                if (activeWaveRequestText.Contains(bigram, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    keywordWeights[bigram] = Math.Clamp(keywordWeights.GetValueOrDefault(bigram) + delta, 1, 6);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        double avgQuality = auditedCount > 0 ? Math.Round(qualitySum / auditedCount, 2) : 0.9;
+        double approvalRate = auditedCount > 0 ? Math.Round((double)passedCount / auditedCount, 2) : 1.0;
+        int reliabilityBonus = 0;
+        if (auditedCount > 0)
+        {
+            if (avgQuality >= 0.88 && approvalRate >= 0.8) reliabilityBonus = 2;
+            else if (avgQuality >= 0.75 && approvalRate >= 0.65) reliabilityBonus = 1;
+            else if (avgQuality < 0.6) reliabilityBonus = -2;
+        }
+
+        return new AdaptiveSpecialtyProfileDto(
+            CollaboratorId: normCollab,
+            AuditedTurnsCount: auditedCount,
+            AverageQualityScore: avgQuality,
+            ApprovalRate: approvalRate,
+            ReliabilityBonus: reliabilityBonus,
+            LearnedKeywordWeights: keywordWeights);
+    }
+
+    public IReadOnlyList<AdaptiveSpecialtyProfileDto> GetAllAdaptiveSpecialtyProfiles(string? hostAgentId = null)
+    {
+        var canonicalPool = new[] { "zen", "climax-default", "planthy-pm", "mons", "ken", "gm-gao", "gm-lua" };
+        return canonicalPool
+            .Select(c => GetAdaptiveSpecialtyProfile(c, hostAgentId))
+            .OrderByDescending(p => p.AuditedTurnsCount)
+            .ThenByDescending(p => p.AverageQualityScore)
             .ToList();
     }
 
@@ -2722,6 +2833,39 @@ public sealed partial class SessionRoomOrchestrator(
     public static int ScoreCollaboratorSpecialtyMatch(string collaboratorSlug, string? userText) =>
         EvaluateCollaboratorSpecialty(collaboratorSlug, userText).Score;
 
+    public (int TotalScore, List<string> MatchedKeywords, AdaptiveSpecialtyProfileDto Profile) EvaluateAdaptiveCollaboratorSpecialty(
+        string collaboratorSlug,
+        string? userText,
+        string? hostAgentId = null)
+    {
+        var (baseScore, matched) = EvaluateCollaboratorSpecialty(collaboratorSlug, userText);
+        var profile = roomStore.GetAdaptiveSpecialtyProfile(collaboratorSlug, hostAgentId);
+        if (string.IsNullOrWhiteSpace(userText))
+            return (baseScore, matched, profile);
+
+        var lower = userText.ToLowerInvariant();
+        int learnedBonus = 0;
+        foreach (var (kw, weight) in profile.LearnedKeywordWeights)
+        {
+            if (weight <= 0) continue;
+            if (lower.Contains(kw, StringComparison.OrdinalIgnoreCase))
+            {
+                learnedBonus += Math.Min(weight, 3);
+                if (!matched.Contains(kw, StringComparer.OrdinalIgnoreCase))
+                {
+                    matched.Add(kw);
+                }
+            }
+        }
+
+        int total = baseScore + Math.Min(learnedBonus, 6);
+        if (total > 0)
+        {
+            total = Math.Max(1, total + profile.ReliabilityBonus);
+        }
+        return (total, matched, profile);
+    }
+
     public static string DetermineWaveExecutionStrategy(IReadOnlyList<string> selectedCollaborators, string? userText)
     {
         if (selectedCollaborators.Count <= 1) return "sequential";
@@ -3008,12 +3152,14 @@ public sealed partial class SessionRoomOrchestrator(
             }
         }
 
-        // 6. Score each Collaborator in the Room by Domain Specialty Relevance + Dominant Specialty Pruning
+        // 6. Score each Collaborator in the Room by Domain Specialty Relevance + Adaptive Quality-Gate Learning + Dominant Specialty Pruning
+        var adaptiveScoresMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var evalList = roomCollaborators
             .Where(c => !excludedInRoom.Contains(c))
             .Select((collab, idx) =>
             {
-                var (score, matchedKws) = EvaluateCollaboratorSpecialty(collab, userBodyText);
+                var (score, matchedKws, _) = EvaluateAdaptiveCollaboratorSpecialty(collab, userBodyText, host);
+                if (score > 0) adaptiveScoresMap[collab] = score;
                 return (Collab: collab, Score: score, MatchedKeywords: matchedKws, Order: idx);
             })
             .Where(x => x.Score > 0)
@@ -3027,7 +3173,7 @@ public sealed partial class SessionRoomOrchestrator(
             .Select(x => x.Collab)
             .ToList();
 
-        // 6b. Manager Dynamic Specialist Recruitment:
+        // 6b. Manager Dynamic Specialist Recruitment (with Adaptive Quality-Gate Learning):
         // If no current Room member strongly covers the request's domain (topScore < 4), AgentTeams Manager scans the canonical specialist pool
         // and automatically recruits the top matching external specialist (Score >= 6) into the session's single Room!
         var autoRecruited = new List<string>();
@@ -3041,7 +3187,7 @@ public sealed partial class SessionRoomOrchestrator(
                             !excludedInRoom.Contains(c))
                 .Select(c =>
                 {
-                    var (sc, kws) = EvaluateCollaboratorSpecialty(c, userBodyText);
+                    var (sc, kws, _) = EvaluateAdaptiveCollaboratorSpecialty(c, userBodyText, host);
                     return (Collab: c, Score: sc, MatchedKeywords: kws);
                 })
                 .Where(x => x.Score >= 6)
@@ -3055,6 +3201,7 @@ public sealed partial class SessionRoomOrchestrator(
                 {
                     autoRecruited.Add(ext.Collab);
                     externalMatchedKeywords[ext.Collab] = ext.MatchedKeywords;
+                    adaptiveScoresMap[ext.Collab] = ext.Score;
                     if (!scoredCollaborators.Contains(ext.Collab, StringComparer.OrdinalIgnoreCase))
                     {
                         scoredCollaborators.Add(ext.Collab);
@@ -3108,7 +3255,8 @@ public sealed partial class SessionRoomOrchestrator(
                 ExecutionStrategy: DetermineWaveExecutionStrategy(scoredCollaborators, userBodyText),
                 TriageOwnerId: ManagerAgentId,
                 AssignedAgents: [.. scoredCollaborators, host],
-                AutoRecruitedCollaborators: autoRecruited.Count > 0 ? autoRecruited : null);
+                AutoRecruitedCollaborators: autoRecruited.Count > 0 ? autoRecruited : null,
+                AdaptiveScores: adaptiveScoresMap.Count > 0 ? adaptiveScoresMap : null);
         }
 
         // 7. Continuity Follow-up: If no specific domain keyword matched, but the latest wave asked the user for missing context/scope
