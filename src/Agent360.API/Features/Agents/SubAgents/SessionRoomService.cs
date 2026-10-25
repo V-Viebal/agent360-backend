@@ -109,8 +109,10 @@ public sealed record HostRoomTriageRequest(
 public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("should_use_room")] bool ShouldUseRoom,
     [property: JsonPropertyName("selected_collaborators")] IReadOnlyList<string> SelectedCollaborators,
-    [property: JsonPropertyName("mode")] string Mode, // "no_room_collaborators" | "explicit_mention" | "reply_or_named" | "continuity_followup" | "specialty_triage" | "host_solo"
-    [property: JsonPropertyName("reason")] string Reason);
+    [property: JsonPropertyName("mode")] string Mode, // "no_room_collaborators" | "explicit_mention" | "reply_or_named" | "continuity_followup" | "active_collaborator_affinity" | "specialty_triage" | "host_solo"
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("confidence")] double Confidence = 1.0,
+    [property: JsonPropertyName("collaborator_focuses")] IReadOnlyDictionary<string, string>? CollaboratorFocuses = null);
 
 
 public static class AgentReactionClassifier
@@ -1657,7 +1659,7 @@ public sealed partial class SessionRoomOrchestrator(
 
         foreach (var name in displayNames)
         {
-            cleaned = Regex.Replace(cleaned, @"@" + Regex.Escape(name) + @"", "", RegexOptions.IgnoreCase);
+            cleaned = Regex.Replace(cleaned, @"@" + Regex.Escape(name) + @"\b", "", RegexOptions.IgnoreCase);
         }
 
         if (mentionedSlugs is not null)
@@ -1666,7 +1668,7 @@ public sealed partial class SessionRoomOrchestrator(
             {
                 if (!string.IsNullOrWhiteSpace(slug))
                 {
-                    cleaned = Regex.Replace(cleaned, @"@" + Regex.Escape(slug.Trim()) + @"", "", RegexOptions.IgnoreCase);
+                    cleaned = Regex.Replace(cleaned, @"@" + Regex.Escape(slug.Trim()) + @"\b", "", RegexOptions.IgnoreCase);
                 }
             }
         }
@@ -1674,7 +1676,7 @@ public sealed partial class SessionRoomOrchestrator(
         // Also strip any remaining known @agent-slug tokens
         cleaned = Regex.Replace(
             cleaned,
-            @"@(?:mons|ken|zen|mkai|default-core|gm-boc|gm-gao|gm-lua|gm-team|planthy-pm|planthy-team|climax-default|climax-team|its-default|gl-default|agentteams-manager)",
+            @"@(?:mons|ken|zen|mkai|default-core|gm-boc|gm-gao|gm-lua|gm-team|planthy-pm|planthy-team|climax-default|climax-team|its-default|gl-default|agentteams-manager)\b",
             "",
             RegexOptions.IgnoreCase);
 
@@ -1769,7 +1771,7 @@ public sealed partial class SessionRoomOrchestrator(
             "kinh doanh", "sales", "sale", "bán hàng", "doanh số", "doanh thu", "báo giá", "giá bán", "định giá",
             "pricing", "chiết khấu", "khuyến mãi", "gói cước", "thương mại", "đấu thầu", "gói thầu", "hợp đồng",
             "khách hàng", "đối thủ", "cạnh tranh", "thị phần", "đại lý", "nhà phân phối", "kênh bán", "b2b", "b2c",
-            "chốt đơn", "pipeline", "lead", "roi", "biên lợi nhuận", "chi phí", "ngân sách", "gói sản phẩm"
+            "chốt đơn", "pipeline", "lead", "roi", "biên lợi nhuận", "chi phí", "ngân sách", "gói sản phẩm", "ngành hàng", "chuỗi"
         ],
         ["climax-default"] =
         [
@@ -1845,35 +1847,55 @@ public sealed partial class SessionRoomOrchestrator(
         ["gl-default"] = ["gl-default", "gl automation"]
     };
 
-    public static int ScoreCollaboratorSpecialtyMatch(string collaboratorSlug, string? userText)
+    public static (int Score, List<string> MatchedKeywords) EvaluateCollaboratorSpecialty(string collaboratorSlug, string? userText)
     {
-        if (string.IsNullOrWhiteSpace(userText)) return 0;
+        if (string.IsNullOrWhiteSpace(userText)) return (0, []);
         var normCollab = SubAgentService.NormalizeAgentId(collaboratorSlug).ToLowerInvariant();
         if (!AgentSpecialtyKeywords.TryGetValue(normCollab, out var keywords))
-            return 0;
+            return (0, []);
 
         var lower = userText.ToLowerInvariant();
         int score = 0;
+        var matched = new List<string>();
         foreach (var kw in keywords)
         {
             if (kw.Length <= 3)
             {
-                if (Regex.IsMatch(lower, $@"{Regex.Escape(kw)}", RegexOptions.IgnoreCase))
+                if (Regex.IsMatch(lower, $@"\b{Regex.Escape(kw)}\b", RegexOptions.IgnoreCase))
+                {
                     score += 2;
+                    matched.Add(kw);
+                }
             }
             else if (lower.Contains(kw, StringComparison.OrdinalIgnoreCase))
             {
-                score += 2;
+                score += kw.Contains(' ') ? 3 : 2;
+                matched.Add(kw);
             }
         }
-        return score;
+        return (score, matched);
+    }
+
+    public static int ScoreCollaboratorSpecialtyMatch(string collaboratorSlug, string? userText) =>
+        EvaluateCollaboratorSpecialty(collaboratorSlug, userText).Score;
+
+    public static string BuildCollaboratorFocusBrief(string collaboratorSlug, IReadOnlyList<string>? matchedKeywords = null)
+    {
+        var norm = SubAgentService.NormalizeAgentId(collaboratorSlug).ToLowerInvariant();
+        var focus = DescribeAgentSpecialty(norm);
+        if (matchedKeywords is { Count: > 0 })
+        {
+            return $"{focus} — Trọng tâm xử lý trong lượt này: {string.Join(", ", matchedKeywords.Take(4))}";
+        }
+        return focus;
     }
 
     /// <summary>
-    /// Host-Driven Autonomous Triage Layer:
-    /// Allows the Room Owner (Host Agent A) to decide for each new user message:
+    /// Smooth Host-Driven Autonomous Triage Layer:
+    /// Allows the Room Owner (Host Agent A) to smoothly and deterministically decide for each new user message:
     /// 1) Whether the request needs to be pushed into the session's single Room for collaboration or handled solo by the Host.
-    /// 2) Which specific collaborator agent(s) in the Room should be pulled in to solve the new request.
+    /// 2) Which specific collaborator agent(s) in the Room should be pulled in (filtering out low-signal secondary noise via Dominant Specialty Pruning).
+    /// 3) Conversational momentum / Active Collaborator Affinity when drilling down into the latest collaborator's answer.
     /// </summary>
     public HostRoomTriageDecision DecideRoomCollaboratorsForTurn(
         string hostAgentId,
@@ -1885,7 +1907,7 @@ public sealed partial class SessionRoomOrchestrator(
         var host = SubAgentService.NormalizeAgentId(hostAgentId);
         if (string.IsNullOrWhiteSpace(rawUserText) || rawUserText.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
         {
-            return new HostRoomTriageDecision(false, [], "host_solo", $"Chủ phòng (@{host}) xử lý trực tiếp phản hồi cảm xúc hoặc tin nhắn trống.");
+            return new HostRoomTriageDecision(false, [], "host_solo", $"Chủ phòng (@{host}) xử lý trực tiếp phản hồi cảm xúc hoặc tin nhắn trống.", 1.0);
         }
 
         var room = roomStore.GetByChat(host, hostChatId)
@@ -1898,16 +1920,26 @@ public sealed partial class SessionRoomOrchestrator(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList() ?? [];
 
-        // 1. Check Explicit @mentions or @room / @all / @team
-        var mentions = (explicitMentions ?? DetectMentionedCollaborators(rawUserText, host))
+        // Extract optional [Replying to <Author>: "..."] header and clean user body text early so @mentions inside quoted snippets don't misfire
+        string? replyAuthorHeader = null;
+        string userBodyText = rawUserText.Trim();
+        var replyMatch = Regex.Match(userBodyText, @"^\[Replying to ([^:\]]+):\s*""[^""]*""\]\s*", RegexOptions.IgnoreCase);
+        if (replyMatch.Success)
+        {
+            replyAuthorHeader = replyMatch.Groups[1].Value.Trim();
+            userBodyText = userBodyText[replyMatch.Length..].Trim();
+        }
+
+        // 1. Check Explicit @mentions (evaluated on userBodyText so quoted snippets don't re-trigger old @mentions) or @room / @all / @team
+        var mentions = (explicitMentions ?? DetectMentionedCollaborators(userBodyText, host))
             .Select(SubAgentService.NormalizeAgentId)
             .Where(c => !string.Equals(c, host, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         bool asksAllRoom = Regex.IsMatch(
-            rawUserText,
-            @"(?:^|\s)(?:@all|@room|@team)|cả\s+phòng|tất\s+cả\s+(?:các\s+)?(?:agent|chuyên\s+viên|bạn\s+trong\s+phòng)",
+            userBodyText,
+            @"(?:^|\s)(?:@all|@room|@team)\b|cả\s+phòng|tất\s+cả\s+(?:các\s+)?(?:agent|chuyên\s+viên|bạn\s+trong\s+phòng)",
             RegexOptions.IgnoreCase);
 
         if (asksAllRoom && roomCollaborators.Count > 0)
@@ -1921,11 +1953,18 @@ public sealed partial class SessionRoomOrchestrator(
 
         if (mentions.Count > 0)
         {
+            var focuses = mentions.ToDictionary(
+                c => c,
+                c => BuildCollaboratorFocusBrief(c, EvaluateCollaboratorSpecialty(c, userBodyText).MatchedKeywords),
+                StringComparer.OrdinalIgnoreCase);
+
             return new HostRoomTriageDecision(
                 ShouldUseRoom: true,
                 SelectedCollaborators: mentions,
                 Mode: "explicit_mention",
-                Reason: $"Chủ phòng (@{host}) điều phối yêu cầu vào Room cho chuyên viên được chỉ định: @{string.Join(", @", mentions)}.");
+                Reason: $"Chủ phòng (@{host}) điều phối yêu cầu vào Room cho chuyên viên được chỉ định: @{string.Join(", @", mentions)}.",
+                Confidence: 1.0,
+                CollaboratorFocuses: focuses);
         }
 
         // 2. If the session Room has no collaborators yet and none were @mentioned, Host handles solo
@@ -1935,17 +1974,8 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "no_room_collaborators",
-                Reason: $"Phiên chat chưa có chuyên viên phối hợp trong Room; Chủ phòng (@{host}) xử lý trực tiếp.");
-        }
-
-        // Extract optional [Replying to <Author>: "..."] header and clean user body text
-        string? replyAuthorHeader = null;
-        string userBodyText = rawUserText.Trim();
-        var replyMatch = Regex.Match(userBodyText, @"^\[Replying to ([^:\]]+):\s*""[^""]*""\]\s*", RegexOptions.IgnoreCase);
-        if (replyMatch.Success)
-        {
-            replyAuthorHeader = replyMatch.Groups[1].Value.Trim();
-            userBodyText = userBodyText[replyMatch.Length..].Trim();
+                Reason: $"Phiên chat chưa có chuyên viên phối hợp trong Room; Chủ phòng (@{host}) xử lý trực tiếp.",
+                Confidence: 1.0);
         }
 
         // 3. Check if user is explicitly instructing the Host to answer solo or only reformat/summarize existing output
@@ -1965,11 +1995,14 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "host_solo",
-                Reason: $"Chủ phòng (@{host}) đánh giá yêu cầu mang tính trao đổi trực tiếp nên tự phản hồi, không đẩy vào Room.");
+                Reason: $"Chủ phòng (@{host}) đánh giá yêu cầu mang tính trao đổi trực tiếp nên tự phản hồi ngay, không đẩy vào Room.",
+                Confidence: 0.98);
         }
 
-        // 4. Check Direct Reply to a Collaborator bubble OR Natural Collaborator Name Reference (without @) among Room participants
+        // 4. Check Direct Reply to a Collaborator bubble OR Natural Collaborator Name Reference (without @) + Negative Exclusion ("trừ zen", "không cần gọi climax")
         var namedInRoom = new List<string>();
+        var excludedInRoom = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var collab in roomCollaborators)
         {
             var patterns = AgentNaturalNamePatterns.TryGetValue(collab, out var pList) ? pList : [collab];
@@ -1988,13 +2021,17 @@ public sealed partial class SessionRoomOrchestrator(
 
             foreach (var pat in patterns)
             {
-                if (Regex.IsMatch(userBodyText, $@"{Regex.Escape(pat)}", RegexOptions.IgnoreCase))
+                if (Regex.IsMatch(userBodyText, $@"\b{Regex.Escape(pat)}\b", RegexOptions.IgnoreCase))
                 {
                     bool negated = Regex.IsMatch(
                         userBodyText,
-                        $@"(?:không|đừng|khỏi)\s+(?:cần\s+)?(?:hỏi|gọi|kéo)\s+{Regex.Escape(pat)}",
+                        $@"(?:không|đừng|khỏi|trừ|bỏ\s+qua)\s+(?:cần\s+)?(?:(?:hỏi|gọi|kéo)\s+)?{Regex.Escape(pat)}\b",
                         RegexOptions.IgnoreCase);
-                    if (!negated && !namedInRoom.Contains(collab, StringComparer.OrdinalIgnoreCase))
+                    if (negated)
+                    {
+                        excludedInRoom.Add(collab);
+                    }
+                    else if (!namedInRoom.Contains(collab, StringComparer.OrdinalIgnoreCase))
                     {
                         namedInRoom.Add(collab);
                     }
@@ -2002,19 +2039,27 @@ public sealed partial class SessionRoomOrchestrator(
             }
         }
 
+        namedInRoom.RemoveAll(c => excludedInRoom.Contains(c));
         if (namedInRoom.Count > 0)
         {
+            var focuses = namedInRoom.ToDictionary(
+                c => c,
+                c => BuildCollaboratorFocusBrief(c, EvaluateCollaboratorSpecialty(c, userBodyText).MatchedKeywords),
+                StringComparer.OrdinalIgnoreCase);
+
             return new HostRoomTriageDecision(
                 ShouldUseRoom: true,
                 SelectedCollaborators: namedInRoom,
                 Mode: "reply_or_named",
-                Reason: $"Chủ phòng (@{host}) nhận diện yêu cầu hướng trực tiếp tới @{string.Join(", @", namedInRoom)} trong Room.");
+                Reason: $"Chủ phòng (@{host}) nhận diện yêu cầu hướng trực tiếp tới @{string.Join(", @", namedInRoom)} trong Room.",
+                Confidence: 0.95,
+                CollaboratorFocuses: focuses);
         }
 
         // Check if this is a pure text formatting/rewriting request of already-generated content (with no domain investigation needed)
         bool isPureRewriteRequest = Regex.IsMatch(
             userBodyText,
-            @"^(?:hãy\s+|nhờ\s+(?:bạn|em|anh)\s+)?(?:viết\s+lại\s+đoạn\s+trên|tóm\s+tắt\s+lại\s+kết\s+quả\s+trên|rút\s+gọn\s+lại|dịch\s+đoạn\s+trên\s+sang)",
+            @"^(?:hãy\s+|nhờ\s+(?:bạn|em|anh)\s+)?(?:viết\s+lại\s+đoạn\s+trên|tóm\s+tắt\s+lại\s+kết\s+quả\s+trên|rút\s+gọn\s+lại|dịch\s+đoạn\s+trên\s+sang)\b",
             RegexOptions.IgnoreCase);
         if (isPureRewriteRequest)
         {
@@ -2022,15 +2067,15 @@ public sealed partial class SessionRoomOrchestrator(
                 ShouldUseRoom: false,
                 SelectedCollaborators: [],
                 Mode: "host_solo",
-                Reason: $"Chủ phòng (@{host}) tự biên tập/tóm tắt nội dung sẵn có mà không cần gọi lại chuyên viên trong Room.");
+                Reason: $"Chủ phòng (@{host}) tự biên tập/tóm tắt nội dung sẵn có mà không cần gọi lại chuyên viên trong Room.",
+                Confidence: 0.95);
         }
 
-        // 5. Inspect Latest Wave in Room for Pending Clarification / Scope Questions
+        // 5. Inspect Latest Wave in Room for Pending Clarification / Scope Questions & Conversational Momentum
         var pendingWaveCollaborators = new List<string>();
         bool latestWaveAskedClarification = false;
         if (room is not null && room.Turns.Count > 0)
         {
-            // Find the start of the most recent wave (the last non-manager request turn)
             int lastReqIdx = -1;
             for (int i = room.Turns.Count - 1; i >= 0; i--)
             {
@@ -2045,7 +2090,8 @@ public sealed partial class SessionRoomOrchestrator(
             foreach (var wt in latestWaveTurns)
             {
                 if (wt.Kind is "collaborator_reply" or "question" &&
-                    roomCollaborators.Contains(wt.AuthorId, StringComparer.OrdinalIgnoreCase))
+                    roomCollaborators.Contains(wt.AuthorId, StringComparer.OrdinalIgnoreCase) &&
+                    !excludedInRoom.Contains(wt.AuthorId))
                 {
                     if (!pendingWaveCollaborators.Contains(wt.AuthorId, StringComparer.OrdinalIgnoreCase))
                         pendingWaveCollaborators.Add(wt.AuthorId);
@@ -2064,20 +2110,32 @@ public sealed partial class SessionRoomOrchestrator(
             }
         }
 
-        // 6. Score each Collaborator in the Room by Domain Specialty Relevance
-        var scoredCollaborators = roomCollaborators
-            .Select((collab, idx) => (Collab: collab, Score: ScoreCollaboratorSpecialtyMatch(collab, userBodyText), Order: idx))
+        // 6. Score each Collaborator in the Room by Domain Specialty Relevance + Dominant Specialty Pruning
+        var evalList = roomCollaborators
+            .Where(c => !excludedInRoom.Contains(c))
+            .Select((collab, idx) =>
+            {
+                var (score, matchedKws) = EvaluateCollaboratorSpecialty(collab, userBodyText);
+                return (Collab: collab, Score: score, MatchedKeywords: matchedKws, Order: idx);
+            })
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
             .ThenBy(x => x.Order)
+            .ToList();
+
+        // Dominant Specialty Pruning: if the top collaborator has a strong specific domain match (Score >= 4),
+        // filter out peripheral collaborators with a weak 1-keyword overlap unless they reach >= 50% of topScore (or >= 4)
+        int topScore = evalList.Count > 0 ? evalList[0].Score : 0;
+        var scoredCollaborators = evalList
+            .Where(x => topScore < 4 || x.Score >= 4 || x.Score * 2 >= topScore)
             .Select(x => x.Collab)
             .ToList();
 
-        // If the user is supplying shared scope (e.g. industry, product, competitor names) right after a clarification wave,
-        // and the user did not restrict to a single domain ("chỉ", "riêng"), include all collaborators from that pending wave
+        // Only expand to all pendingWaveCollaborators if the user is supplying shared scope (not when the user is already strongly targeting a single dominant specialty with topScore >= 6)
         bool isScopeSupply = latestWaveAskedClarification &&
-            Regex.IsMatch(userBodyText, @"ngành|sản\s+phẩm|dịch\s+vụ|đối\s+thủ|thị\s+trường|khách\s+hàng|chuỗi|công\s+ty|dự\s+án|mục\s+tiêu|địa\s+bàn", RegexOptions.IgnoreCase) &&
-            !Regex.IsMatch(userBodyText, @"(?:chỉ\s+cần|riêng\s+phần|riêng\s+mảng)", RegexOptions.IgnoreCase);
+            (topScore < 6 || evalList.Count(x => x.Score >= 4) > 1) &&
+            Regex.IsMatch(userBodyText, @"ngành|sản\s+phẩm|dịch\s+vụ|đối\s+thủ|chuỗi|công\s+ty|dự\s+án|mục\s+tiêu|địa\s+bàn", RegexOptions.IgnoreCase) &&
+            !Regex.IsMatch(userBodyText, @"\b(?:chỉ\s+cần|riêng\s+phần|riêng\s+mảng)\b", RegexOptions.IgnoreCase);
 
         if (isScopeSupply && pendingWaveCollaborators.Count > 0)
         {
@@ -2090,29 +2148,73 @@ public sealed partial class SessionRoomOrchestrator(
 
         if (scoredCollaborators.Count > 0)
         {
+            var focuses = scoredCollaborators.ToDictionary(
+                c => c,
+                c =>
+                {
+                    var m = evalList.FirstOrDefault(x => string.Equals(x.Collab, c, StringComparison.OrdinalIgnoreCase));
+                    return BuildCollaboratorFocusBrief(c, m.MatchedKeywords);
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+            var confidence = Math.Clamp(0.72 + Math.Min(topScore, 8) * 0.035, 0.75, 0.99);
             return new HostRoomTriageDecision(
                 ShouldUseRoom: true,
                 SelectedCollaborators: scoredCollaborators,
                 Mode: "specialty_triage",
-                Reason: $"Chủ phòng (@{host}) phân tích chuyên môn của yêu cầu mới và chủ động kéo @{string.Join(", @", scoredCollaborators)} trong Room cùng giải quyết.");
+                Reason: $"Chủ phòng (@{host}) phân tích chuyên môn của yêu cầu mới và chủ động kéo @{string.Join(", @", scoredCollaborators)} trong Room cùng giải quyết.",
+                Confidence: Math.Round(confidence, 2),
+                CollaboratorFocuses: focuses);
         }
 
         // 7. Continuity Follow-up: If no specific domain keyword matched, but the latest wave asked the user for missing context/scope
         if (latestWaveAskedClarification && pendingWaveCollaborators.Count > 0 && userBodyText.Length >= 4)
         {
+            var focuses = pendingWaveCollaborators.ToDictionary(
+                c => c,
+                c => BuildCollaboratorFocusBrief(c),
+                StringComparer.OrdinalIgnoreCase);
+
             return new HostRoomTriageDecision(
                 ShouldUseRoom: true,
                 SelectedCollaborators: pendingWaveCollaborators,
                 Mode: "continuity_followup",
-                Reason: $"Chủ phòng (@{host}) nhận thấy người dùng đang bổ sung thông tin cho phiên thảo luận trước nên đẩy vào Room cho @{string.Join(", @", pendingWaveCollaborators)} hoàn tất phân tích.");
+                Reason: $"Chủ phòng (@{host}) nhận thấy người dùng đang bổ sung thông tin cho phiên thảo luận trước nên đẩy vào Room cho @{string.Join(", @", pendingWaveCollaborators)} hoàn tất phân tích.",
+                Confidence: 0.9,
+                CollaboratorFocuses: focuses);
         }
 
-        // 8. Default when no collaborator specialty matches and no pending clarification wave exists: Host handles solo
+        // 8. Conversational Momentum / Active Collaborator Drill-down Affinity:
+        // When the user asks a follow-up drill-down ("còn mục 2 thì sao?", "chi tiết hơn phương án này nhé", "bổ sung thêm ví dụ")
+        // right after a collaborator wave, route smoothly to the active collaborator(s) of that wave
+        bool isDrillDownFollowup = pendingWaveCollaborators.Count > 0 && Regex.IsMatch(
+            userBodyText,
+            @"(?:chi\s+tiết\s+hơn|cụ\s+thể\s+hơn|làm\s+rõ\s+hơn|mục\s+(?:số\s+)?\d+|phương\s+án\s+(?:này|đó|\d+)|điểm\s+(?:này|đó|\d+)|bổ\s+sung\s+thêm|thêm\s+ví\s+dụ|còn\s+về\s+phần|tiếp\s+tục\s+phân\s+tích|đi\s+sâu\s+hơn)",
+            RegexOptions.IgnoreCase);
+
+        if (isDrillDownFollowup)
+        {
+            var focuses = pendingWaveCollaborators.ToDictionary(
+                c => c,
+                c => BuildCollaboratorFocusBrief(c),
+                StringComparer.OrdinalIgnoreCase);
+
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: true,
+                SelectedCollaborators: pendingWaveCollaborators,
+                Mode: "active_collaborator_affinity",
+                Reason: $"Chủ phòng (@{host}) duy trì mạch trao đổi chuyên sâu và chuyển yêu cầu làm rõ cho @{string.Join(", @", pendingWaveCollaborators)} trong Room.",
+                Confidence: 0.88,
+                CollaboratorFocuses: focuses);
+        }
+
+        // 9. Default when no collaborator specialty matches and no pending clarification/drill-down exists: Host handles solo
         return new HostRoomTriageDecision(
             ShouldUseRoom: false,
             SelectedCollaborators: [],
             Mode: "host_solo",
-            Reason: $"Yêu cầu mới không đòi hỏi phối hợp chuyên môn từ các thành viên khác trong Room; Chủ phòng (@{host}) trực tiếp xử lý.");
+            Reason: $"Yêu cầu mới không đòi hỏi phối hợp chuyên môn từ các thành viên khác trong Room; Chủ phòng (@{host}) trực tiếp xử lý.",
+            Confidence: 0.92);
     }
 
     private static void BroadcastRoomTurnToHostSession(

@@ -356,4 +356,46 @@ public class SessionRoomTests
         followupDecision.ShouldUseRoom.Should().BeTrue();
         followupDecision.SelectedCollaborators.Should().BeEquivalentTo(["zen", "climax-default"]);
     }
+
+    [Fact]
+    public async Task SmoothHostTriage_PrunesPeripheralNoise_SupportsDrillDownAffinity_AndRespectsNegativeExclusions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient { NextReply = "Phân tích gói giá và kênh bán B2B từ Zen." };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-smooth-triage-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default", "planthy-pm"]);
+
+        // 1. Dominant Specialty Pruning: Strong commercial/sales query ("báo giá bán", "chiết khấu đại lý B2B", "biên lợi nhuận", "hợp đồng")
+        // even if it mentions "thị trường" once -> should prune peripheral climax-default and only pull zen!
+        var prunedDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Tính toán bảng báo giá bán, chiết khấu đại lý B2B, biên lợi nhuận và điều khoản hợp đồng trên thị trường này");
+        prunedDecision.ShouldUseRoom.Should().BeTrue();
+        prunedDecision.Mode.Should().Be("specialty_triage");
+        prunedDecision.SelectedCollaborators.Should().Equal(["zen"]);
+        prunedDecision.Confidence.Should().BeGreaterThanOrEqualTo(0.85);
+        prunedDecision.CollaboratorFocuses.Should().NotBeNull();
+        prunedDecision.CollaboratorFocuses!["zen"].Should().Contain("Trọng tâm xử lý");
+
+        // 2. Execute a wave with zen so zen is the active collaborator of the latest wave
+        await orchestrator.ExecuteCollaboratorTurnAsync("gm-boc", chatId, "zen", "Tính báo giá B2B", null, chatId, ct);
+        await orchestrator.RecordHostSynthesisTurnAsync("gm-boc", chatId, "Đã tổng hợp phương án báo giá B2B từ Zen.", null, null, chatId, ct);
+
+        // 3. Conversational Momentum / Drill-Down Affinity: User asks "Làm rõ hơn mục số 2 và bổ sung thêm ví dụ nhé" (no domain keywords!)
+        var drillDownDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Làm rõ hơn mục số 2 và bổ sung thêm ví dụ thực tế nhé");
+        drillDownDecision.ShouldUseRoom.Should().BeTrue();
+        drillDownDecision.Mode.Should().Be("active_collaborator_affinity");
+        drillDownDecision.SelectedCollaborators.Should().Equal(["zen"]);
+
+        // 4. Negative Exclusion: User asks about competitor analysis (which matches both zen and climax-default) but says "không cần gọi zen"
+        var exclusionDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Phân tích chiến dịch truyền thông của đối thủ cạnh tranh, không cần gọi zen nhé");
+        exclusionDecision.ShouldUseRoom.Should().BeTrue();
+        exclusionDecision.SelectedCollaborators.Should().Equal(["climax-default"]);
+    }
 }

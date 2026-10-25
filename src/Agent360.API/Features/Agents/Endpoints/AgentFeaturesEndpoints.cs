@@ -986,6 +986,29 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 try { await httpContext.Response.StartAsync(ct); } catch {}
             }
 
+            // 1. Zero-Latency Triage Feedback: immediately emit host_triage SSE event BEFORE Matrix HTTP provisioning
+            if (!ct.IsCancellationRequested)
+            {
+                var preTriageEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_event",
+                    status = "host_triage",
+                    collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
+                    triage_mode = triageDecision.Mode,
+                    triage_reason = triageDecision.Reason,
+                    triage_confidence = triageDecision.Confidence,
+                    selected_collaborators = mentionedCollaborators,
+                    collaborator_focuses = triageDecision.CollaboratorFocuses
+                });
+                try
+                {
+                    await httpContext.Response.WriteAsync($"data: {preTriageEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                }
+                catch {}
+            }
+
+            // 2. Ensure single Session Room once for all selected collaborators, and sync title in background so turn execution never waits
             var baseRoom = await roomOrchestrator.EnsureRoomAsync(
                 agentTarget,
                 effectiveSessionId,
@@ -995,27 +1018,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 mentionedCollaborators);
             if (string.IsNullOrWhiteSpace(baseRoom.RoomTitle) && !string.IsNullOrWhiteSpace(rawUserText))
             {
-                baseRoom = await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, upstreamCts.Token) ?? baseRoom;
-            }
-
-            if (!ct.IsCancellationRequested)
-            {
-                var initRoomEvt = System.Text.Json.JsonSerializer.Serialize(new
+                _ = Task.Run(async () =>
                 {
-                    @object = "room_event",
-                    status = "collaborator_running",
-                    collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
-                    triage_mode = triageDecision.Mode,
-                    triage_reason = triageDecision.Reason,
-                    selected_collaborators = mentionedCollaborators,
-                    room = baseRoom
+                    try { await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, CancellationToken.None); }
+                    catch {}
                 });
-                try
-                {
-                    await httpContext.Response.WriteAsync($"data: {initRoomEvt}\n\n", ct);
-                    await httpContext.Response.Body.FlushAsync(ct);
-                }
-                catch {}
             }
 
             var recentSessionHistory = new System.Text.StringBuilder();
@@ -1061,9 +1068,15 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             var accumulatedContext = new System.Text.StringBuilder();
             Agent360.API.Features.Agents.SubAgents.SessionCollaborationRoom? latestRoom = null;
 
-            foreach (var mentionedCollaborator in mentionedCollaborators)
+            for (int collabIdx = 0; collabIdx < mentionedCollaborators.Count; collabIdx++)
             {
-                var ensuredRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, mentionedCollaborator, qwenPawSessionId, upstreamCts.Token);
+                var mentionedCollaborator = mentionedCollaborators[collabIdx];
+                var currentRoomState = latestRoom ?? baseRoom;
+                var collabFocus = triageDecision.CollaboratorFocuses is not null &&
+                                  triageDecision.CollaboratorFocuses.TryGetValue(mentionedCollaborator, out var cf)
+                    ? cf
+                    : null;
+
                 if (!ct.IsCancellationRequested)
                 {
                     var roomInitEvt = System.Text.Json.JsonSerializer.Serialize(new
@@ -1071,10 +1084,14 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         @object = "room_event",
                         status = "collaborator_running",
                         collaborator_id = mentionedCollaborator,
+                        step_index = collabIdx + 1,
+                        total_collaborators = mentionedCollaborators.Count,
                         triage_mode = triageDecision.Mode,
                         triage_reason = triageDecision.Reason,
+                        triage_confidence = triageDecision.Confidence,
+                        collaborator_focus = collabFocus,
                         selected_collaborators = mentionedCollaborators,
-                        room = ensuredRoom
+                        room = currentRoomState
                     });
                     try
                     {
@@ -1085,8 +1102,14 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 }
 
                 var combinedContext = new System.Text.StringBuilder();
+                if (!string.IsNullOrWhiteSpace(collabFocus))
+                {
+                    combinedContext.AppendLine($"### Trọng tâm điều phối từ Chủ phòng (@{agentTarget}) dành riêng cho @{mentionedCollaborator}:");
+                    combinedContext.AppendLine($"- {collabFocus}");
+                }
                 if (recentSessionHistory.Length > 0)
                 {
+                    if (combinedContext.Length > 0) combinedContext.AppendLine();
                     combinedContext.AppendLine("### Các lượt trao đổi gần đây trong phiên chat:");
                     combinedContext.Append(recentSessionHistory);
                 }
