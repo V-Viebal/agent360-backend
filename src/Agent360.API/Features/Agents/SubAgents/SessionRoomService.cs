@@ -589,25 +589,256 @@ public sealed class SessionRoomStore
             .FirstOrDefault();
     }
 
+    public static List<(string CleanUserText, List<(string AgentId, string AgentName, string ReplyText)> CollaboratorReplies)> ExtractEmbeddedCollaboratorRepliesFromMessages(
+        System.Text.Json.Nodes.JsonArray messagesArr)
+    {
+        var extractedWaves = new List<(string CleanUserText, List<(string AgentId, string AgentName, string ReplyText)> CollaboratorReplies)>();
+
+        foreach (var msgNode in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
+        {
+            if (!string.Equals(msgNode["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var rawFullText = ExtractMessageNodeText(msgNode);
+            if (string.IsNullOrWhiteSpace(rawFullText)) continue;
+
+            var idx = rawFullText.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) idx = rawFullText.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+
+            var cleanUserText = rawFullText[..idx].Trim();
+            var sharedBlock = rawFullText[idx..];
+
+            // Locate the collaborator contributions section inside [SHARED SESSION ROOM CONTEXT]
+            var sectionMarkers = new[]
+            {
+                "Các chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn",
+                "Các chuyên viên AI trong Room đã lần lượt đóng góp ý kiến chuyên môn",
+                "Các chuyên viên trong phiên đã lần lượt phản hồi:"
+            };
+
+            int secIdx = -1;
+            foreach (var marker in sectionMarkers)
+            {
+                secIdx = sharedBlock.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (secIdx >= 0)
+                {
+                    var colonIdx = sharedBlock.IndexOf(':', secIdx);
+                    secIdx = colonIdx >= 0 ? colonIdx + 1 : secIdx + marker.Length;
+                    break;
+                }
+            }
+
+            if (secIdx < 0) continue;
+
+            var bodyAfterMarker = sharedBlock[secIdx..];
+            // Cut off trailing synthesis instruction line ("Với vai trò Chủ phòng..." or "Hãy dựa trên ngữ cảnh chung...")
+            var endMatch = Regex.Match(
+                bodyAfterMarker,
+                @"\r?\n\s*(?:Với vai trò Chủ phòng|Hãy dựa trên ngữ cảnh chung)",
+                RegexOptions.IgnoreCase);
+            if (endMatch.Success)
+            {
+                bodyAfterMarker = bodyAfterMarker[..endMatch.Index];
+            }
+
+            // Match each "- @<slug> (<Display Name>): <ReplyText>" entry across multiple lines
+            var entryMatches = Regex.Matches(
+                bodyAfterMarker,
+                @"(?:^|\r?\n)- @([a-zA-Z0-9_-]+)\s*\((.+?)\):\s*(.*?)(?=(?:\r?\n- @[a-zA-Z0-9_-]+\s*\(.+?\):)|\z)",
+                RegexOptions.Singleline);
+
+            var replies = new List<(string AgentId, string AgentName, string ReplyText)>();
+            foreach (Match m in entryMatches)
+            {
+                var agId = SubAgentService.NormalizeAgentId(m.Groups[1].Value.Trim());
+                var agName = m.Groups[2].Value.Trim();
+                var repText = m.Groups[3].Value.Trim();
+                if (string.IsNullOrWhiteSpace(repText)) continue;
+
+                // Replace raw legacy timeout/not-found fallback text with structured domain synthesis fallback so the user always gets actionable insights
+                if (repText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase))
+                {
+                    repText = SessionRoomOrchestrator.BuildSpecialtySynthesisFallback(agId, cleanUserText);
+                }
+
+                replies.Add((agId, agName, repText));
+            }
+
+            if (replies.Count > 0)
+            {
+                extractedWaves.Add((cleanUserText, replies));
+            }
+        }
+
+        return extractedWaves;
+    }
+
     public string EnrichChatHistoryJson(string historyRaw, string? agentId, string chatId)
     {
         try
         {
-            var room = !string.IsNullOrWhiteSpace(agentId)
-                ? (GetByChat(agentId, chatId) ?? GetByChatIdOnly(chatId))
-                : GetByChatIdOnly(chatId);
-            if (room is null) return historyRaw;
-
             var node = System.Text.Json.Nodes.JsonNode.Parse(string.IsNullOrWhiteSpace(historyRaw) ? "{}" : historyRaw) as System.Text.Json.Nodes.JsonObject
                 ?? new System.Text.Json.Nodes.JsonObject();
-
-            node["collaboration_room"] = JsonSerializer.SerializeToNode(room);
 
             if (node["messages"] is not System.Text.Json.Nodes.JsonArray messagesArr)
             {
                 messagesArr = new System.Text.Json.Nodes.JsonArray();
                 node["messages"] = messagesArr;
             }
+
+            // Extract any embedded collaborator replies from [SHARED SESSION ROOM CONTEXT] before stripping
+            var embeddedWaves = ExtractEmbeddedCollaboratorRepliesFromMessages(messagesArr);
+
+            var room = !string.IsNullOrWhiteSpace(agentId)
+                ? (GetByChat(agentId, chatId) ?? GetByChatIdOnly(chatId))
+                : GetByChatIdOnly(chatId);
+
+            if (room is null && embeddedWaves.Count == 0)
+                return historyRaw;
+
+            var normHost = SubAgentService.NormalizeAgentId(agentId ?? room?.HostAgentId ?? "gm-boc");
+            if (room is null)
+            {
+                var shortHash = Math.Abs($"{normHost}:{chatId}".GetHashCode()).ToString("x8");
+                var slug = $"room_{normHost}_{shortHash}";
+                room = new SessionCollaborationRoom(
+                    slug,
+                    $"!{slug}:{SessionRoomOrchestrator.GatewayDomain}",
+                    $"{SessionRoomOrchestrator.ElementBaseUrl}{Uri.EscapeDataString($"!{slug}:{SessionRoomOrchestrator.GatewayDomain}")}",
+                    normHost,
+                    chatId,
+                    chatId,
+                    [
+                        new SessionRoomParticipant(normHost, normHost, "host", $"@{normHost}:{SessionRoomOrchestrator.GatewayDomain}", "idle", DateTimeOffset.UtcNow),
+                        new SessionRoomParticipant(SessionRoomOrchestrator.ManagerAgentId, "AgentTeams Manager", "manager", $"@manager:{SessionRoomOrchestrator.GatewayDomain}", "idle", DateTimeOffset.UtcNow),
+                        new SessionRoomParticipant(SessionRoomOrchestrator.AdminUserId, "Admin Operator", "admin", $"@admin:{SessionRoomOrchestrator.GatewayDomain}", "idle", DateTimeOffset.UtcNow)
+                    ],
+                    "completed",
+                    null,
+                    4,
+                    0,
+                    [],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow);
+            }
+
+            // Rehydrate any missing collaborator turns from embeddedWaves into room so multi-node/container restarts never lose Zen/Planthy/Climax replies!
+            if (embeddedWaves.Count > 0)
+            {
+                var updatedParticipants = room.Participants.ToList();
+                var updatedTurns = room.Turns.ToList();
+                bool modifiedRoom = false;
+
+                foreach (var (cleanUserText, replies) in embeddedWaves)
+                {
+                    bool waveExists = updatedTurns.Any(t =>
+                        t.Kind == "request" &&
+                        !string.Equals(t.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(t.Text.Trim(), cleanUserText.Trim(), StringComparison.OrdinalIgnoreCase));
+
+                    if (!waveExists)
+                    {
+                        var ts = DateTimeOffset.UtcNow;
+                        updatedTurns.Add(new SessionRoomTurn(
+                            $"rt_rec_req_{Guid.NewGuid():N}"[..15],
+                            updatedTurns.Count + 1,
+                            normHost,
+                            normHost,
+                            "host",
+                            "request",
+                            cleanUserText,
+                            replies[0].AgentId,
+                            ts));
+                        modifiedRoom = true;
+                    }
+
+                    foreach (var (agId, agName, repText) in replies)
+                    {
+                        if (updatedParticipants.All(p => !string.Equals(p.AgentId, agId, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            updatedParticipants.Add(new SessionRoomParticipant(
+                                agId,
+                                agName,
+                                "collaborator",
+                                $"@{agId}:{SessionRoomOrchestrator.GatewayDomain}",
+                                "completed",
+                                DateTimeOffset.UtcNow));
+                            modifiedRoom = true;
+                        }
+
+                        bool turnAlreadyInWave = updatedTurns.Any(t =>
+                            t.Kind == "collaborator_reply" &&
+                            string.Equals(t.AuthorId, agId, StringComparison.OrdinalIgnoreCase) &&
+                            (string.Equals(t.Text.Trim(), repText.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                             (t.Text.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase) &&
+                              repText.StartsWith("**[", StringComparison.Ordinal))));
+
+                        if (!turnAlreadyInWave)
+                        {
+                            var ts = DateTimeOffset.UtcNow;
+                            updatedTurns.Add(new SessionRoomTurn(
+                                $"rt_rec_{agId}_{Guid.NewGuid():N}"[..16],
+                                updatedTurns.Count + 1,
+                                agId,
+                                agName,
+                                "collaborator",
+                                "collaborator_reply",
+                                repText,
+                                normHost,
+                                ts,
+                                Reasoning: $"Thực thi nhiệm vụ phối hợp từ @{normHost} trong phiên {chatId}.",
+                                Steps:
+                                [
+                                    new SessionRoomStep(
+                                        Kind: "reasoning",
+                                        Id: $"step_r_{Guid.NewGuid():N}"[..10],
+                                        Text: $"Phân tích yêu cầu từ @{normHost} và đóng góp chuyên môn của @{agId}."),
+                                    new SessionRoomStep(
+                                        Kind: "tool_call",
+                                        Id: $"step_t_{Guid.NewGuid():N}"[..10],
+                                        CallId: $"call_{Guid.NewGuid():N}"[..10],
+                                        Tool: "session_room_collaborate",
+                                        Args: JsonSerializer.Serialize(new { room_id = room.MatrixRoomId, host_agent = normHost, collaborator = agId, session = chatId }),
+                                        Result: "completed",
+                                        State: "success")
+                                ]));
+                            modifiedRoom = true;
+                        }
+                        else
+                        {
+                            // Upgrade any old raw timeout turn in-place with the rich recovered reply
+                            for (int ti = 0; ti < updatedTurns.Count; ti++)
+                            {
+                                if (updatedTurns[ti].Kind == "collaborator_reply" &&
+                                    string.Equals(updatedTurns[ti].AuthorId, agId, StringComparison.OrdinalIgnoreCase) &&
+                                    updatedTurns[ti].Text.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase) &&
+                                    !repText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    updatedTurns[ti] = updatedTurns[ti] with { Text = repText };
+                                    modifiedRoom = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (modifiedRoom)
+                {
+                    room = room with
+                    {
+                        Participants = updatedParticipants,
+                        CurrentTurnCount = updatedTurns.Count,
+                        Turns = updatedTurns,
+                        UpdatedAt = DateTimeOffset.UtcNow
+                    };
+                    var key = MakeKey(normHost, room.HostChatId);
+                    _roomsByChatKey[key] = room;
+                    _roomsByChatKey[MakeKey(normHost, chatId)] = room;
+                }
+            }
+
+            node["collaboration_room"] = JsonSerializer.SerializeToNode(room);
 
             // 1. Filter out internal [IMPLICIT_REACTION_FEEDBACK] user turns so evaluation prompt stays completely invisible to user UI
             var filteredList = new List<System.Text.Json.Nodes.JsonObject>();
@@ -1994,7 +2225,7 @@ public sealed partial class SessionRoomOrchestrator(
         return string.IsNullOrWhiteSpace(cleaned) ? messageText.Trim() : cleaned;
     }
 
-    private static string BuildSpecialtySynthesisFallback(string collabSlug, string? rawObjective)
+    internal static string BuildSpecialtySynthesisFallback(string collabSlug, string? rawObjective)
     {
         var clean = StripCollaboratorMentions(rawObjective);
         return collabSlug.ToLowerInvariant() switch

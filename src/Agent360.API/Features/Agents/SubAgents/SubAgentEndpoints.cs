@@ -109,6 +109,27 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("GetChatSessionRoom")
             .WithSummary("Get (or ensure) the AgentTeams collaboration room bound to a specific chat session");
 
+        agents.MapPut("chats/{chatId}/room/sync", async (
+                string agentId,
+                string chatId,
+                [FromBody] SessionCollaborationRoom? incomingRoom,
+                HttpContext http) =>
+            {
+                if (incomingRoom is null)
+                {
+                    return Results.Problem(detail: "room payload is required", statusCode: 400, title: "Invalid request");
+                }
+                var roomStore = http.RequestServices.GetRequiredService<SessionRoomStore>();
+                var saved = await roomStore.SaveAsync(incomingRoom with
+                {
+                    HostAgentId = agentId,
+                    HostChatId = chatId
+                });
+                return Results.Ok(new { room = saved });
+            })
+            .WithName("SyncChatSessionRoom")
+            .WithSummary("Upsert and merge a full SessionCollaborationRoom record for a chat session");
+
         agents.MapPost("chats/{chatId}/room/pull", async (
                 string agentId,
                 string chatId,

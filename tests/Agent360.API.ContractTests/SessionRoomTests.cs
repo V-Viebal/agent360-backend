@@ -526,4 +526,53 @@ public class SessionRoomTests
         synthesisBrief.Should().Contain("AUTO_CORRECTED");
         synthesisBrief.Should().Contain("Đã tự động hiệu chỉnh");
     }
+
+    [Fact]
+    public void EnrichChatHistoryJson_RehydratesCollaboratorRepliesFromSharedSessionRoomContext_WhenRoomLedgerIsEmpty()
+    {
+        var roomStore = new SessionRoomStore();
+
+        var rawHistoryWithEmbeddedContext = """
+        {
+          "messages": [
+            {
+              "id": "usr_wave_1",
+              "role": "user",
+              "type": "message",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "@climax-default @zen @planthy-pm phân tích chiến lược bánh mì chay Zeroism\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: Các thẻ đồng nghiệp AI...\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn (đã qua kiểm định của AgentTeams Manager):\n- @zen (Zen (Sales & Delivery)): Chiến lược thương mại Bánh mì Zeroism giá 89.000đ, biên lợi nhuận 68%.\n- @climax-default (Climax Default): Định vị bánh mì Sài Gòn bản chay vỏ giòn nhân thực vật thật.\n- @planthy-pm (Planthy PM): Lộ trình 90 ngày chuẩn hóa bếp Thảo Điền trước khi mở Quận 3.\nWith vai trò Chủ phòng (@gm-boc), hãy tổng hợp..."
+                }
+              ]
+            },
+            {
+              "id": "asst_synth_1",
+              "role": "assistant",
+              "type": "message",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Tổng hợp chiến lược Bánh mì chay Zeroism từ Zen, Climax và Planthy."
+                }
+              ]
+            }
+          ]
+        }
+        """.Replace("With vai trò", "Với vai trò");
+
+        var enriched = roomStore.EnrichChatHistoryJson(rawHistoryWithEmbeddedContext, "gm-boc", "chat-rehydrate-01");
+        enriched.Should().NotContain("[SHARED SESSION ROOM CONTEXT]");
+        using var doc = System.Text.Json.JsonDocument.Parse(enriched);
+        var msgsText = string.Join("\n", doc.RootElement.GetProperty("messages").EnumerateArray().Select(m => m.GetProperty("content")[0].GetProperty("text").GetString()));
+        msgsText.Should().Contain("Chiến lược thương mại Bánh mì Zeroism giá 89.000đ");
+        msgsText.Should().Contain("Định vị bánh mì Sài Gòn bản chay vỏ giòn nhân thực vật thật.");
+        msgsText.Should().Contain("Lộ trình 90 ngày chuẩn hóa bếp Thảo Điền trước khi mở Quận 3.");
+
+        var rehydratedRoom = roomStore.GetByChat("gm-boc", "chat-rehydrate-01");
+        rehydratedRoom.Should().NotBeNull();
+        rehydratedRoom!.Participants.Where(p => p.Role == "collaborator").Select(p => p.AgentId)
+            .Should().BeEquivalentTo(["zen", "climax-default", "planthy-pm"]);
+        rehydratedRoom.Turns.Where(t => t.Kind == "collaborator_reply").Should().HaveCount(3);
+    }
 }
