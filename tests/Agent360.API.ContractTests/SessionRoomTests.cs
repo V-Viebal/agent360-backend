@@ -218,4 +218,142 @@ public class SessionRoomTests
         enriched.Should().Contain("msg_01");
         enriched.Should().Contain("category");
     }
+
+    [Fact]
+    public async Task MultiAgentChatSession_StrictlyMaintainsSingleRoom_AcrossSequentialAndParallelPullsAndSessionAliases()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient();
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var tempSessionId = "session-1760855134832-init";
+        var realChatId = "eb74fb84-d319-46fc-83ef-06c306ad4d51";
+
+        // 1. Room initially created with temp session ID
+        var r1 = await orchestrator.EnsureRoomAsync("gm-boc", tempSessionId, "zen", tempSessionId, ct);
+
+        // 2. Subsequent parallel pulls using real UUID chatId + tempSessionId for multiple collaborators
+        var parallelTasks = new[]
+        {
+            orchestrator.EnsureRoomAsync("gm-boc", realChatId, "climax-default", tempSessionId, ct),
+            orchestrator.EnsureRoomAsync("gm-boc", realChatId, "planthy-pm", tempSessionId, ct),
+            orchestrator.EnsureRoomAsync("gm-boc", realChatId, "ken", tempSessionId, ct, ["zen", "climax-default"])
+        };
+        await Task.WhenAll(parallelTasks);
+
+        // 3. Strictly 1 single room must exist for this chat session
+        var allHostRooms = roomStore.ListByHostAgent("gm-boc");
+        allHostRooms.Should().HaveCount(1);
+
+        var singleRoom = allHostRooms[0];
+        singleRoom.RoomId.Should().Be(r1.RoomId);
+        singleRoom.HostChatId.Should().Be(realChatId);
+        singleRoom.HostSessionId.Should().Be(tempSessionId);
+
+        // Lookup by either UUID chatId or temp sessionId returns the exact same single Room
+        roomStore.GetByChat("gm-boc", realChatId)!.RoomId.Should().Be(singleRoom.RoomId);
+        roomStore.GetByChat("gm-boc", tempSessionId)!.RoomId.Should().Be(singleRoom.RoomId);
+
+        // All 4 collaborators + host + manager + admin are in that 1 Room
+        singleRoom.Participants.Select(p => p.AgentId).Should().BeEquivalentTo(
+            ["gm-boc", "zen", "climax-default", "planthy-pm", "ken", "agentteams-manager", "admin"]);
+    }
+
+    [Fact]
+    public async Task HostAutonomousTriage_SelectivelyPullsMatchingCollaboratorsFromRoom_OrHandlesSolo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient();
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "eb74fb84-d319-46fc-83ef-06c306ad4d51";
+
+        // Case 0: Before any collaborators are in the room, a message without @mention is handled solo by Host
+        var preRoomDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "Xin chào anh cần hỏi về quy trình");
+        preRoomDecision.ShouldUseRoom.Should().BeFalse();
+        preRoomDecision.Mode.Should().Be("no_room_collaborators");
+
+        // Pull zen, climax-default, and planthy-pm into the session's single Room
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default", "planthy-pm"]);
+
+        // Case 1: Sales/pricing follow-up without @mention -> Host selectively pulls ONLY zen
+        var salesDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Lên giúp anh bảng báo giá bán, chính sách chiết khấu đại lý B2B và điều khoản hợp đồng nhé");
+        salesDecision.ShouldUseRoom.Should().BeTrue();
+        salesDecision.Mode.Should().Be("specialty_triage");
+        salesDecision.SelectedCollaborators.Should().Equal(["zen"]);
+
+        // Case 2: Brand/marketing follow-up without @mention -> Host selectively pulls ONLY climax-default
+        var marketingDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Định vị thương hiệu và chiến dịch truyền thông viral trên TikTok nên đi theo concept nào?");
+        marketingDecision.ShouldUseRoom.Should().BeTrue();
+        marketingDecision.Mode.Should().Be("specialty_triage");
+        marketingDecision.SelectedCollaborators.Should().Equal(["climax-default"]);
+
+        // Case 3: Project timeline/roadmap follow-up without @mention -> Host selectively pulls ONLY planthy-pm
+        var pmDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Lập lộ trình timeline triển khai và phân công task theo từng tuần trong 2 tháng tới");
+        pmDecision.ShouldUseRoom.Should().BeTrue();
+        pmDecision.Mode.Should().Be("specialty_triage");
+        pmDecision.SelectedCollaborators.Should().Equal(["planthy-pm"]);
+
+        // Case 4: Multi-domain question covering sales + marketing -> Host pulls both zen and climax-default
+        var multiDomainDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Phân tích đối thủ về cả chính sách giá bán lẫn chiến dịch truyền thông thương hiệu");
+        multiDomainDecision.ShouldUseRoom.Should().BeTrue();
+        multiDomainDecision.SelectedCollaborators.Should().BeEquivalentTo(["zen", "climax-default"]);
+
+        // Case 5: Direct Reply to a collaborator bubble or natural name mention without @
+        var replyDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "[Replying to 🤖 Climax Default: \"Khung đọc truyền thông...\"]\n\nĐi sâu hơn vào mục số 2 giúp anh nhé");
+        replyDecision.ShouldUseRoom.Should().BeTrue();
+        replyDecision.Mode.Should().Be("reply_or_named");
+        replyDecision.SelectedCollaborators.Should().Equal(["climax-default"]);
+
+        // Case 6: Solo Host directive or brief acknowledgement -> Host handles solo without pushing to Room
+        var soloDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Chỉ mình bạn trả lời thôi, tóm tắt lại kết quả trên thành 3 gạch đầu dòng");
+        soloDecision.ShouldUseRoom.Should().BeFalse();
+        soloDecision.Mode.Should().Be("host_solo");
+        soloDecision.SelectedCollaborators.Should().BeEmpty();
+
+        var ackDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "Ok cảm ơn em nhé!");
+        ackDecision.ShouldUseRoom.Should().BeFalse();
+        ackDecision.Mode.Should().Be("host_solo");
+    }
+
+    [Fact]
+    public async Task HostAutonomousTriage_ContinuityFollowup_RoutesToPendingWaveCollaborators_WhenUserSuppliesRequestedContext()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            NextReply = "Chưa đủ dữ liệu. Cần bổ sung: ngành hàng/sản phẩm và tên 2–3 đối thủ cụ thể."
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "session-continuity-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default", "planthy-pm"]);
+
+        // Wave 1: zen and climax-default run and ask for missing context, followed by Host synthesis
+        await orchestrator.ExecuteCollaboratorTurnAsync("gm-boc", chatId, "zen", "@zen @climax-default phân tích các đối thủ", null, chatId, ct);
+        await orchestrator.ExecuteCollaboratorTurnAsync("gm-boc", chatId, "climax-default", "@zen @climax-default phân tích các đối thủ", null, chatId, ct);
+        await orchestrator.RecordHostSynthesisTurnAsync("gm-boc", chatId, "Anh cho em biết thêm ngành hàng và 2–3 tên đối thủ cụ thể nhé!", null, null, chatId, ct);
+
+        // Wave 2: User replies with raw context WITHOUT @mentions and WITHOUT domain keywords ("sales"/"marketing")
+        var followupDecision = orchestrator.DecideRoomCollaboratorsForTurn(
+            "gm-boc", chatId, chatId, "Mảng nội thất văn phòng tại Đà Nẵng, 2 bên kia là Hòa Phát và Xuân Hòa");
+
+        followupDecision.ShouldUseRoom.Should().BeTrue();
+        followupDecision.SelectedCollaborators.Should().BeEquivalentTo(["zen", "climax-default"]);
+    }
 }

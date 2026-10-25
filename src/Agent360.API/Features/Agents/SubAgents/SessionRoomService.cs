@@ -102,6 +102,16 @@ public sealed record PostRoomMessageRequest(
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("target_agent_id")] string? TargetAgentId = null);
 
+public sealed record HostRoomTriageRequest(
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("host_session_id")] string? HostSessionId = null);
+
+public sealed record HostRoomTriageDecision(
+    [property: JsonPropertyName("should_use_room")] bool ShouldUseRoom,
+    [property: JsonPropertyName("selected_collaborators")] IReadOnlyList<string> SelectedCollaborators,
+    [property: JsonPropertyName("mode")] string Mode, // "no_room_collaborators" | "explicit_mention" | "reply_or_named" | "continuity_followup" | "specialty_triage" | "host_solo"
+    [property: JsonPropertyName("reason")] string Reason);
+
 
 public static class AgentReactionClassifier
 {
@@ -167,6 +177,178 @@ public sealed class SessionRoomStore
     private static string MakeKey(string hostAgentId, string hostChatId) =>
         $"{SubAgentService.NormalizeAgentId(hostAgentId).ToLowerInvariant()}:{hostChatId.Trim()}";
 
+    private static bool IsRealMatrixRoomId(string? matrixId) =>
+        !string.IsNullOrWhiteSpace(matrixId) &&
+        matrixId.StartsWith("!", StringComparison.Ordinal) &&
+        !matrixId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase) &&
+        !matrixId.StartsWith("!placeholder", StringComparison.OrdinalIgnoreCase);
+
+    private static int CountCollaborators(SessionCollaborationRoom r) =>
+        r.Participants.Count(p => string.Equals(p.Role, "collaborator", StringComparison.OrdinalIgnoreCase));
+
+    public static SessionCollaborationRoom MergeRooms(SessionCollaborationRoom a, SessionCollaborationRoom b)
+    {
+        // Choose canonical primary room: prefer real MatrixRoomId, more collaborators, more turns, earlier creation
+        var primary = a;
+        var secondary = b;
+        bool bBetterMatrix = IsRealMatrixRoomId(b.MatrixRoomId) && !IsRealMatrixRoomId(a.MatrixRoomId);
+        bool bMoreActive = CountCollaborators(b) > CountCollaborators(a) ||
+                           (CountCollaborators(b) == CountCollaborators(a) && b.Turns.Count > a.Turns.Count);
+        if (bBetterMatrix || (IsRealMatrixRoomId(b.MatrixRoomId) == IsRealMatrixRoomId(a.MatrixRoomId) && bMoreActive))
+        {
+            primary = b;
+            secondary = a;
+        }
+
+        // Merge participants preserving order (host first, collaborators, manager, admin)
+        var mergedParticipants = new List<SessionRoomParticipant>(primary.Participants);
+        foreach (var p in secondary.Participants)
+        {
+            var existingIdx = mergedParticipants.FindIndex(x => string.Equals(x.AgentId, p.AgentId, StringComparison.OrdinalIgnoreCase));
+            if (existingIdx < 0)
+            {
+                mergedParticipants.Add(p);
+            }
+            else if (mergedParticipants[existingIdx].Status == "idle" && p.Status != "idle")
+            {
+                mergedParticipants[existingIdx] = p;
+            }
+        }
+
+        // Merge turns (deduplicate by Id and avoid duplicate manager init turns)
+        var mergedTurns = new List<SessionRoomTurn>(primary.Turns);
+        foreach (var t in secondary.Turns)
+        {
+            if (mergedTurns.Any(x => string.Equals(x.Id, t.Id, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            if (t.TurnNo == 1 && string.Equals(t.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase) &&
+                mergedTurns.Any(x => string.Equals(x.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase) && x.Kind == "request"))
+                continue;
+            mergedTurns.Add(t);
+        }
+
+        mergedTurns = mergedTurns
+            .OrderBy(t => t.CreatedAt)
+            .ThenBy(t => t.TurnNo)
+            .Select((t, idx) => t with { TurnNo = idx + 1 })
+            .ToList();
+
+        // Merge reactions
+        Dictionary<string, IReadOnlyList<MessageReactionRecord>>? mergedReactions = null;
+        if (primary.Reactions is { Count: > 0 } || secondary.Reactions is { Count: > 0 })
+        {
+            var dict = new Dictionary<string, List<MessageReactionRecord>>(StringComparer.OrdinalIgnoreCase);
+            if (primary.Reactions is not null)
+            {
+                foreach (var kv in primary.Reactions)
+                    dict[kv.Key] = kv.Value.ToList();
+            }
+            if (secondary.Reactions is not null)
+            {
+                foreach (var kv in secondary.Reactions)
+                {
+                    if (!dict.TryGetValue(kv.Key, out var list))
+                    {
+                        list = [];
+                        dict[kv.Key] = list;
+                    }
+                    foreach (var rec in kv.Value)
+                    {
+                        if (!list.Any(r => string.Equals(r.Emoji, rec.Emoji, StringComparison.OrdinalIgnoreCase) &&
+                                           string.Equals(r.UserId, rec.UserId, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            list.Add(rec);
+                        }
+                    }
+                }
+            }
+            mergedReactions = dict.ToDictionary(k => k.Key, v => (IReadOnlyList<MessageReactionRecord>)v.Value, StringComparer.OrdinalIgnoreCase);
+        }
+
+        var canonicalChatId = !primary.HostChatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase)
+            ? primary.HostChatId
+            : (!secondary.HostChatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase) ? secondary.HostChatId : primary.HostChatId);
+
+        var canonicalSessionId = !string.IsNullOrWhiteSpace(primary.HostSessionId) && !string.Equals(primary.HostSessionId, primary.HostChatId, StringComparison.OrdinalIgnoreCase)
+            ? primary.HostSessionId
+            : (!string.IsNullOrWhiteSpace(secondary.HostSessionId) ? secondary.HostSessionId : canonicalChatId);
+
+        return primary with
+        {
+            HostChatId = canonicalChatId,
+            HostSessionId = canonicalSessionId,
+            Participants = mergedParticipants,
+            CurrentTurnCount = mergedTurns.Count,
+            Turns = mergedTurns,
+            RoomTitle = !string.IsNullOrWhiteSpace(primary.RoomTitle) ? primary.RoomTitle : secondary.RoomTitle,
+            Reactions = mergedReactions ?? primary.Reactions,
+            UpdatedAt = primary.UpdatedAt >= secondary.UpdatedAt ? primary.UpdatedAt : secondary.UpdatedAt
+        };
+    }
+
+    private static List<SessionCollaborationRoom> ConsolidateRoomsList(IEnumerable<SessionCollaborationRoom> rooms)
+    {
+        var byHostAndSession = new List<SessionCollaborationRoom>();
+
+        foreach (var incoming in rooms)
+        {
+            var normHost = SubAgentService.NormalizeAgentId(incoming.HostAgentId);
+            var normalizedIncoming = incoming with { HostAgentId = normHost };
+
+            var matchIdx = byHostAndSession.FindIndex(existing =>
+                string.Equals(existing.HostAgentId, normHost, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(existing.RoomId, normalizedIncoming.RoomId, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(existing.HostChatId, normalizedIncoming.HostChatId, StringComparison.OrdinalIgnoreCase) ||
+                 (!string.IsNullOrWhiteSpace(normalizedIncoming.HostSessionId) &&
+                  (string.Equals(existing.HostChatId, normalizedIncoming.HostSessionId, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(existing.HostSessionId, normalizedIncoming.HostSessionId, StringComparison.OrdinalIgnoreCase))) ||
+                 (!string.IsNullOrWhiteSpace(existing.HostSessionId) &&
+                  string.Equals(existing.HostSessionId, normalizedIncoming.HostChatId, StringComparison.OrdinalIgnoreCase))));
+
+            if (matchIdx >= 0)
+            {
+                byHostAndSession[matchIdx] = MergeRooms(byHostAndSession[matchIdx], normalizedIncoming);
+            }
+            else
+            {
+                byHostAndSession.Add(normalizedIncoming);
+            }
+        }
+
+        // Prune phantom zero-collaborator 1-turn stub rooms if another host agent owns an active multi-agent room for the exact same UUID HostChatId
+        var pruned = byHostAndSession
+            .Where(r =>
+            {
+                bool isStub = CountCollaborators(r) == 0 && r.Turns.Count <= 1 && (r.Reactions is null || r.Reactions.Count == 0);
+                if (!isStub) return true;
+                bool activeRoomExistsForSameChatId = byHostAndSession.Any(other =>
+                    !ReferenceEquals(other, r) &&
+                    string.Equals(other.HostChatId, r.HostChatId, StringComparison.OrdinalIgnoreCase) &&
+                    (CountCollaborators(other) > 0 || other.Turns.Count > 1));
+                return !activeRoomExistsForSameChatId;
+            })
+            .ToList();
+
+        return pruned;
+    }
+
+    private void RebuildIndexes(IEnumerable<SessionCollaborationRoom> consolidated)
+    {
+        _roomsByChatKey.Clear();
+        _chatKeyByRoomId.Clear();
+        foreach (var r in consolidated)
+        {
+            var key = MakeKey(r.HostAgentId, r.HostChatId);
+            _roomsByChatKey[key] = r;
+            if (!string.IsNullOrWhiteSpace(r.HostSessionId))
+            {
+                _roomsByChatKey[MakeKey(r.HostAgentId, r.HostSessionId)] = r;
+            }
+            _chatKeyByRoomId[r.RoomId] = key;
+            _chatKeyByRoomId[r.MatrixRoomId] = key;
+        }
+    }
+
     private void LoadFromDisk()
     {
         try
@@ -175,17 +357,8 @@ public sealed class SessionRoomStore
             var json = File.ReadAllText(_storageFile);
             var list = JsonSerializer.Deserialize<List<SessionCollaborationRoom>>(json);
             if (list is null) return;
-            foreach (var r in list)
-            {
-                var key = MakeKey(r.HostAgentId, r.HostChatId);
-                _roomsByChatKey[key] = r;
-                if (!string.IsNullOrWhiteSpace(r.HostSessionId))
-                {
-                    _roomsByChatKey[MakeKey(r.HostAgentId, r.HostSessionId)] = r;
-                }
-                _chatKeyByRoomId[r.RoomId] = key;
-                _chatKeyByRoomId[r.MatrixRoomId] = key;
-            }
+            var consolidated = ConsolidateRoomsList(list);
+            RebuildIndexes(consolidated);
         }
         catch {}
     }
@@ -195,10 +368,8 @@ public sealed class SessionRoomStore
         await _saveLock.WaitAsync();
         try
         {
-            var distinctRooms = _roomsByChatKey.Values
-                .GroupBy(r => r.RoomId, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.OrderByDescending(x => x.UpdatedAt).First())
-                .ToList();
+            var distinctRooms = ConsolidateRoomsList(_roomsByChatKey.Values);
+            RebuildIndexes(distinctRooms);
             var json = JsonSerializer.Serialize(distinctRooms, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(_storageFile, json);
         }
@@ -209,7 +380,6 @@ public sealed class SessionRoomStore
         }
     }
 
-    
     public async Task<SessionCollaborationRoom> RecordReactionAsync(
         string hostAgentId,
         string hostChatId,
@@ -219,12 +389,15 @@ public sealed class SessionRoomStore
         string action,
         CancellationToken ct = default)
     {
-        var room = GetByChat(hostAgentId, hostChatId)
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
+        var roomSlug = $"room_{host}_{shortHash}";
+        var room = GetByChat(host, hostChatId)
             ?? new SessionCollaborationRoom(
-                $"rm_{Guid.NewGuid():N}"[..12],
-                $"!{Guid.NewGuid():N}[..8]:{SessionRoomOrchestrator.GatewayDomain}",
-                $"{SessionRoomOrchestrator.ElementBaseUrl}!placeholder",
-                hostAgentId,
+                roomSlug,
+                $"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}",
+                $"{SessionRoomOrchestrator.ElementBaseUrl}{Uri.EscapeDataString($"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}")}",
+                host,
                 hostChatId,
                 hostChatId,
                 [],
@@ -300,10 +473,11 @@ public sealed class SessionRoomStore
     public SessionCollaborationRoom? GetByChat(string hostAgentId, string hostChatId)
     {
         if (string.IsNullOrWhiteSpace(hostChatId)) return null;
-        if (_roomsByChatKey.TryGetValue(MakeKey(hostAgentId, hostChatId), out var room))
+        var normHost = SubAgentService.NormalizeAgentId(hostAgentId);
+        if (_roomsByChatKey.TryGetValue(MakeKey(normHost, hostChatId), out var room))
             return room;
         return _roomsByChatKey.Values.FirstOrDefault(r =>
-            string.Equals(r.HostAgentId, SubAgentService.NormalizeAgentId(hostAgentId), StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(r.HostAgentId, normHost, StringComparison.OrdinalIgnoreCase) &&
             (string.Equals(r.HostChatId, hostChatId, StringComparison.OrdinalIgnoreCase) ||
              string.Equals(r.HostSessionId, hostChatId, StringComparison.OrdinalIgnoreCase)));
     }
@@ -311,15 +485,22 @@ public sealed class SessionRoomStore
     public void BindSessionAlias(string hostAgentId, string chatId, string? sessionId)
     {
         if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(sessionId)) return;
-        var existing = GetByChat(hostAgentId, chatId) ?? GetByChat(hostAgentId, sessionId);
+        var normHost = SubAgentService.NormalizeAgentId(hostAgentId);
+        var byChat = GetByChat(normHost, chatId);
+        var bySession = GetByChat(normHost, sessionId);
+        var existing = byChat is not null && bySession is not null && !ReferenceEquals(byChat, bySession)
+            ? MergeRooms(byChat, bySession)
+            : (byChat ?? bySession);
         if (existing is null) return;
         var updated = existing with
         {
             HostChatId = !chatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase) ? chatId : existing.HostChatId,
             HostSessionId = sessionId
         };
-        _roomsByChatKey[MakeKey(hostAgentId, chatId)] = updated;
-        _roomsByChatKey[MakeKey(hostAgentId, sessionId)] = updated;
+        _roomsByChatKey[MakeKey(normHost, chatId)] = updated;
+        _roomsByChatKey[MakeKey(normHost, sessionId)] = updated;
+        _chatKeyByRoomId[updated.RoomId] = MakeKey(normHost, updated.HostChatId);
+        _chatKeyByRoomId[updated.MatrixRoomId] = MakeKey(normHost, updated.HostChatId);
     }
 
     public SessionCollaborationRoom? GetByRoomId(string roomId)
@@ -334,12 +515,48 @@ public sealed class SessionRoomStore
     public IReadOnlyList<SessionCollaborationRoom> ListByHostAgent(string hostAgentId)
     {
         var norm = SubAgentService.NormalizeAgentId(hostAgentId);
-        return _roomsByChatKey.Values
-            .Where(r => string.Equals(r.HostAgentId, norm, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(r => r.RoomId, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.OrderByDescending(x => x.UpdatedAt).First())
+        return ConsolidateRoomsList(_roomsByChatKey.Values.Where(r => string.Equals(r.HostAgentId, norm, StringComparison.OrdinalIgnoreCase)))
             .OrderByDescending(r => r.UpdatedAt)
             .ToList();
+    }
+
+    private static string ExtractMessageNodeText(System.Text.Json.Nodes.JsonObject? m)
+    {
+        if (m is null) return "";
+        if (m["content"] is System.Text.Json.Nodes.JsonArray arr)
+            return string.Join("\n", arr.Select(x => x?["text"]?.ToString() ?? "")).Trim();
+        return (m["content"]?.ToString() ?? "").Trim();
+    }
+
+    private static System.Text.Json.Nodes.JsonObject CreateRoomTurnMessageNode(SessionCollaborationRoom room, SessionRoomTurn turn)
+    {
+        var isSynthesis = turn.Kind == "synthesis";
+        return new System.Text.Json.Nodes.JsonObject
+        {
+            ["id"] = turn.Id,
+            ["role"] = "assistant",
+            ["type"] = "message",
+            ["status"] = "completed",
+            ["content"] = new System.Text.Json.Nodes.JsonArray(
+                new System.Text.Json.Nodes.JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = turn.Text
+                }),
+            ["metadata"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["timestamp"] = turn.CreatedAt.ToString("O"),
+                ["sender_agent_id"] = isSynthesis ? null : turn.AuthorId,
+                ["sender_agent_name"] = isSynthesis ? null : turn.AuthorName,
+                ["author_role"] = turn.AuthorRole,
+                ["turn_kind"] = turn.Kind,
+                ["room_id"] = room.RoomId,
+                ["matrix_room_id"] = room.MatrixRoomId,
+                ["element_room_url"] = room.ElementRoomUrl,
+                ["reasoning"] = turn.Reasoning,
+                ["steps"] = turn.Steps is not null ? JsonSerializer.SerializeToNode(turn.Steps) : null
+            }
+        };
     }
 
     public string EnrichChatHistoryJson(string historyRaw, string? agentId, string chatId)
@@ -360,17 +577,15 @@ public sealed class SessionRoomStore
                 node["messages"] = messagesArr;
             }
 
-                        // 1. Filter out internal [IMPLICIT_REACTION_FEEDBACK] user turns so evaluation prompt stays completely invisible to user UI
+            // 1. Filter out internal [IMPLICIT_REACTION_FEEDBACK] user turns so evaluation prompt stays completely invisible to user UI
             var filteredList = new List<System.Text.Json.Nodes.JsonObject>();
             foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
             {
                 var role = msgObj["role"]?.ToString();
-                var text = msgObj["content"] is System.Text.Json.Nodes.JsonArray arr
-                    ? string.Join("\n", arr.Select(x => x?["text"]?.ToString() ?? ""))
-                    : msgObj["content"]?.ToString() ?? "";
+                var text = ExtractMessageNodeText(msgObj);
                 if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) && text.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
                 {
-                    continue; // drop implicit reaction evaluation prompt from user chat view
+                    continue;
                 }
                 filteredList.Add(msgObj);
             }
@@ -393,7 +608,7 @@ public sealed class SessionRoomStore
                 }
             }
 
-            // Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages so the UI only shows the user's clean message
+            // 3. Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages so the UI only shows the user's clean message
             foreach (var msgNode in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
             {
                 if (!string.Equals(msgNode["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) continue;
@@ -417,25 +632,98 @@ public sealed class SessionRoomStore
                 }
             }
 
-            // Project room turns in chronological order (User Request -> Collaborator Replies -> Host Synthesis LAST)
+            // 4. Group Room turns into Collaboration Waves (Request -> Collaborator Replies -> Host Synthesis)
+            // and anchor each wave to its matching user message so User -> Collaborators -> Host Synthesis order is strictly preserved across all turns!
+            var workList = messagesArr
+                .OfType<System.Text.Json.Nodes.JsonObject>()
+                .Select(m => (System.Text.Json.Nodes.JsonObject)System.Text.Json.Nodes.JsonNode.Parse(m.ToJsonString())!)
+                .ToList();
+
+            var waves = new List<(SessionRoomTurn? RequestTurn, List<SessionRoomTurn> Replies, SessionRoomTurn? SynthesisTurn)>();
+            SessionRoomTurn? curReq = null;
+            var curReplies = new List<SessionRoomTurn>();
+            SessionRoomTurn? curSynth = null;
+
             foreach (var turn in room.Turns.OrderBy(t => t.TurnNo))
             {
-                if (turn.Kind == "request" && !string.Equals(turn.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
+                if (turn.Kind == "request" && string.Equals(turn.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (turn.Kind == "request")
                 {
-                    var reqClean = turn.Text.Trim();
-                    var reqExists = messagesArr.Any(m =>
+                    if (curReq is not null && curReplies.Count == 0 && curSynth is null &&
+                        string.Equals(curReq.Text.Trim(), turn.Text.Trim(), StringComparison.OrdinalIgnoreCase))
                     {
-                        if (!string.Equals(m?["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) return false;
-                        var mText = m?["content"] is System.Text.Json.Nodes.JsonArray arr
-                            ? string.Join("\n", arr.Select(x => x?["text"]?.ToString() ?? ""))
-                            : m?["content"]?.ToString() ?? "";
-                        return mText.Trim().Equals(reqClean, StringComparison.OrdinalIgnoreCase);
-                    });
-                    if (!reqExists && !string.IsNullOrWhiteSpace(reqClean))
+                        continue; // duplicate request turn in same wave
+                    }
+                    if (curReq is not null || curReplies.Count > 0 || curSynth is not null)
                     {
-                        messagesArr.Add(new System.Text.Json.Nodes.JsonObject
+                        waves.Add((curReq, curReplies, curSynth));
+                        curReplies = [];
+                        curSynth = null;
+                    }
+                    curReq = turn;
+                    continue;
+                }
+
+                if (turn.Kind is "collaborator_reply" or "question" or "manager_guard")
+                {
+                    if (curSynth is not null)
+                    {
+                        waves.Add((curReq, curReplies, curSynth));
+                        curReq = null;
+                        curReplies = [];
+                        curSynth = null;
+                    }
+                    curReplies.Add(turn);
+                    continue;
+                }
+
+                if (turn.Kind == "synthesis")
+                {
+                    curSynth = turn;
+                    waves.Add((curReq, curReplies, curSynth));
+                    curReq = null;
+                    curReplies = [];
+                    curSynth = null;
+                }
+            }
+
+            if (curReq is not null || curReplies.Count > 0 || curSynth is not null)
+            {
+                waves.Add((curReq, curReplies, curSynth));
+            }
+
+            var matchedUserMsgIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (reqTurn, replies, synthTurn) in waves)
+            {
+                var reqClean = reqTurn?.Text.Trim() ?? "";
+                int anchorUserIdx = -1;
+
+                if (!string.IsNullOrWhiteSpace(reqClean))
+                {
+                    for (int i = 0; i < workList.Count; i++)
+                    {
+                        var m = workList[i];
+                        if (!string.Equals(m["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        var mid = m["id"]?.ToString() ?? $"idx_{i}";
+                        if (matchedUserMsgIds.Contains(mid))
+                            continue;
+                        if (string.Equals(ExtractMessageNodeText(m), reqClean, StringComparison.OrdinalIgnoreCase))
                         {
-                            ["id"] = turn.Id,
+                            anchorUserIdx = i;
+                            matchedUserMsgIds.Add(mid);
+                            break;
+                        }
+                    }
+
+                    if (anchorUserIdx < 0 && reqTurn is not null)
+                    {
+                        var userNode = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["id"] = reqTurn.Id,
                             ["role"] = "user",
                             ["type"] = "message",
                             ["status"] = "completed",
@@ -443,77 +731,49 @@ public sealed class SessionRoomStore
                                 new System.Text.Json.Nodes.JsonObject { ["type"] = "text", ["text"] = reqClean }),
                             ["metadata"] = new System.Text.Json.Nodes.JsonObject
                             {
-                                ["timestamp"] = turn.CreatedAt.ToString("O"),
+                                ["timestamp"] = reqTurn.CreatedAt.ToString("O"),
                                 ["room_id"] = room.RoomId
                             }
-                        });
+                        };
+                        workList.Add(userNode);
+                        anchorUserIdx = workList.Count - 1;
+                        matchedUserMsgIds.Add(reqTurn.Id);
                     }
-                    continue;
                 }
 
-                if (turn.Kind is not ("collaborator_reply" or "question" or "manager_guard" or "synthesis"))
-                    continue;
-
-                var isSynthesis = turn.Kind == "synthesis";
-                var alreadyPresent = messagesArr.Any(m =>
-                    m?["id"]?.ToString() == turn.Id ||
-                    (isSynthesis && string.Equals(m?["role"]?.ToString(), "assistant", StringComparison.OrdinalIgnoreCase) &&
-                     (m?["content"] is System.Text.Json.Nodes.JsonArray cArr
-                        ? string.Join("\n", cArr.Select(x => x?["text"]?.ToString() ?? "")).Trim() == turn.Text.Trim()
-                        : (m?["content"]?.ToString() ?? "").Trim() == turn.Text.Trim())));
-                if (alreadyPresent) continue;
-
-                var msgObj = new System.Text.Json.Nodes.JsonObject
+                int insertPos = anchorUserIdx >= 0 ? anchorUserIdx + 1 : workList.Count;
+                // Advance past any already-inserted collaborator replies right after anchorUserIdx
+                while (insertPos < workList.Count &&
+                       !string.IsNullOrEmpty(workList[insertPos]["metadata"]?["sender_agent_id"]?.ToString()))
                 {
-                    ["id"] = turn.Id,
-                    ["role"] = "assistant",
-                    ["type"] = "message",
-                    ["status"] = "completed",
-                    ["content"] = new System.Text.Json.Nodes.JsonArray(
-                        new System.Text.Json.Nodes.JsonObject
-                        {
-                            ["type"] = "text",
-                            ["text"] = turn.Text
-                        }),
-                    ["metadata"] = new System.Text.Json.Nodes.JsonObject
+                    insertPos++;
+                }
+
+                foreach (var replyTurn in replies)
+                {
+                    if (workList.Any(m => string.Equals(m["id"]?.ToString(), replyTurn.Id, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    workList.Insert(insertPos, CreateRoomTurnMessageNode(room, replyTurn));
+                    insertPos++;
+                }
+
+                if (synthTurn is not null)
+                {
+                    bool synthAlreadyPresent = workList.Any(m =>
+                        string.Equals(m["id"]?.ToString(), synthTurn.Id, StringComparison.OrdinalIgnoreCase) ||
+                        (string.Equals(m["role"]?.ToString(), "assistant", StringComparison.OrdinalIgnoreCase) &&
+                         string.IsNullOrEmpty(m["metadata"]?["sender_agent_id"]?.ToString()) &&
+                         string.Equals(ExtractMessageNodeText(m), synthTurn.Text.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+                    if (!synthAlreadyPresent)
                     {
-                        ["timestamp"] = turn.CreatedAt.ToString("O"),
-                        ["sender_agent_id"] = isSynthesis ? null : turn.AuthorId,
-                        ["sender_agent_name"] = isSynthesis ? null : turn.AuthorName,
-                        ["author_role"] = turn.AuthorRole,
-                        ["turn_kind"] = turn.Kind,
-                        ["room_id"] = room.RoomId,
-                        ["matrix_room_id"] = room.MatrixRoomId,
-                        ["element_room_url"] = room.ElementRoomUrl,
-                        ["reasoning"] = turn.Reasoning,
-                        ["steps"] = turn.Steps is not null ? JsonSerializer.SerializeToNode(turn.Steps) : null
+                        workList.Insert(insertPos, CreateRoomTurnMessageNode(room, synthTurn));
                     }
-                };
-                messagesArr.Add(msgObj);
+                }
             }
 
-            // Guarantee chronological order and ensure Host Synthesis comes AFTER all Collaborator Replies for the same turn batch
-            var sortedMessages = messagesArr
-                .OfType<System.Text.Json.Nodes.JsonObject>()
-                .Select((m, idx) =>
-                {
-                    var tsStr = m["metadata"]?["timestamp"]?.ToString() ?? m["created_at"]?.ToString();
-                    var parsedTs = DateTimeOffset.TryParse(tsStr, out var dto) ? dto : DateTimeOffset.MinValue;
-                    var role = m["role"]?.ToString() ?? "assistant";
-                    var turnKind = m["metadata"]?["turn_kind"]?.ToString();
-                    var senderAg = m["metadata"]?["sender_agent_id"]?.ToString();
-                    // Within the same collaboration window: user (0) -> collaborator_reply (1) -> host synthesis / assistant (2)
-                    var phaseOrder = role == "user" ? 0 : (!string.IsNullOrEmpty(senderAg) && turnKind != "synthesis" ? 1 : 2);
-                    return (Node: System.Text.Json.Nodes.JsonNode.Parse(m.ToJsonString())!, Ts: parsedTs, Phase: phaseOrder, Idx: idx);
-                })
-                .OrderBy(x => x.Ts == DateTimeOffset.MinValue ? 1 : 0)
-                .ThenBy(x => x.Ts)
-                .ThenBy(x => x.Phase)
-                .ThenBy(x => x.Idx)
-                .Select(x => x.Node)
-                .ToArray();
-
-            node["messages"] = new System.Text.Json.Nodes.JsonArray(sortedMessages);
+            node["messages"] = new System.Text.Json.Nodes.JsonArray(
+                workList.Select(m => System.Text.Json.Nodes.JsonNode.Parse(m.ToJsonString())!).ToArray());
 
             return node.ToJsonString();
         }
@@ -525,16 +785,33 @@ public sealed class SessionRoomStore
 
     public async Task<SessionCollaborationRoom> SaveAsync(SessionCollaborationRoom room)
     {
-        var key = MakeKey(room.HostAgentId, room.HostChatId);
-        _roomsByChatKey[key] = room;
-        if (!string.IsNullOrWhiteSpace(room.HostSessionId))
+        var normHost = SubAgentService.NormalizeAgentId(room.HostAgentId);
+        var normalizedRoom = room with { HostAgentId = normHost };
+
+        var existingByChat = GetByChat(normHost, normalizedRoom.HostChatId);
+        var existingBySess = !string.IsNullOrWhiteSpace(normalizedRoom.HostSessionId)
+            ? GetByChat(normHost, normalizedRoom.HostSessionId)
+            : null;
+
+        if (existingByChat is not null && !string.Equals(existingByChat.RoomId, normalizedRoom.RoomId, StringComparison.OrdinalIgnoreCase))
         {
-            _roomsByChatKey[MakeKey(room.HostAgentId, room.HostSessionId)] = room;
+            normalizedRoom = MergeRooms(existingByChat, normalizedRoom);
         }
-        _chatKeyByRoomId[room.RoomId] = key;
-        _chatKeyByRoomId[room.MatrixRoomId] = key;
+        if (existingBySess is not null && !string.Equals(existingBySess.RoomId, normalizedRoom.RoomId, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedRoom = MergeRooms(existingBySess, normalizedRoom);
+        }
+
+        var key = MakeKey(normHost, normalizedRoom.HostChatId);
+        _roomsByChatKey[key] = normalizedRoom;
+        if (!string.IsNullOrWhiteSpace(normalizedRoom.HostSessionId))
+        {
+            _roomsByChatKey[MakeKey(normHost, normalizedRoom.HostSessionId)] = normalizedRoom;
+        }
+        _chatKeyByRoomId[normalizedRoom.RoomId] = key;
+        _chatKeyByRoomId[normalizedRoom.MatrixRoomId] = key;
         await PersistAsync();
-        return room;
+        return normalizedRoom;
     }
 }
 
@@ -556,6 +833,18 @@ public sealed partial class SessionRoomOrchestrator(
     {
         Timeout = TimeSpan.FromSeconds(15)
     };
+
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SessionRoomLocks = new(StringComparer.OrdinalIgnoreCase);
+
+    private SemaphoreSlim GetSessionRoomLock(string hostAgentId, string hostChatId, string? hostSessionId)
+    {
+        var normHost = SubAgentService.NormalizeAgentId(hostAgentId).ToLowerInvariant();
+        var existing = roomStore.GetByChat(normHost, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(normHost, hostSessionId!) : null);
+        var canonicalChatKey = existing?.RoomId
+            ?? (!hostChatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase) ? $"{normHost}:{hostChatId.Trim()}" : $"{normHost}:{(hostSessionId ?? hostChatId).Trim()}");
+        return SessionRoomLocks.GetOrAdd(canonicalChatKey, _ => new SemaphoreSlim(1, 1));
+    }
 
     private static string MatrixId(string id)
     {
@@ -863,111 +1152,125 @@ public sealed partial class SessionRoomOrchestrator(
             }
         }
 
-        // 2. Check if Room already exists for this chat session
-        var existingRoom = roomStore.GetByChat(host, hostChatId)
-            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
-
-        if (existingRoom is not null)
+        var sessionLock = GetSessionRoomLock(host, hostChatId, hostSessionId);
+        await sessionLock.WaitAsync(ct);
+        try
         {
-            var participants = existingRoom.Participants.ToList();
-            bool addedNewMember = false;
-            foreach (var collab in collabList)
+            // 2. Check if Room already exists for this chat session (Strict 1-Session = 1-Room Invariant)
+            var existingRoom = roomStore.GetByChat(host, hostChatId)
+                ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
+
+            if (existingRoom is not null)
             {
-                if (participants.All(p => !string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)))
+                var participants = existingRoom.Participants.ToList();
+                bool addedNewMember = false;
+                foreach (var collab in collabList)
                 {
-                    participants.Add(new SessionRoomParticipant(
-                        collab,
-                        FriendlyAgentName(collab),
-                        "collaborator",
-                        MatrixId(collab),
-                        "idle",
-                        now));
+                    if (participants.All(p => !string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        participants.Add(new SessionRoomParticipant(
+                            collab,
+                            FriendlyAgentName(collab),
+                            "collaborator",
+                            MatrixId(collab),
+                            "idle",
+                            now));
+                        addedNewMember = true;
+                    }
+                }
+
+                // Ensure default manager and admin are always present
+                if (participants.All(p => !string.Equals(p.Role, "manager", StringComparison.OrdinalIgnoreCase)))
+                {
+                    participants.Add(new SessionRoomParticipant(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now));
                     addedNewMember = true;
                 }
-            }
-
-            // Ensure default manager and admin are always present
-            if (participants.All(p => !string.Equals(p.Role, "manager", StringComparison.OrdinalIgnoreCase)))
-            {
-                participants.Add(new SessionRoomParticipant(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now));
-                addedNewMember = true;
-            }
-            if (participants.All(p => !string.Equals(p.Role, "admin", StringComparison.OrdinalIgnoreCase)))
-            {
-                participants.Add(new SessionRoomParticipant(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now));
-                addedNewMember = true;
-            }
-
-            var matrixRoomId = existingRoom.MatrixRoomId;
-            if (addedNewMember || matrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase))
-            {
-                var provisionedId = await EnsureRealMatrixRoomOnAgentTeamsAsync(matrixRoomId, host, hostChatId, participants, ct);
-                if (!string.IsNullOrWhiteSpace(provisionedId))
+                if (participants.All(p => !string.Equals(p.Role, "admin", StringComparison.OrdinalIgnoreCase)))
                 {
-                    matrixRoomId = provisionedId;
+                    participants.Add(new SessionRoomParticipant(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now));
+                    addedNewMember = true;
                 }
+
+                var matrixRoomId = existingRoom.MatrixRoomId;
+                if (addedNewMember || matrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase))
+                {
+                    var provisionedId = await EnsureRealMatrixRoomOnAgentTeamsAsync(matrixRoomId, host, hostChatId, participants, ct);
+                    if (!string.IsNullOrWhiteSpace(provisionedId))
+                    {
+                        matrixRoomId = provisionedId;
+                    }
+                }
+
+                var canonicalChatId = !hostChatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase)
+                    ? hostChatId
+                    : existingRoom.HostChatId;
+
+                var updated = existingRoom with
+                {
+                    MatrixRoomId = matrixRoomId,
+                    ElementRoomUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(matrixRoomId)}",
+                    HostChatId = canonicalChatId,
+                    HostSessionId = !string.IsNullOrWhiteSpace(hostSessionId) ? hostSessionId : existingRoom.HostSessionId,
+                    Participants = participants,
+                    UpdatedAt = now
+                };
+                return await roomStore.SaveAsync(updated);
             }
 
-            var updated = existingRoom with
+            // 3. Create new Session-Sticky AgentTeams Room with scoped agents + default Manager & Admin
+            var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
+            var roomSlug = $"room_{host}_{shortHash}";
+            var canonicalParticipants = new List<SessionRoomParticipant>
             {
-                MatrixRoomId = matrixRoomId,
-                ElementRoomUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(matrixRoomId)}",
-                HostSessionId = !string.IsNullOrWhiteSpace(hostSessionId) ? hostSessionId : existingRoom.HostSessionId,
-                Participants = participants,
-                UpdatedAt = now
+                new(host, FriendlyAgentName(host), "host", MatrixId(host), "idle", now)
             };
-            return await roomStore.SaveAsync(updated);
+            foreach (var collab in collabList)
+            {
+                canonicalParticipants.Add(new(collab, FriendlyAgentName(collab), "collaborator", MatrixId(collab), "idle", now));
+            }
+            canonicalParticipants.Add(new(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now));
+            canonicalParticipants.Add(new(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now));
+
+            var realMatrixRoomId = await EnsureRealMatrixRoomOnAgentTeamsAsync(null, host, hostChatId, canonicalParticipants, ct)
+                ?? $"!{roomSlug}:{GatewayDomain}";
+            var elementUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(realMatrixRoomId)}";
+
+            var memberSummary = string.Join(", ", canonicalParticipants.Select(p => $"{p.DisplayName} ({p.Role})"));
+            var systemInitTurn = new SessionRoomTurn(
+                $"rt_{Guid.NewGuid():N}"[..12],
+                1,
+                ManagerAgentId,
+                "AgentTeams Manager",
+                "manager",
+                "request",
+                $"Room [{realMatrixRoomId}] được khởi tạo gắn với phiên chat '{hostChatId}' của {FriendlyAgentName(host)}. Thành viên: {memberSummary}.",
+                collabList.FirstOrDefault() ?? host,
+                now);
+
+            var room = new SessionCollaborationRoom(
+                RoomId: roomSlug,
+                MatrixRoomId: realMatrixRoomId,
+                ElementRoomUrl: elementUrl,
+                HostAgentId: host,
+                HostChatId: hostChatId,
+                HostSessionId: hostSessionId ?? hostChatId,
+                Participants: canonicalParticipants,
+                Status: "idle",
+                ActiveCollaboratorId: collabList.FirstOrDefault(),
+                MaxRoomTurns: 4,
+                CurrentTurnCount: 1,
+                Turns: [systemInitTurn],
+                CreatedAt: now,
+                UpdatedAt: now);
+
+            var saved = await roomStore.SaveAsync(room);
+            _ = PostTurnToRealMatrixRoomAsync(saved, systemInitTurn);
+            return saved;
         }
-
-        // 3. Create new Session-Sticky AgentTeams Room with scoped agents + default Manager & Admin
-        var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
-        var roomSlug = $"room_{host}_{shortHash}";
-        var canonicalParticipants = new List<SessionRoomParticipant>
+        finally
         {
-            new(host, FriendlyAgentName(host), "host", MatrixId(host), "idle", now)
-        };
-        foreach (var collab in collabList)
-        {
-            canonicalParticipants.Add(new(collab, FriendlyAgentName(collab), "collaborator", MatrixId(collab), "idle", now));
+            sessionLock.Release();
         }
-        canonicalParticipants.Add(new(ManagerAgentId, "AgentTeams Manager", "manager", MatrixId("manager"), "idle", now));
-        canonicalParticipants.Add(new(AdminUserId, "Admin Operator", "admin", MatrixId("admin"), "idle", now));
-
-        var realMatrixRoomId = await EnsureRealMatrixRoomOnAgentTeamsAsync(null, host, hostChatId, canonicalParticipants, ct)
-            ?? $"!{roomSlug}:{GatewayDomain}";
-        var elementUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(realMatrixRoomId)}";
-
-        var memberSummary = string.Join(", ", canonicalParticipants.Select(p => $"{p.DisplayName} ({p.Role})"));
-        var systemInitTurn = new SessionRoomTurn(
-            $"rt_{Guid.NewGuid():N}"[..12],
-            1,
-            ManagerAgentId,
-            "AgentTeams Manager",
-            "manager",
-            "request",
-            $"Room [{realMatrixRoomId}] được khởi tạo gắn với phiên chat '{hostChatId}' của {FriendlyAgentName(host)}. Thành viên: {memberSummary}.",
-            collabList.FirstOrDefault() ?? host,
-            now);
-
-        var room = new SessionCollaborationRoom(
-            RoomId: roomSlug,
-            MatrixRoomId: realMatrixRoomId,
-            ElementRoomUrl: elementUrl,
-            HostAgentId: host,
-            HostChatId: hostChatId,
-            HostSessionId: hostSessionId ?? hostChatId,
-            Participants: canonicalParticipants,
-            Status: "idle",
-            ActiveCollaboratorId: collabList.FirstOrDefault(),
-            MaxRoomTurns: 4,
-            CurrentTurnCount: 1,
-            Turns: [systemInitTurn],
-            CreatedAt: now,
-            UpdatedAt: now);
-
-        var saved = await roomStore.SaveAsync(room);
-        _ = PostTurnToRealMatrixRoomAsync(saved, systemInitTurn);
-        return saved;
     }
 
     /// <summary>
@@ -988,9 +1291,19 @@ public sealed partial class SessionRoomOrchestrator(
         var collab = SubAgentService.NormalizeAgentId(collaboratorAgentId);
         var now = DateTimeOffset.UtcNow;
 
-        // 1. Check Manager Ping-Pong Loop Guard
-        var collabTurnsInRoom = room.Turns.Count(t => string.Equals(t.AuthorId, collab, StringComparison.OrdinalIgnoreCase));
-        if (collabTurnsInRoom >= room.MaxRoomTurns)
+        // 1. Check Manager Ping-Pong Loop Guard within the current active wave (since last Host synthesis turn)
+        int lastSynthesisIndex = -1;
+        for (int i = room.Turns.Count - 1; i >= 0; i--)
+        {
+            if (string.Equals(room.Turns[i].Kind, "synthesis", StringComparison.OrdinalIgnoreCase))
+            {
+                lastSynthesisIndex = i;
+                break;
+            }
+        }
+        var activeWaveTurns = lastSynthesisIndex >= 0 ? room.Turns.Skip(lastSynthesisIndex + 1).ToList() : room.Turns.ToList();
+        var collabTurnsInWave = activeWaveTurns.Count(t => string.Equals(t.AuthorId, collab, StringComparison.OrdinalIgnoreCase));
+        if (collabTurnsInWave >= room.MaxRoomTurns)
         {
             var guardTurn = new SessionRoomTurn(
                 $"rt_{Guid.NewGuid():N}"[..12],
@@ -1017,41 +1330,59 @@ public sealed partial class SessionRoomOrchestrator(
             return (guardedRoom, guardTurn);
         }
 
-        // 2. Record Request Turn from Host/User to Collaborator B in Room
-        var reqTurn = new SessionRoomTurn(
-            $"rt_{Guid.NewGuid():N}"[..12],
-            room.Turns.Count + 1,
-            host,
-            FriendlyAgentName(host),
-            "host",
-            "request",
-            objective,
-            collab,
-            now);
+        // 2. Record Request Turn from Host/User to Collaborator B in Room (deduplicate if another collaborator in the same wave already recorded the exact same objective)
+        var existingWaveRequest = activeWaveTurns.LastOrDefault(t =>
+            t.Kind == "request" &&
+            !string.Equals(t.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(t.Text.Trim(), objective.Trim(), StringComparison.OrdinalIgnoreCase));
 
         var runningParticipants = room.Participants.Select(p =>
             string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)
                 ? p with { Status = "running" }
                 : p).ToList();
 
-        room = await roomStore.SaveAsync(room with
+        if (existingWaveRequest is null)
         {
-            Status = "collaborator_running",
-            ActiveCollaboratorId = collab,
-            Participants = runningParticipants,
-            CurrentTurnCount = room.Turns.Count + 1,
-            Turns = [.. room.Turns, reqTurn],
-            UpdatedAt = now
-        });
+            var reqTurn = new SessionRoomTurn(
+                $"rt_{Guid.NewGuid():N}"[..12],
+                room.Turns.Count + 1,
+                host,
+                FriendlyAgentName(host),
+                "host",
+                "request",
+                objective,
+                collab,
+                now);
+
+            room = await roomStore.SaveAsync(room with
+            {
+                Status = "collaborator_running",
+                ActiveCollaboratorId = collab,
+                Participants = runningParticipants,
+                CurrentTurnCount = room.Turns.Count + 1,
+                Turns = [.. room.Turns, reqTurn],
+                UpdatedAt = now
+            });
+
+            BroadcastRoomTurnToHostSession(room, reqTurn, "in_progress");
+            _ = PostTurnToRealMatrixRoomAsync(room, reqTurn);
+        }
+        else
+        {
+            room = await roomStore.SaveAsync(room with
+            {
+                Status = "collaborator_running",
+                ActiveCollaboratorId = collab,
+                Participants = runningParticipants,
+                UpdatedAt = now
+            });
+        }
 
         queueManager.SetSessionTurnActive(room.HostChatId, true);
         if (!string.Equals(room.HostSessionId, room.HostChatId, StringComparison.OrdinalIgnoreCase))
         {
             queueManager.SetSessionTurnActive(room.HostSessionId, true);
         }
-
-        BroadcastRoomTurnToHostSession(room, reqTurn, "in_progress");
-        _ = PostTurnToRealMatrixRoomAsync(room, reqTurn);
 
         // 3. Build Scoped Context Injection Prompt for Agent B (with Room Routing Metadata)
         var scopedPrompt = BuildRoomScopedPrompt(room, collab, objective, recentContextSnippet);
@@ -1380,15 +1711,37 @@ public sealed partial class SessionRoomOrchestrator(
             .Select(p => $"@{p.AgentId} ({p.DisplayName} — {DescribeAgentSpecialty(p.AgentId)})")
             .ToList();
 
+        // Build prior Room wave context from room.Turns so follow-up messages in the Room retain full memory of earlier questions & syntheses
+        var priorRoomMemory = new StringBuilder();
+        var historicalTurns = room.Turns
+            .Where(t => !(t.Kind == "request" && string.Equals(t.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase)))
+            .Where(t => !(t.Kind == "request" && string.Equals(t.Text.Trim(), objective.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .TakeLast(6)
+            .ToList();
+
+        foreach (var ht in historicalTurns)
+        {
+            var cleanHistText = StripCollaboratorMentions(ht.Text);
+            if (cleanHistText.Length > 320) cleanHistText = cleanHistText[..320] + "...";
+            var label = ht.Kind switch
+            {
+                "request" => "Yêu cầu trước trong Room",
+                "synthesis" => $"Tổng hợp trước của Chủ phòng (@{ht.AuthorId})",
+                _ => $"Đóng góp trước của @{ht.AuthorId} ({ht.AuthorName})"
+            };
+            priorRoomMemory.AppendLine($"- {label}: {cleanHistText}");
+        }
+
         var sb = new StringBuilder();
         sb.AppendLine($"[NGỮ CẢNH PHỐI HỢP ĐA TÁC TỬ TRONG PHIÊN: {room.HostChatId}]");
+        sb.AppendLine($"- Mã Room duy nhất của phiên: {room.MatrixRoomId} ({room.RoomId})");
         sb.AppendLine($"- Chủ phòng (Host Agent điều phối & tổng hợp cuối): @{room.HostAgentId} ({FriendlyAgentName(room.HostAgentId)})");
         sb.AppendLine($"- Vai trò của bạn: @{collaboratorId} ({FriendlyAgentName(collaboratorId)}) — {DescribeAgentSpecialty(collaboratorId)}");
         if (teammates.Count > 0)
         {
-            sb.AppendLine($"- Các thành viên AI cùng tham gia trong phiên: {string.Join(", ", teammates)}");
+            sb.AppendLine($"- Các thành viên AI cùng tham gia trong Room: {string.Join(", ", teammates)}");
         }
-        sb.AppendLine("- QUY TẮC BẮT BUỘC: Tên các thành viên AI (như `@zen`, `@climax-default`, `@planthy-pm`, `@gm-boc`, `@ken`, `@mons`...) chỉ là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng gắn thẻ để mời vào cùng xử lý công việc, TUYỆT ĐỐI KHÔNG PHẢI là tên sản phẩm, thương hiệu hay đối tượng kinh doanh mà người dùng đang hỏi.");
+        sb.AppendLine("- QUY TẮC BẮT BUỘC: Tên các thành viên AI (như `@zen`, `@climax-default`, `@planthy-pm`, `@gm-boc`, `@ken`, `@mons`...) chỉ là ĐỊNH DANH ĐỒNG NGHIỆP AI được mời vào Room để cùng xử lý công việc, TUYỆT ĐỐI KHÔNG PHẢI là tên sản phẩm, thương hiệu hay đối tượng kinh doanh mà người dùng đang hỏi.");
         sb.AppendLine();
         if (!string.IsNullOrWhiteSpace(recentContextSnippet))
         {
@@ -1396,11 +1749,370 @@ public sealed partial class SessionRoomOrchestrator(
             sb.AppendLine(recentContextSnippet.Trim());
             sb.AppendLine();
         }
-        sb.AppendLine("## Nội dung yêu cầu của người dùng cần bạn đóng góp ý kiến chuyên môn:");
+        if (priorRoomMemory.Length > 0)
+        {
+            sb.AppendLine("## Ngữ cảnh các lượt thảo luận trước trong Room này:");
+            sb.AppendLine(priorRoomMemory.ToString().Trim());
+            sb.AppendLine();
+        }
+        sb.AppendLine("## Nội dung yêu cầu mới của người dùng cần bạn đóng góp ý kiến chuyên môn:");
         sb.AppendLine(cleanObjective);
         sb.AppendLine();
-        sb.AppendLine("Hướng dẫn phản hồi: Hãy dựa trên lịch sử hội thoại của phiên chat phía trên và đóng góp phân tích/ý kiến ngắn gọn, súc tích đúng chuyên môn của bạn để Chủ phòng tổng hợp cho người dùng. Không lặp lại tiền tố `QUESTION_FOR_PARENT:`. Nếu cả lịch sử phiên chat lẫn câu hỏi đều chưa nêu tên ngành hàng/dự án cụ thể, hãy đưa ra khung tiêu chí phân tích cốt lõi theo chuyên môn của bạn (3-4 gạch đầu dòng ngắn) và ghi chú 1 dòng cuối về thông tin cần người dùng bổ sung.");
+        sb.AppendLine("Hướng dẫn phản hồi: Hãy kết hợp ngữ cảnh các lượt thảo luận trước trong Room (nếu người dùng đang bổ sung thông tin ngành hàng/đối thủ/phạm vi cho câu hỏi trước) và đóng góp phân tích/ý kiến ngắn gọn, súc tích đúng chuyên môn của bạn để Chủ phòng tổng hợp cho người dùng. Không lặp lại tiền tố `QUESTION_FOR_PARENT:`. Nếu cả lịch sử Room lẫn câu hỏi mới đều chưa nêu tên ngành hàng/dự án cụ thể, hãy đưa ra khung tiêu chí phân tích cốt lõi theo chuyên môn của bạn (3-4 gạch đầu dòng ngắn) và ghi chú 1 dòng cuối về thông tin cần người dùng bổ sung.");
         return sb.ToString();
+    }
+
+    private static readonly IReadOnlyDictionary<string, string[]> AgentSpecialtyKeywords = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["zen"] =
+        [
+            "kinh doanh", "sales", "sale", "bán hàng", "doanh số", "doanh thu", "báo giá", "giá bán", "định giá",
+            "pricing", "chiết khấu", "khuyến mãi", "gói cước", "thương mại", "đấu thầu", "gói thầu", "hợp đồng",
+            "khách hàng", "đối thủ", "cạnh tranh", "thị phần", "đại lý", "nhà phân phối", "kênh bán", "b2b", "b2c",
+            "chốt đơn", "pipeline", "lead", "roi", "biên lợi nhuận", "chi phí", "ngân sách", "gói sản phẩm"
+        ],
+        ["climax-default"] =
+        [
+            "marketing", "thương hiệu", "brand", "branding", "truyền thông", "chiến dịch", "campaign", "content",
+            "nội dung", "social", "mạng xã hội", "tiktok", "facebook", "instagram", "threads", "viral", "quảng cáo",
+            "ads", "định vị", "positioning", "insight", "thị trường", "khách hàng mục tiêu", "target audience",
+            "nhận diện", "thông điệp", "slogan", "koc", "kol", "pr", "đối thủ", "cạnh tranh", "ngành hàng",
+            "xu hướng", "trend", "sáng tạo", "ý tưởng", "concept", "f&b", "chuỗi"
+        ],
+        ["climax-team"] =
+        [
+            "marketing", "thương hiệu", "brand", "truyền thông", "chiến dịch", "campaign", "content", "social",
+            "tiktok", "facebook", "instagram", "threads", "scrape", "cào dữ liệu", "đối thủ", "thị trường", "xu hướng"
+        ],
+        ["planthy-pm"] =
+        [
+            "kế hoạch", "tiến độ", "timeline", "lộ trình", "roadmap", "milestone", "cột mốc", "giai đoạn", "phase",
+            "triển khai", "vận hành", "quản lý dự án", "dự án", "wbs", "task", "công việc", "phân công", "nhân sự",
+            "nguồn lực", "rủi ro", "nghiệm thu", "checklist", "deadline", "thời hạn", "tuần", "tháng", "quý",
+            "sprint", "rollout", "kpi"
+        ],
+        ["planthy-team"] =
+        [
+            "kế hoạch", "tiến độ", "timeline", "lộ trình", "triển khai", "vận hành", "task", "công việc",
+            "phân công", "checklist", "deadline", "tuần", "tháng", "sprint"
+        ],
+        ["mons"] =
+        [
+            "kỹ thuật", "code", "lập trình", "api", "backend", "frontend", "database", "db", "sql", "server",
+            "vps", "hạ tầng", "infra", "docker", "deploy", "ci/cd", "lỗi", "bug", "fix", "kiến trúc", "hệ thống",
+            "bảo mật", "security", "performance", "hiệu năng", "tích hợp", "webhook", "sdk"
+        ],
+        ["ken"] =
+        [
+            "sản phẩm", "product", "tính năng", "feature", "yêu cầu nghiệp vụ", "requirement", "prd", "spec",
+            "user story", "ux", "ui", "giao diện", "trải nghiệm", "luồng người dùng", "user flow", "nghiệm thu",
+            "backlog", "ưu tiên", "mvp", "roadmap sản phẩm"
+        ],
+        ["gm-gao"] =
+        [
+            "thu mua", "mua hàng", "nhà cung cấp", "ncc", "vật tư", "nguyên liệu", "tồn kho", "nhập kho",
+            "xuất kho", "chuỗi cung ứng", "supply chain", "đặt hàng", "po", "báo giá đầu vào", "vận chuyển", "logistics"
+        ],
+        ["gm-lua"] =
+        [
+            "chăm sóc khách hàng", "cskh", "khiếu nại", "bảo hành", "đổi trả", "phản hồi khách",
+            "dịch vụ khách hàng", "hỗ trợ khách", "hotline", "ticket", "hậu mãi", "sự cố khách hàng", "than phiền"
+        ],
+        ["its-default"] =
+        [
+            "inox", "tân sơn", "sản xuất", "gia công", "xưởng", "định mức", "phôi", "cuộn", "tấm", "ống", "giao hàng", "đơn hàng sản xuất"
+        ],
+        ["gl-default"] =
+        [
+            "dữ liệu", "data", "analytics", "phân tích số liệu", "báo cáo", "dashboard", "bi", "tự động hóa", "automation", "workflow", "script", "thống kê"
+        ]
+    };
+
+    private static readonly IReadOnlyDictionary<string, string[]> AgentNaturalNamePatterns = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["zen"] = ["zen"],
+        ["climax-default"] = ["climax", "climax-default"],
+        ["climax-team"] = ["climax team", "climax-team"],
+        ["planthy-pm"] = ["planthy", "planthy-pm", "planthy pm"],
+        ["planthy-team"] = ["planthy team", "planthy-team"],
+        ["mons"] = ["mons"],
+        ["ken"] = ["ken"],
+        ["mkai"] = ["mkai"],
+        ["gm-boc"] = ["gm bốc", "gm boc", "gm-boc", "bốc"],
+        ["gm-gao"] = ["gm gạo", "gm gao", "gm-gao", "gạo"],
+        ["gm-lua"] = ["gm lúa", "gm lua", "gm-lua", "lúa"],
+        ["its-default"] = ["its", "inox tân sơn", "its-default"],
+        ["gl-default"] = ["gl-default", "gl automation"]
+    };
+
+    public static int ScoreCollaboratorSpecialtyMatch(string collaboratorSlug, string? userText)
+    {
+        if (string.IsNullOrWhiteSpace(userText)) return 0;
+        var normCollab = SubAgentService.NormalizeAgentId(collaboratorSlug).ToLowerInvariant();
+        if (!AgentSpecialtyKeywords.TryGetValue(normCollab, out var keywords))
+            return 0;
+
+        var lower = userText.ToLowerInvariant();
+        int score = 0;
+        foreach (var kw in keywords)
+        {
+            if (kw.Length <= 3)
+            {
+                if (Regex.IsMatch(lower, $@"{Regex.Escape(kw)}", RegexOptions.IgnoreCase))
+                    score += 2;
+            }
+            else if (lower.Contains(kw, StringComparison.OrdinalIgnoreCase))
+            {
+                score += 2;
+            }
+        }
+        return score;
+    }
+
+    /// <summary>
+    /// Host-Driven Autonomous Triage Layer:
+    /// Allows the Room Owner (Host Agent A) to decide for each new user message:
+    /// 1) Whether the request needs to be pushed into the session's single Room for collaboration or handled solo by the Host.
+    /// 2) Which specific collaborator agent(s) in the Room should be pulled in to solve the new request.
+    /// </summary>
+    public HostRoomTriageDecision DecideRoomCollaboratorsForTurn(
+        string hostAgentId,
+        string hostChatId,
+        string? hostSessionId,
+        string? rawUserText,
+        IReadOnlyList<string>? explicitMentions = null)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        if (string.IsNullOrWhiteSpace(rawUserText) || rawUserText.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HostRoomTriageDecision(false, [], "host_solo", $"Chủ phòng (@{host}) xử lý trực tiếp phản hồi cảm xúc hoặc tin nhắn trống.");
+        }
+
+        var room = roomStore.GetByChat(host, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
+
+        var roomCollaborators = room?.Participants
+            .Where(p => string.Equals(p.Role, "collaborator", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(p.AgentId, host, StringComparison.OrdinalIgnoreCase))
+            .Select(p => SubAgentService.NormalizeAgentId(p.AgentId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+
+        // 1. Check Explicit @mentions or @room / @all / @team
+        var mentions = (explicitMentions ?? DetectMentionedCollaborators(rawUserText, host))
+            .Select(SubAgentService.NormalizeAgentId)
+            .Where(c => !string.Equals(c, host, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        bool asksAllRoom = Regex.IsMatch(
+            rawUserText,
+            @"(?:^|\s)(?:@all|@room|@team)|cả\s+phòng|tất\s+cả\s+(?:các\s+)?(?:agent|chuyên\s+viên|bạn\s+trong\s+phòng)",
+            RegexOptions.IgnoreCase);
+
+        if (asksAllRoom && roomCollaborators.Count > 0)
+        {
+            foreach (var rc in roomCollaborators)
+            {
+                if (!mentions.Contains(rc, StringComparer.OrdinalIgnoreCase))
+                    mentions.Add(rc);
+            }
+        }
+
+        if (mentions.Count > 0)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: true,
+                SelectedCollaborators: mentions,
+                Mode: "explicit_mention",
+                Reason: $"Chủ phòng (@{host}) điều phối yêu cầu vào Room cho chuyên viên được chỉ định: @{string.Join(", @", mentions)}.");
+        }
+
+        // 2. If the session Room has no collaborators yet and none were @mentioned, Host handles solo
+        if (roomCollaborators.Count == 0)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: false,
+                SelectedCollaborators: [],
+                Mode: "no_room_collaborators",
+                Reason: $"Phiên chat chưa có chuyên viên phối hợp trong Room; Chủ phòng (@{host}) xử lý trực tiếp.");
+        }
+
+        // Extract optional [Replying to <Author>: "..."] header and clean user body text
+        string? replyAuthorHeader = null;
+        string userBodyText = rawUserText.Trim();
+        var replyMatch = Regex.Match(userBodyText, @"^\[Replying to ([^:\]]+):\s*""[^""]*""\]\s*", RegexOptions.IgnoreCase);
+        if (replyMatch.Success)
+        {
+            replyAuthorHeader = replyMatch.Groups[1].Value.Trim();
+            userBodyText = userBodyText[replyMatch.Length..].Trim();
+        }
+
+        // 3. Check if user is explicitly instructing the Host to answer solo or only reformat/summarize existing output
+        bool isExplicitSoloDirective = Regex.IsMatch(
+            userBodyText,
+            @"(?:chỉ\s+mình\s+(?:bạn|em|anh|chủ\s+phòng)|tự\s+(?:bạn|em)\s+trả\s+lời|không\s+cần\s+(?:hỏi|kéo|gọi|đẩy\s+vào)\s+(?:room|phòng|ai|chuyên\s+viên|thêm)|chủ\s+phòng\s+tự\s+(?:trả\s+lời|tổng\s+hợp))",
+            RegexOptions.IgnoreCase);
+
+        bool isShortAcknowledgement = userBodyText.Length <= 28 && Regex.IsMatch(
+            userBodyText,
+            @"^(?:ok|okay|oke|dạ|vâng|cảm\s+ơn(?:\s+\w+)*|thanks|thank\s+you|tốt\s+lắm|hay\s+quá|được\s+rồi|chốt\s+(?:vậy|nhé|đi)|tạm\s+biệt|bye|xin\s+chào|hello|hi)[.!]?$",
+            RegexOptions.IgnoreCase);
+
+        if (isExplicitSoloDirective || isShortAcknowledgement)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: false,
+                SelectedCollaborators: [],
+                Mode: "host_solo",
+                Reason: $"Chủ phòng (@{host}) đánh giá yêu cầu mang tính trao đổi trực tiếp nên tự phản hồi, không đẩy vào Room.");
+        }
+
+        // 4. Check Direct Reply to a Collaborator bubble OR Natural Collaborator Name Reference (without @) among Room participants
+        var namedInRoom = new List<string>();
+        foreach (var collab in roomCollaborators)
+        {
+            var patterns = AgentNaturalNamePatterns.TryGetValue(collab, out var pList) ? pList : [collab];
+            var friendly = FriendlyAgentName(collab);
+
+            if (!string.IsNullOrWhiteSpace(replyAuthorHeader))
+            {
+                if (replyAuthorHeader.Contains(collab, StringComparison.OrdinalIgnoreCase) ||
+                    replyAuthorHeader.Contains(friendly, StringComparison.OrdinalIgnoreCase) ||
+                    patterns.Any(p => replyAuthorHeader.Contains(p, StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (!namedInRoom.Contains(collab, StringComparer.OrdinalIgnoreCase))
+                        namedInRoom.Add(collab);
+                }
+            }
+
+            foreach (var pat in patterns)
+            {
+                if (Regex.IsMatch(userBodyText, $@"{Regex.Escape(pat)}", RegexOptions.IgnoreCase))
+                {
+                    bool negated = Regex.IsMatch(
+                        userBodyText,
+                        $@"(?:không|đừng|khỏi)\s+(?:cần\s+)?(?:hỏi|gọi|kéo)\s+{Regex.Escape(pat)}",
+                        RegexOptions.IgnoreCase);
+                    if (!negated && !namedInRoom.Contains(collab, StringComparer.OrdinalIgnoreCase))
+                    {
+                        namedInRoom.Add(collab);
+                    }
+                }
+            }
+        }
+
+        if (namedInRoom.Count > 0)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: true,
+                SelectedCollaborators: namedInRoom,
+                Mode: "reply_or_named",
+                Reason: $"Chủ phòng (@{host}) nhận diện yêu cầu hướng trực tiếp tới @{string.Join(", @", namedInRoom)} trong Room.");
+        }
+
+        // Check if this is a pure text formatting/rewriting request of already-generated content (with no domain investigation needed)
+        bool isPureRewriteRequest = Regex.IsMatch(
+            userBodyText,
+            @"^(?:hãy\s+|nhờ\s+(?:bạn|em|anh)\s+)?(?:viết\s+lại\s+đoạn\s+trên|tóm\s+tắt\s+lại\s+kết\s+quả\s+trên|rút\s+gọn\s+lại|dịch\s+đoạn\s+trên\s+sang)",
+            RegexOptions.IgnoreCase);
+        if (isPureRewriteRequest)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: false,
+                SelectedCollaborators: [],
+                Mode: "host_solo",
+                Reason: $"Chủ phòng (@{host}) tự biên tập/tóm tắt nội dung sẵn có mà không cần gọi lại chuyên viên trong Room.");
+        }
+
+        // 5. Inspect Latest Wave in Room for Pending Clarification / Scope Questions
+        var pendingWaveCollaborators = new List<string>();
+        bool latestWaveAskedClarification = false;
+        if (room is not null && room.Turns.Count > 0)
+        {
+            // Find the start of the most recent wave (the last non-manager request turn)
+            int lastReqIdx = -1;
+            for (int i = room.Turns.Count - 1; i >= 0; i--)
+            {
+                if (room.Turns[i].Kind == "request" && !string.Equals(room.Turns[i].AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
+                {
+                    lastReqIdx = i;
+                    break;
+                }
+            }
+
+            var latestWaveTurns = lastReqIdx >= 0 ? room.Turns.Skip(lastReqIdx).ToList() : room.Turns.TakeLast(5).ToList();
+            foreach (var wt in latestWaveTurns)
+            {
+                if (wt.Kind is "collaborator_reply" or "question" &&
+                    roomCollaborators.Contains(wt.AuthorId, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!pendingWaveCollaborators.Contains(wt.AuthorId, StringComparer.OrdinalIgnoreCase))
+                        pendingWaveCollaborators.Add(wt.AuthorId);
+
+                    if (wt.Kind == "question" ||
+                        Regex.IsMatch(wt.Text, @"cần\s+bổ\s+sung|chưa\s+đủ|cho\s+(?:em\s+)?biết\s+thêm|bổ\s+sung\s+thêm|ngành\s+hàng|tên\s+2[–\-]3\s+đối\s+thủ|\?", RegexOptions.IgnoreCase))
+                    {
+                        latestWaveAskedClarification = true;
+                    }
+                }
+                else if (wt.Kind == "synthesis" &&
+                         Regex.IsMatch(wt.Text, @"cho\s+(?:em\s+)?biết\s+thêm|cần\s+bổ\s+sung|bổ\s+sung\s+giúp|ngành\s+hàng|đối\s+thủ\s+cụ\s+thể|\?", RegexOptions.IgnoreCase))
+                {
+                    latestWaveAskedClarification = true;
+                }
+            }
+        }
+
+        // 6. Score each Collaborator in the Room by Domain Specialty Relevance
+        var scoredCollaborators = roomCollaborators
+            .Select((collab, idx) => (Collab: collab, Score: ScoreCollaboratorSpecialtyMatch(collab, userBodyText), Order: idx))
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.Order)
+            .Select(x => x.Collab)
+            .ToList();
+
+        // If the user is supplying shared scope (e.g. industry, product, competitor names) right after a clarification wave,
+        // and the user did not restrict to a single domain ("chỉ", "riêng"), include all collaborators from that pending wave
+        bool isScopeSupply = latestWaveAskedClarification &&
+            Regex.IsMatch(userBodyText, @"ngành|sản\s+phẩm|dịch\s+vụ|đối\s+thủ|thị\s+trường|khách\s+hàng|chuỗi|công\s+ty|dự\s+án|mục\s+tiêu|địa\s+bàn", RegexOptions.IgnoreCase) &&
+            !Regex.IsMatch(userBodyText, @"(?:chỉ\s+cần|riêng\s+phần|riêng\s+mảng)", RegexOptions.IgnoreCase);
+
+        if (isScopeSupply && pendingWaveCollaborators.Count > 0)
+        {
+            foreach (var pwc in pendingWaveCollaborators)
+            {
+                if (!scoredCollaborators.Contains(pwc, StringComparer.OrdinalIgnoreCase))
+                    scoredCollaborators.Add(pwc);
+            }
+        }
+
+        if (scoredCollaborators.Count > 0)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: true,
+                SelectedCollaborators: scoredCollaborators,
+                Mode: "specialty_triage",
+                Reason: $"Chủ phòng (@{host}) phân tích chuyên môn của yêu cầu mới và chủ động kéo @{string.Join(", @", scoredCollaborators)} trong Room cùng giải quyết.");
+        }
+
+        // 7. Continuity Follow-up: If no specific domain keyword matched, but the latest wave asked the user for missing context/scope
+        if (latestWaveAskedClarification && pendingWaveCollaborators.Count > 0 && userBodyText.Length >= 4)
+        {
+            return new HostRoomTriageDecision(
+                ShouldUseRoom: true,
+                SelectedCollaborators: pendingWaveCollaborators,
+                Mode: "continuity_followup",
+                Reason: $"Chủ phòng (@{host}) nhận thấy người dùng đang bổ sung thông tin cho phiên thảo luận trước nên đẩy vào Room cho @{string.Join(", @", pendingWaveCollaborators)} hoàn tất phân tích.");
+        }
+
+        // 8. Default when no collaborator specialty matches and no pending clarification wave exists: Host handles solo
+        return new HostRoomTriageDecision(
+            ShouldUseRoom: false,
+            SelectedCollaborators: [],
+            Mode: "host_solo",
+            Reason: $"Yêu cầu mới không đòi hỏi phối hợp chuyên môn từ các thành viên khác trong Room; Chủ phòng (@{host}) trực tiếp xử lý.");
     }
 
     private static void BroadcastRoomTurnToHostSession(

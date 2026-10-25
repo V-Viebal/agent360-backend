@@ -953,8 +953,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             rawUserText = effectiveRequest.Input[0].Content?.FirstOrDefault()?.Text ?? "";
         }
 
-        var mentionedCollaborators = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborators(rawUserText, agentTarget);
+        var explicitMentions = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.DetectMentionedCollaborators(rawUserText, agentTarget);
         var roomOrchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
+        var triageDecision = roomOrchestrator is not null
+            ? roomOrchestrator.DecideRoomCollaboratorsForTurn(agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, explicitMentions)
+            : new Agent360.API.Features.Agents.SubAgents.HostRoomTriageDecision(explicitMentions.Count > 0, explicitMentions, explicitMentions.Count > 0 ? "explicit_mention" : "no_room_collaborators", "");
+        var mentionedCollaborators = triageDecision.ShouldUseRoom ? triageDecision.SelectedCollaborators : [];
 
         if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null)
         {
@@ -1001,6 +1005,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     @object = "room_event",
                     status = "collaborator_running",
                     collaborator_id = mentionedCollaborators.FirstOrDefault() ?? agentTarget,
+                    triage_mode = triageDecision.Mode,
+                    triage_reason = triageDecision.Reason,
+                    selected_collaborators = mentionedCollaborators,
                     room = baseRoom
                 });
                 try
@@ -1064,6 +1071,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         @object = "room_event",
                         status = "collaborator_running",
                         collaborator_id = mentionedCollaborator,
+                        triage_mode = triageDecision.Mode,
+                        triage_reason = triageDecision.Reason,
+                        selected_collaborators = mentionedCollaborators,
                         room = ensuredRoom
                     });
                     try
@@ -1136,7 +1146,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             var cleanUserObjective = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.StripCollaboratorMentions(rawUserText, mentionedCollaborators);
-            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: Các thẻ @{string.Join(", @", mentionedCollaborators)} ở trên là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng mời vào hỗ trợ phiên chat, KHÔNG PHẢI là tên sản phẩm hay thương hiệu người dùng đang hỏi.\nNội dung câu hỏi thực chất của người dùng: \"{cleanUserObjective}\"\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn:\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
+            var triageHeader = triageDecision.Mode == "explicit_mention"
+                ? $"Các thẻ @{string.Join(", @", mentionedCollaborators)} ở trên là ĐỊNH DANH ĐỒNG NGHIỆP AI được người dùng mời vào hỗ trợ phiên chat, KHÔNG PHẢI là tên sản phẩm hay thương hiệu người dùng đang hỏi."
+                : $"Với vai trò Chủ phòng (@{agentTarget}), bạn đã chủ động phân tích yêu cầu mới và kéo @{string.Join(", @", mentionedCollaborators)} trong Room của phiên chat vào cùng giải quyết ({triageDecision.Reason}).";
+            var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\nNội dung câu hỏi thực chất của người dùng: \"{cleanUserObjective}\"\n\nCác chuyên viên AI trong phiên đã lần lượt đóng góp ý kiến chuyên môn:\n{accumulatedContext}\nVới vai trò Chủ phòng (@{agentTarget}), hãy tổng hợp các góc nhìn chuyên môn ở trên thành một câu trả lời cuối cùng hoàn chỉnh, mạch lạc và trực tiếp cho người dùng.";
             effectiveRequest = effectiveRequest with
             {
                 Message = synthesizedInput,

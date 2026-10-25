@@ -167,6 +167,25 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("UpdateChatRoomTitle")
             .WithSummary("Update the AgentTeams Matrix room name to match the chat session topic");
 
+        agents.MapPost("chats/{chatId}/room/triage", (
+                string agentId,
+                string chatId,
+                [FromBody] HostRoomTriageRequest? body,
+                HttpContext http) =>
+            {
+                var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
+                var decision = orchestrator.DecideRoomCollaboratorsForTurn(
+                    agentId,
+                    chatId,
+                    body?.HostSessionId ?? chatId,
+                    body?.Message ?? "");
+                var roomStore = http.RequestServices.GetService<SessionRoomStore>();
+                var room = roomStore?.GetByChat(agentId, chatId);
+                return Results.Ok(new { decision, room });
+            })
+            .WithName("TriageChatRoomTurn")
+            .WithSummary("Evaluate the Host Agent's autonomous decision on whether a new request should be pushed into the session Room and which Room collaborators to pull in");
+
         // ---- Delegation ledger ----
         var dlg = routeBuilder.MapGroup("delegations")
             .WithTags(EndpointTags.Agents)
