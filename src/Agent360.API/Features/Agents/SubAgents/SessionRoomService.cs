@@ -1064,31 +1064,52 @@ public sealed partial class SessionRoomOrchestrator(
         return room;
     }
 
-    private async Task PostTurnToRealMatrixRoomAsync(SessionCollaborationRoom room, SessionRoomTurn turn)
+        private async Task PostTurnToRealMatrixRoomAsync(SessionCollaborationRoom room, SessionRoomTurn turn)
     {
         if (room.MatrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase)) return;
         var asToken = ResolveMatrixAppServiceToken();
         if (string.IsNullOrWhiteSpace(asToken)) return;
 
-        try
+        const int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            var senderMxid = MatrixId(turn.AuthorId);
-            var encodedRoom = Uri.EscapeDataString(room.MatrixRoomId);
-            var txnId = Uri.EscapeDataString(turn.Id);
-            var url = $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/send/m.room.message/{txnId}?user_id={Uri.EscapeDataString(senderMxid)}";
-            using var req = new HttpRequestMessage(HttpMethod.Put, url)
+            try
             {
-                Content = JsonContent.Create(new
+                var senderMxid = MatrixId(turn.AuthorId);
+                var encodedRoom = Uri.EscapeDataString(room.MatrixRoomId);
+                var txnId = Uri.EscapeDataString(turn.Id);
+                var url = $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/send/m.room.message/{txnId}?user_id={Uri.EscapeDataString(senderMxid)}";
+                using var req = new HttpRequestMessage(HttpMethod.Put, url)
                 {
-                    msgtype = "m.text",
-                    body = $"[{turn.AuthorName} ({turn.AuthorRole})]: {turn.Text}"
-                })
-            };
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
-            req.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
-            using var _ = await SharedMatrixHttp.SendAsync(req);
+                    Content = JsonContent.Create(new
+                    {
+                        msgtype = "m.text",
+                        body = $"[{turn.AuthorName} ({turn.AuthorRole})]: {turn.Text}"
+                    })
+                };
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                req.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+
+                using var resp = await SharedMatrixHttp.SendAsync(req);
+                if (resp.IsSuccessStatusCode) return;
+
+                if ((int)resp.StatusCode is 429 or >= 500 && attempt < maxAttempts)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
+                    continue;
+                }
+                break;
+            }
+            catch (Exception ex) when (attempt < maxAttempts)
+            {
+                logger.LogDebug(ex, "Transient error posting turn {TurnId} to Matrix room {RoomId}, retry attempt {Attempt}", turn.Id, room.MatrixRoomId, attempt);
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
+            }
+            catch
+            {
+                break;
+            }
         }
-        catch {}
     }
 
     /// <summary>
