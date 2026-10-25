@@ -30,7 +30,7 @@ public static class DevelopmentExperienceConfiguration
                     }
                     catch (Exception)
                     {
-                        app.Logger.LogInformation("Local PostgreSQL 127.0.0.1:5432 not reachable. Agent360 API endpoints continue in direct QwenPaw infra mode.");
+                        app.Logger.LogInformation("Local PostgreSQL 127.0.0.1:5432 not reachable. Agent360 API endpoints continue in direct AgentCore infra mode.");
                     }
                 });
             }

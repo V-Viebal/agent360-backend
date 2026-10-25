@@ -124,7 +124,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                                 source = "fleet-health"
                             });
                     }
-                    return Results.NotFound(new { message = $"Agent '{agentId}' is not hosted on a QwenPaw runtime" });
+                    return Results.NotFound(new { message = $"Agent '{agentId}' is not hosted on an AgentCore runtime" });
                 }
 
                 // QwenPaw v2.0.x has no checkpoint router; report the capability instead of a raw 404.
@@ -260,7 +260,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
             .MapToApiVersion(ApiVersion.Default)
             .WithName("AgentRuntimeProxy")
             .WithTags(EndpointTags.Agents)
-            .WithSummary("Agent-scoped passthrough to the agent's QwenPaw runtime (allow-listed routes)")
+            .WithSummary("Agent-scoped passthrough to the agent's AgentCore runtime (allow-listed routes)")
             .AllowAnonymous();
     }
 }

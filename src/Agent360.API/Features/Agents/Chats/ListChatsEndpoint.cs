@@ -107,7 +107,7 @@ public sealed class ListChatsEndpoint : IEndpoint
             .WithName(RouteName)
             .WithTags(EndpointTags.Agents)
             .WithSummary("List all agent chats/sessions")
-            .WithDescription("Retrieves the sessions and recent chat threads mapped from QwenPaw /api/chats.")
+            .WithDescription("Retrieves the sessions and recent chat threads mapped from AgentCore /api/chats.")
             .Produces<IReadOnlyList<AgentSessionResponse>>()
             .AllowAnonymous();
 

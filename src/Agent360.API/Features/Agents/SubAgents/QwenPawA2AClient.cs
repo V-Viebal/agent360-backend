@@ -115,7 +115,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             }
             catch (Exception inner) when (!ct.IsCancellationRequested && inner is OperationCanceledException or HttpRequestException)
             {
-                throw new QwenPawUnavailableException("QwenPaw /api/agents did not respond", inner);
+                throw new QwenPawUnavailableException("AgentCore /api/agents did not respond", inner);
             }
         }
 
@@ -318,7 +318,7 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
         var taskId = Str(doc.RootElement, "task_id");
         int? timeout = doc.RootElement.TryGetProperty("timeout", out var t) && t.TryGetInt32(out var tv) ? tv : null;
         return string.IsNullOrWhiteSpace(taskId)
-            ? new NativeSubmitResult(false, sessionId, null, timeout, "No task_id returned from QwenPaw", (int)resp.StatusCode)
+            ? new NativeSubmitResult(false, sessionId, null, timeout, "No task_id returned from AgentCore", (int)resp.StatusCode)
             : new NativeSubmitResult(true, sessionId, taskId, timeout, null, (int)resp.StatusCode);
     }
 

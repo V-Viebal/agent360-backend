@@ -64,7 +64,7 @@ public sealed class QwenPawClient : IQwenPawClient
     {
         if (target.Instance is null)
         {
-            throw new HttpRequestException($"Agent '{target.AgentId}' is not hosted on a QwenPaw runtime", null, HttpStatusCode.NotFound);
+            throw new HttpRequestException($"Agent '{target.AgentId}' is not hosted on an AgentCore runtime", null, HttpStatusCode.NotFound);
         }
 
         return _routingService.SendAsync(
@@ -396,7 +396,7 @@ public sealed class QwenPawClient : IQwenPawClient
         var slug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
         if (!Resolve(slug).IsQwenPaw)
         {
-            // Non-QwenPaw runtimes (AgentTeams gateway, LLM360) expose their profile through fleet discovery.
+            // Non-AgentCore runtimes (AgentTeams gateway, LLM360) expose their profile through fleet discovery.
             var agents = await GetAgentsAsync(cancellationToken);
             var match = agents.FirstOrDefault(a => a.Slug.Equals(slug, StringComparison.OrdinalIgnoreCase))
                 ?? throw new HttpRequestException($"Agent '{slug}' not found in fleet", null, HttpStatusCode.NotFound);

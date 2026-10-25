@@ -47,7 +47,7 @@ public sealed class SubAgentEndpoints : IEndpoint
                 var (synced, content) = await svc.SyncSkillAsync(agentId, ct);
                 return synced
                     ? Results.Ok(new { synced, skill = SubAgentSkillGenerator.SkillName, content })
-                    : Results.Problem("Failed to sync skill to QwenPaw runtime", statusCode: 502);
+                    : Results.Problem("Failed to sync skill to AgentCore runtime", statusCode: 502);
             })
             .WithName("SyncSubAgentSkill");
 
@@ -249,15 +249,15 @@ public sealed class SubAgentEndpoints : IEndpoint
         }
         catch (QwenPawUnavailableException ex)
         {
-            return Results.Problem(detail: ex.Message, statusCode: 503, title: "QwenPaw runtime temporarily unavailable");
+            return Results.Problem(detail: ex.Message, statusCode: 503, title: "AgentCore runtime temporarily unavailable");
         }
         catch (HttpRequestException ex)
         {
-            return Results.Problem(detail: ex.Message, statusCode: 502, title: "QwenPaw runtime request failed");
+            return Results.Problem(detail: ex.Message, statusCode: 502, title: "AgentCore runtime request failed");
         }
         catch (OperationCanceledException) when (!ctx.HttpContext.RequestAborted.IsCancellationRequested)
         {
-            return Results.Problem(detail: "QwenPaw runtime did not respond in time; retry or use ?wait=false and poll subagents/skill-status.", statusCode: 504, title: "QwenPaw runtime timed out");
+            return Results.Problem(detail: "AgentCore runtime did not respond in time; retry or use ?wait=false and poll subagents/skill-status.", statusCode: 504, title: "QwenPaw runtime timed out");
         }
     }
 

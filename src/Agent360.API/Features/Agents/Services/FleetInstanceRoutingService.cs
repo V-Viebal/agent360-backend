@@ -245,10 +245,10 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             return Target(Instance("gl"), raw, profile);
         }
 
-        // Non-QwenPaw runtimes or external agent types surfaced by Agent Guardian
+        // Non-AgentCore runtimes or external agent types surfaced by Agent Guardian
         if (id.StartsWith("agentteams-") || id.StartsWith("llm360-") || id == "tsx-copaw")
         {
-            return new ResolvedInstanceTarget("", "Non-QwenPaw runtime", "", raw, null, null, null, "") { AgentId = raw };
+            return new ResolvedInstanceTarget("", "Non-AgentCore runtime", "", raw, null, null, null, "") { AgentId = raw };
         }
 
         var coreProfile = id switch
@@ -382,12 +382,12 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                     // The runtime received the request and is slow (or dropped the response). Both routes end at the
                     // same runtime, so replaying would duplicate chat turns/writes and double the load on a busy node.
                     _logger.LogWarning("Runtime {Instance} did not answer {Method} {Path} via {Url} in time ({Error})", instance.Key, method.Method, path, baseUrl, ex.Message);
-                    throw new HttpRequestException($"QwenPaw instance '{instance.Key}' did not answer in time", ex, HttpStatusCode.GatewayTimeout);
+                    throw new HttpRequestException($"AgentCore instance '{instance.Key}' did not answer in time", ex, HttpStatusCode.GatewayTimeout);
                 }
             }
         }
 
-        throw new HttpRequestException($"QwenPaw instance '{instance.Key}' is unreachable", lastError, HttpStatusCode.BadGateway);
+        throw new HttpRequestException($"AgentCore instance '{instance.Key}' is unreachable", lastError, HttpStatusCode.BadGateway);
     }
 
     // True only when the TCP/TLS connection was never established, i.e. the runtime never saw the request.
@@ -448,7 +448,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         var (user, password) = Credentials(instance.Key);
         if (user is null || password is null)
         {
-            _logger.LogWarning("No QwenPaw credentials configured for instance {Instance}; requests will be unauthenticated", instance.Key);
+            _logger.LogWarning("No AgentCore credentials configured for instance {Instance}; requests will be unauthenticated", instance.Key);
             return null;
         }
 
