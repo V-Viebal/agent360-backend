@@ -92,6 +92,7 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
                 IMemoryCache cache,
+                IComposioConnectionPoller poller,
                 CancellationToken ct) =>
             {
                 if (string.IsNullOrWhiteSpace(request.AppSlug))
@@ -120,6 +121,10 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
 
                 // 2a. Initiate connection via Composio Hub MCP protocol to obtain OAuth/credential redirect link
                 var connectionInfo = await InitiateComposioConnectionAsync(httpClient, displayName, effectiveToken, ct);
+                if (!string.IsNullOrWhiteSpace(connectionInfo.RedirectUrl))
+                {
+                    poller.TrackPendingConnection(targetAgent, displayName);
+                }
 
                 // 2b. Discover tools schema (prefer app-specific MCP endpoint, fallback to COMPOSIO_SEARCH_TOOLS)
                 var discoveredFunctions = await DiscoverComposioToolsAsync(httpClient, displayName, effectiveToken, ct);
@@ -261,6 +266,71 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             .WithName("ConnectComposioApp")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Connect and apply Composio application and provision matching skill with discovered schema")
+            .AllowAnonymous();
+
+        
+        // 2b. Check Connection Status (queried by frontend or poller)
+        routeBuilder.MapGet(
+            "integrations/composio/status",
+            async (
+                [FromQuery] string appSlug,
+                [FromHeader(Name = "X-Agent-Id")] string? agentIdHeader,
+                [FromQuery] string? agentIdQuery,
+                HttpClient httpClient,
+                IComposioConnectionPoller poller,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(appSlug))
+                {
+                    return Results.BadRequest(new { error = "appSlug is required" });
+                }
+
+                var targetAgent = !string.IsNullOrWhiteSpace(agentIdHeader) 
+                    ? agentIdHeader 
+                    : (!string.IsNullOrWhiteSpace(agentIdQuery) ? agentIdQuery : "mons");
+                
+                if (targetAgent.Contains(':'))
+                {
+                    targetAgent = targetAgent.Split(':').Last();
+                }
+
+                var displayName = appSlug.ToLowerInvariant().Trim();
+                var pollStatus = poller.GetStatus(targetAgent, displayName);
+
+                if (pollStatus is not null)
+                {
+                    return Results.Ok(new
+                    {
+                        agent_id = targetAgent,
+                        app_slug = displayName,
+                        status = pollStatus.Status,
+                        started_at = pollStatus.StartedAt,
+                        last_checked_at = pollStatus.LastCheckedAt,
+                        message = pollStatus.Message
+                    });
+                }
+
+                // If not in active poller, check live directly from Composio
+                var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent, allowWorkspaceFallback: true);
+                if (string.IsNullOrWhiteSpace(effectiveToken))
+                {
+                    return Results.Ok(new { agent_id = targetAgent, app_slug = displayName, status = "unconfigured" });
+                }
+
+                var conn = await InitiateComposioConnectionAsync(httpClient, displayName, effectiveToken, ct);
+                return Results.Ok(new
+                {
+                    agent_id = targetAgent,
+                    app_slug = displayName,
+                    status = conn.Status,
+                    redirect_url = conn.RedirectUrl,
+                    message = conn.Status == "active" ? "Connection active." : "Pending authorization."
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("GetComposioConnectionStatus")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Query pending/active OAuth connection status for agent app")
             .AllowAnonymous();
 
         // 3. Refresh Tool Schema on-demand: Re-discovers tools via SSE and hot-updates SKILL.md

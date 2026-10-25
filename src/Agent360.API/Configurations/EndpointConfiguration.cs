@@ -96,6 +96,7 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddScoped<SubAgentService>();
             webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Security.Iam360CellsPersistence>();
             webAppBuilder.Services.AddScoped<Agent360.API.Features.Agents.Security.IIam360CellsService, Agent360.API.Features.Agents.Security.Iam360CellsService>();
+            webAppBuilder.Services.AddHostedService<Agent360.API.Features.Agents.Security.Iam360CellReconciliationWorker>();
             webAppBuilder.Services.AddScoped<SessionRoomOrchestrator>();
             webAppBuilder.Services.AddSingleton<SubAgentSkillSyncQueue>();
             webAppBuilder.Services.AddSingleton<ISubAgentSkillSyncQueue>(sp => sp.GetRequiredService<SubAgentSkillSyncQueue>());
@@ -104,6 +105,9 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddScoped<OperatorAuthFilter>();
             webAppBuilder.Services.AddSingleton<DelegationMonitor>();
             webAppBuilder.Services.AddHostedService(sp => sp.GetRequiredService<DelegationMonitor>());
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Integrations.ComposioConnectionPoller>();
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Integrations.IComposioConnectionPoller>(sp => sp.GetRequiredService<Agent360.API.Features.Agents.Integrations.ComposioConnectionPoller>());
+            webAppBuilder.Services.AddHostedService(sp => sp.GetRequiredService<Agent360.API.Features.Agents.Integrations.ComposioConnectionPoller>());
             webAppBuilder.Services.AddHostedService<AgentCacheWarmer>();
             webAppBuilder.Services.AddHostedService<Agent360.API.Features.Agents.Services.SessionSyncBackgroundService>();
             // Inter-agent turns can legitimately take minutes; per-call timeouts are enforced in the adapter.
