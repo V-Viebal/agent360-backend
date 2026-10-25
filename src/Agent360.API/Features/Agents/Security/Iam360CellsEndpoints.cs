@@ -245,6 +245,15 @@ public sealed class Iam360CellsEndpoints : IEndpoint
         .WithSummary("Get persistent signed IAM360 intent envelopes emitted by Agent360")
         .AllowAnonymous();
 
+        // 13B. GET /api/v1/agents/iam360/persistence-status
+        group.MapGet("persistence-status", (Iam360CellsPersistence persistence) =>
+        {
+            return TypedResults.Ok(persistence.GetDiagnostics());
+        })
+        .WithName("GetIam360PersistenceStatus")
+        .WithSummary("Get dual-source PostgreSQL + Persistent Volume storage diagnostics for IAM360 Cells")
+        .AllowAnonymous();
+
         // 14. POST /api/v1/agents/iam360/live-test-all
         group.MapPost("live-test-all", async (
             IIam360CellsService cellsService,
