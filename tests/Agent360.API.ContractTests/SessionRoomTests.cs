@@ -935,4 +935,43 @@ public class SessionRoomTests
         fallbackTurn.Text.Should().NotContain("BuildSpecialtySynthesisFallback");
         fallbackTurn.Text.Should().Contain("Chiến lược Thương mại & Cấu trúc Doanh thu");
     }
+
+    [Fact]
+    public async Task InternalMethodNameLeakGuard_PreventsCodeIdentifierLeaksInSourceAndRuntimeTurns()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            // Simulate an accidental or corrupted upstream response containing a raw C# method signature
+            NextReply = "BuildSpecialtySynthesisFallback(collab, objective)"
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-leak-guard-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "climax-default", chatId, ct);
+
+        // 1. Runtime Guard: SanitizeCollaboratorTurnText & ExecuteCollaboratorTurnAsync automatically intercept and replace any raw method-name leak
+        SessionRoomOrchestrator.ContainsInternalMethodIdentifierLeak("BuildSpecialtySynthesisFallback(collab, objective)").Should().BeTrue();
+        SessionRoomOrchestrator.ContainsInternalMethodIdentifierLeak("AuditCollaboratorOutput(room, collab)").Should().BeTrue();
+        SessionRoomOrchestrator.ContainsInternalMethodIdentifierLeak("Phân tích thương hiệu bánh mì chay chuẩn xác.").Should().BeFalse();
+
+        var (_, sanitizedTurn) = await orchestrator.ExecuteCollaboratorTurnAsync(
+            "gm-boc", chatId, "climax-default", "Định vị thương hiệu bánh mì chay", null, chatId, ct);
+
+        sanitizedTurn.Text.Should().NotContain("BuildSpecialtySynthesisFallback");
+        sanitizedTurn.Text.Should().Contain("Định vị Thương hiệu & Truyền thông");
+        sanitizedTurn.ManagerAudit.Should().NotBeNull();
+        sanitizedTurn.ManagerAudit!.Passed.Should().BeTrue();
+        sanitizedTurn.ManagerAudit.ChecklistPassed.Should().Contain("no_internal_identifier_leak");
+
+        // 2. Direct Audit Guard: AuditCollaboratorOutput flags raw method leaks if passed directly
+        var room = roomStore.GetByChat("gm-boc", chatId)!;
+        var directAudit = SessionRoomOrchestrator.AuditCollaboratorOutput(
+            room, "climax-default", "Định vị thương hiệu", "BuildSpecialtySynthesisFallback(collab, objective)");
+        directAudit.Passed.Should().BeFalse();
+        directAudit.IssuesDetected.Should().Contain(x => x.Contains("internal_method_leak"));
+    }
 }

@@ -2079,7 +2079,7 @@ public sealed partial class SessionRoomOrchestrator(
         }
 
         var replyText = chatResult.Success && !string.IsNullOrWhiteSpace(chatResult.Text)
-            ? chatResult.Text.Trim()
+            ? SanitizeCollaboratorTurnText(collab, chatResult.Text, objective)
             : BuildSpecialtySynthesisFallback(collab, objective);
 
         // 4. Clean any raw QUESTION_FOR_PARENT: prefix so UI and synthesis remain natural
@@ -2599,6 +2599,24 @@ public sealed partial class SessionRoomOrchestrator(
         return string.IsNullOrWhiteSpace(cleaned) ? messageText.Trim() : cleaned;
     }
 
+    private static readonly Regex InternalMethodLeakRegex = new(
+        @"\b(?:BuildSpecialtySynthesisFallback|AuditCollaboratorOutput|AuditHostSynthesisOutput|EnsureRoomAsync|ExecuteCollaboratorTurnAsync|ExecuteCollaboratorWaveAsync|DecideRoomCollaboratorsForTurn|BuildRoomScopedPrompt)\s*\(",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public static bool ContainsInternalMethodIdentifierLeak(string? text) =>
+        !string.IsNullOrWhiteSpace(text) && InternalMethodLeakRegex.IsMatch(text);
+
+    public static string SanitizeCollaboratorTurnText(string collabSlug, string? rawText, string? rawObjective)
+    {
+        if (string.IsNullOrWhiteSpace(rawText) ||
+            ContainsInternalMethodIdentifierLeak(rawText) ||
+            rawText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildSpecialtySynthesisFallback(collabSlug, rawObjective);
+        }
+        return rawText.Trim();
+    }
+
     internal static string BuildSpecialtySynthesisFallback(string collabSlug, string? rawObjective)
     {
         var clean = StripCollaboratorMentions(rawObjective);
@@ -2726,6 +2744,17 @@ public sealed partial class SessionRoomOrchestrator(
         var issues = new List<string>();
         double score = 0.95;
 
+        // 0. Check no internal C# method identifier leak (e.g. BuildSpecialtySynthesisFallback(...), AuditCollaboratorOutput(...), EnsureRoomAsync(...))
+        if (ContainsInternalMethodIdentifierLeak(reply))
+        {
+            issues.Add("internal_method_leak: Phát hiện chuỗi tên hàm C# nội bộ rò rỉ trong nội dung phản hồi.");
+            score -= 0.7;
+        }
+        else
+        {
+            checklist.Add("no_internal_identifier_leak");
+        }
+
         // 1. Check non-empty & substantive response
         if (string.IsNullOrWhiteSpace(reply) || reply.Length < 16 || reply.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase))
         {
@@ -2825,9 +2854,15 @@ public sealed partial class SessionRoomOrchestrator(
             score -= 0.25;
         }
 
-        if (!text.Contains("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase))
+        if (ContainsInternalMethodIdentifierLeak(text))
+        {
+            issues.Add("internal_method_leak");
+            score -= 0.7;
+        }
+        else if (!text.Contains("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase))
         {
             checklist.Add("clean_representative_voice");
+            checklist.Add("no_internal_identifier_leak");
         }
 
         // Find active wave collaborator turns (since the last request turn)
