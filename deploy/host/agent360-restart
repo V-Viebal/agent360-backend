@@ -23,6 +23,11 @@ apply_backend() { # $1 container $2 compose dir $3 compose file $4 env file
     $DOCKER restart "$c" >/dev/null
   fi
   wait_backend "$c"
+  # Automated post-startup hook: bootstrap Composio webhook registration
+  if [ -f "/opt/$c/scripts/register-composio-webhook.py" ]; then
+    local webhook_domain; webhook_domain="$([ "$c" = "agent360-backend-staging" ] && echo "api-staging-agent360.antares.vn" || echo "api-agent360.antares.vn")"
+    python3 "/opt/$c/scripts/register-composio-webhook.py" --url "https://$webhook_domain/api/v1/webhooks/composio" >/dev/null 2>&1 || true
+  fi
 }
 apply_frontend() { # $1 container $2 conf dir $3 optional conf source from the CI checkout
   local c=$1 dir=$2 src=${3:-} stamp="$2/.applied"

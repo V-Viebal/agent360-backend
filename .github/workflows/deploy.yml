@@ -112,3 +112,10 @@ jobs:
           cp -a --remove-destination "${APP_ROOT}.prev/." "$APP_ROOT/" || true
           sudo -n /usr/local/sbin/agent360-restart "${{ steps.env-target.outputs.restart }}" || true
           exit 1
+
+      - name: Bootstrap Composio Webhook Registration
+        run: |
+          PUBLIC_URL="${{ steps.env-target.outputs.public_url }}"
+          WEBHOOK_URL="${PUBLIC_URL%/}/webhooks/composio"
+          echo "Bootstrapping Composio Webhook: $WEBHOOK_URL"
+          python3 scripts/register-composio-webhook.py --url "$WEBHOOK_URL" || true
