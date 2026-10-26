@@ -1279,5 +1279,15 @@ public class SessionRoomTests
         using var doc = System.Text.Json.JsonDocument.Parse(enrichedSolo);
         doc.RootElement.TryGetProperty("collaboration_room", out _).Should().BeFalse();
         doc.RootElement.GetProperty("messages").GetArrayLength().Should().Be(2);
+
+        // 4. Verify PruneIdleSoloStubRoomsAsync removes empty solo stub rooms while preserving real multi-agent rooms and reaction-bearing rooms
+        await orchestrator.EnsureRoomAsync("gm-boc", "chat-multi-keep", "zen", "chat-multi-keep", ct);
+        await roomStore.RecordReactionAsync("gm-boc", "chat-react-keep", "m1", "❤️", "u1", "add", ct);
+
+        int pruned = await roomStore.PruneIdleSoloStubRoomsAsync();
+        pruned.Should().Be(1);
+        roomStore.GetByChat("gm-boc", soloChatId).Should().BeNull();
+        roomStore.GetByChat("gm-boc", "chat-multi-keep").Should().NotBeNull();
+        roomStore.GetByChat("gm-boc", "chat-react-keep").Should().NotBeNull();
     }
 }

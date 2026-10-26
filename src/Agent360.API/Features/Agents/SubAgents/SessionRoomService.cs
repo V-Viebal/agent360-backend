@@ -443,6 +443,36 @@ public sealed class SessionRoomStore
         }
     }
 
+    public static bool IsIdleSoloStubRoom(SessionCollaborationRoom? r) =>
+        r is not null &&
+        !IsMultiAgentRoom(r) &&
+        (r.Reactions is null || r.Reactions.Count == 0 || r.Reactions.Values.All(v => v is null || v.Count == 0));
+
+    public int PruneIdleSoloStubRooms()
+    {
+        var distinct = _roomsByChatKey.Values
+            .GroupBy(r => r.RoomId, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+        var kept = distinct.Where(r => !IsIdleSoloStubRoom(r)).ToList();
+        int prunedCount = distinct.Count - kept.Count;
+        if (prunedCount > 0)
+        {
+            RebuildIndexes(kept);
+        }
+        return prunedCount;
+    }
+
+    public async Task<int> PruneIdleSoloStubRoomsAsync()
+    {
+        int pruned = PruneIdleSoloStubRooms();
+        if (pruned > 0)
+        {
+            await PersistAsync();
+        }
+        return pruned;
+    }
+
     private void LoadFromDisk()
     {
         try
@@ -451,7 +481,9 @@ public sealed class SessionRoomStore
             var json = File.ReadAllText(_storageFile);
             var list = JsonSerializer.Deserialize<List<SessionCollaborationRoom>>(json);
             if (list is null) return;
-            var consolidated = ConsolidateRoomsList(list);
+            var consolidated = ConsolidateRoomsList(list)
+                .Where(r => !IsIdleSoloStubRoom(r))
+                .ToList();
             RebuildIndexes(consolidated);
         }
         catch {}
