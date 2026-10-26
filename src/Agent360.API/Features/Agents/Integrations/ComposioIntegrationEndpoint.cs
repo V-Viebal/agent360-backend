@@ -343,6 +343,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 IMemoryCache cache,
                 IConfiguration config,
                 Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Options.ComposioOptions> composioOptions,
+                SessionMultiplexerHub multiplexerHub,
                 ILogger<ComposioIntegrationEndpoint> logger,
                 CancellationToken ct) =>
             {
@@ -471,6 +472,19 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                         var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(cleanAgent, "mcp");
                         cache.Remove(cacheKey);
                         cache.Remove(cacheKey + ":last-good");
+
+                        // Broadcast realtime WebSocket notification to active clients
+                        var wsToastPayload = JsonSerializer.Serialize(new
+                        {
+                            type = "composio_connection_activated",
+                            app_slug = cleanSlug,
+                            agent_id = cleanAgent,
+                            status = status,
+                            event_id = eventId,
+                            message = $"Ứng dụng {cleanSlug.ToUpperInvariant()} đã được cấp quyền thành công cho agent {cleanAgent}!",
+                            timestamp = DateTime.UtcNow.ToString("O")
+                        });
+                        _ = multiplexerHub.BroadcastAsync(wsToastPayload);
                     }
 
                     return Results.Ok(new { success = true, received_event = eventType, event_id = eventId });
