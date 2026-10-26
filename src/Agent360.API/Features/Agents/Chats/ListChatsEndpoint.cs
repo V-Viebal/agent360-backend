@@ -45,17 +45,17 @@ public sealed class ListChatsEndpoint : IEndpoint
             async Task<IResult> (
                 [FromQuery] string? agentId,
                 [FromQuery] string? channel,
-                IFleetInstanceRoutingService routing,
+                IQwenPawClient client,
                 SessionQueueManager queueManager,
                 CancellationToken cancellationToken) =>
             {
                 IReadOnlyList<QwenPawChatDto>? chats;
                 try
                 {
-                    var target = routing.ResolveTarget(agentId);
-                    using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats", ct: cancellationToken);
-                    response.EnsureSuccessStatusCode();
-                    chats = await response.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(cancellationToken);
+                    var chatsJson = await client.GetAgentChatsRawAsync(agentId ?? "mons", cancellationToken);
+                    chats = string.IsNullOrWhiteSpace(chatsJson)
+                        ? Array.Empty<QwenPawChatDto>()
+                        : System.Text.Json.JsonSerializer.Deserialize<IReadOnlyList<QwenPawChatDto>>(chatsJson);
                 }
                 catch (Exception) when (!cancellationToken.IsCancellationRequested)
                 {

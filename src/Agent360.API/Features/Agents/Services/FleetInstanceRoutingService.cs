@@ -91,7 +91,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
             Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
             Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
-            Build("qwenpaw-test", "7th", "Test QwenPaw (Node 7th)", "http://100.99.201.47:8089", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
+            Build("qwenpaw-test", "7th", "Test QwenPaw (Node 7th)", "https://ai-test.antares.vn", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
             Build("qwenpaw-base-test", "7th", "Base Test QwenPaw (Node 7th)", "https://ai-qwenpaw-base-test.antares.vn", "https://ai-qwenpaw-base-test.antares.vn", true, ""),
         ];
     }
@@ -263,6 +263,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             var profile = id switch
             {
                 "qwenpaw-test-ba" => "default",
+                var s when s.StartsWith("qwenpaw-test-ba-") => raw["qwenpaw-test-ba-".Length..],
                 "qwenpaw-test-acc" => "agentcore-acc",
                 "qwenpaw-test-qa" => "QwenPaw_QA_Agent_0.2",
                 _ => raw["qwenpaw-test-".Length..]
@@ -313,7 +314,10 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         {
             var pw = (key.Equals("gm", StringComparison.OrdinalIgnoreCase) && inst.Password == "6cXZ0iCDQoT1lzcSZw7uLvMvo1p4VFDR")
                 ? "ueNsWaSIKgaO2rKUPZ_ZaNuduQ6xRlD6"
-                : inst.Password;
+                : ((key.Equals("qwenpaw-test", StringComparison.OrdinalIgnoreCase) || key.Equals("qwenpaw-base-test", StringComparison.OrdinalIgnoreCase))
+                    && (inst.Password == "f0gAhrJhXvblq7EINCLOiB-NwDGr9Za3" || inst.Password == "VpsQwenpawBaseTest-2026-10-03"))
+                    ? "wujnE9nyD1ikqGRRiuFDGpWRmoa5Vqjn"
+                    : inst.Password;
             return (string.IsNullOrWhiteSpace(inst.Username) ? "admin" : inst.Username, pw);
         }
         // Fallback default infra credentials for fleet runtimes
@@ -339,11 +343,11 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         }
         if (key.Equals("qwenpaw-test", StringComparison.OrdinalIgnoreCase))
         {
-            return ("admin", "f0gAhrJhXvblq7EINCLOiB-NwDGr9Za3");
+            return ("admin", "wujnE9nyD1ikqGRRiuFDGpWRmoa5Vqjn");
         }
         if (key.Equals("qwenpaw-base-test", StringComparison.OrdinalIgnoreCase))
         {
-            return ("admin", "VpsQwenpawBaseTest-2026-10-03");
+            return ("admin", "wujnE9nyD1ikqGRRiuFDGpWRmoa5Vqjn");
         }
         return (null, null);
     }
