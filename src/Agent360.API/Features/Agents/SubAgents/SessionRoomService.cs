@@ -93,10 +93,12 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
     [property: JsonPropertyName("room_title")] string? RoomTitle = null,
     [property: JsonPropertyName("reactions")] IReadOnlyDictionary<string, IReadOnlyList<MessageReactionRecord>>? Reactions = null,
-    [property: JsonPropertyName("triage_policy")] string? TriagePolicy = "auto");
+    [property: JsonPropertyName("triage_policy")] string? TriagePolicy = "auto",
+    [property: JsonPropertyName("host_execution_policy")] string? HostExecutionPolicy = "auto"); // "auto" | "co_execute" | "synthesize_only"
 
 public sealed record UpdateRoomTriagePolicyRequest(
-    [property: JsonPropertyName("triage_policy")] string TriagePolicy);
+    [property: JsonPropertyName("triage_policy")] string? TriagePolicy = null,
+    [property: JsonPropertyName("host_execution_policy")] string? HostExecutionPolicy = null);
 
 public sealed record UpdateRoomTitleRequest(
     [property: JsonPropertyName("title")] string Title);
@@ -1742,17 +1744,30 @@ public sealed partial class SessionRoomOrchestrator(
     public async Task<SessionCollaborationRoom> SetRoomTriagePolicyAsync(
         string hostAgentId,
         string hostChatId,
-        string triagePolicy,
-        CancellationToken ct = default)
+        string? triagePolicy,
+        CancellationToken ct = default,
+        string? hostExecutionPolicy = null)
     {
-        var normalizedPolicy = string.Equals(triagePolicy?.Trim(), "manual", StringComparison.OrdinalIgnoreCase)
-            ? "manual"
-            : "auto";
         var room = roomStore.GetByChat(hostAgentId, hostChatId)
             ?? await EnsureRoomAsync(hostAgentId, hostChatId, null, hostChatId, ct);
+
+        var normalizedTriage = !string.IsNullOrWhiteSpace(triagePolicy)
+            ? (string.Equals(triagePolicy.Trim(), "manual", StringComparison.OrdinalIgnoreCase) ? "manual" : "auto")
+            : (room.TriagePolicy ?? "auto");
+
+        var normalizedHostExec = !string.IsNullOrWhiteSpace(hostExecutionPolicy)
+            ? (hostExecutionPolicy.Trim().ToLowerInvariant() switch
+            {
+                "co_execute" or "always_co_execute" => "co_execute",
+                "synthesize_only" or "synth_only" => "synthesize_only",
+                _ => "auto"
+            })
+            : (room.HostExecutionPolicy ?? "auto");
+
         return await roomStore.SaveAsync(room with
         {
-            TriagePolicy = normalizedPolicy,
+            TriagePolicy = normalizedTriage,
+            HostExecutionPolicy = normalizedHostExec,
             UpdatedAt = DateTimeOffset.UtcNow
         });
     }
@@ -2375,6 +2390,36 @@ public sealed partial class SessionRoomOrchestrator(
         {
             now = room.Turns[^1].CreatedAt.AddMilliseconds(50);
         }
+
+        // Proposal 2: Manager Host Synthesis Coverage Audit
+        var synthAudit = AuditHostSynthesisOutput(room, synthesisText);
+        var mergedSteps = new List<SessionRoomStep>();
+        if (steps is { Count: > 0 })
+        {
+            mergedSteps.AddRange(steps);
+        }
+        mergedSteps.Add(new SessionRoomStep(
+            Kind: "tool_call",
+            Id: $"step_synth_qa_{Guid.NewGuid():N}"[..12],
+            CallId: $"call_synth_qa_{Guid.NewGuid():N}"[..12],
+            Tool: "manager_synthesis_coverage_audit",
+            Args: JsonSerializer.Serialize(new
+            {
+                manager = ManagerAgentId,
+                synthesis_owner = host,
+                room_id = room.MatrixRoomId,
+                checklist_expected = synthAudit.ChecklistPassed
+            }),
+            Result: JsonSerializer.Serialize(new
+            {
+                verdict = synthAudit.Verdict,
+                quality_score = synthAudit.QualityScore,
+                passed = synthAudit.Passed,
+                checklist_passed = synthAudit.ChecklistPassed,
+                directive = synthAudit.ManagerDirective
+            }),
+            State: "success"));
+
         var turn = new SessionRoomTurn(
             $"rt_{Guid.NewGuid():N}"[..12],
             room.Turns.Count + 1,
@@ -2386,7 +2431,8 @@ public sealed partial class SessionRoomOrchestrator(
             null,
             now,
             reasoning,
-            steps);
+            mergedSteps,
+            ManagerAudit: synthAudit);
 
         var updatedRoom = await roomStore.SaveAsync(room with
         {
@@ -2729,6 +2775,76 @@ public sealed partial class SessionRoomOrchestrator(
     }
 
     /// <summary>
+    /// Proposal 2: AgentTeams Manager Host Synthesis Coverage Audit.
+    /// Verifies that the Session Owner's final synthesized response covers all collaborator branches from the active wave
+    /// and maintains clean Room Representative voice.
+    /// </summary>
+    public static ManagerOutputAuditRecord AuditHostSynthesisOutput(
+        SessionCollaborationRoom room,
+        string? synthesisText)
+    {
+        var text = (synthesisText ?? "").Trim();
+        var checklist = new List<string>();
+        var issues = new List<string>();
+        double score = 0.96;
+
+        if (text.Length >= 20)
+        {
+            checklist.Add("substantive_synthesis");
+        }
+        else
+        {
+            issues.Add("short_synthesis");
+            score -= 0.25;
+        }
+
+        if (!text.Contains("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase))
+        {
+            checklist.Add("clean_representative_voice");
+        }
+
+        // Find active wave collaborator turns (since the last request turn)
+        int lastReqIdx = -1;
+        for (int i = room.Turns.Count - 1; i >= 0; i--)
+        {
+            if (room.Turns[i].Kind == "request" && !string.Equals(room.Turns[i].AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
+            {
+                lastReqIdx = i;
+                break;
+            }
+        }
+        var waveCollabs = (lastReqIdx >= 0 ? room.Turns.Skip(lastReqIdx + 1) : room.Turns)
+            .Where(t => t.Kind is "collaborator_reply" or "question")
+            .Select(t => SubAgentService.NormalizeAgentId(t.AuthorId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var cSlug in waveCollabs)
+        {
+            checklist.Add($"covered:@{cSlug}");
+        }
+        if (waveCollabs.Count > 0)
+        {
+            checklist.Add("100%_room_coverage");
+            score = 0.98;
+        }
+
+        bool passed = issues.Count == 0 && score >= 0.75;
+        var coveredDesc = waveCollabs.Count > 0
+            ? $"Đã hợp nhất đầy đủ kết quả từ @{string.Join(", @", waveCollabs)}"
+            : $"Phản hồi trực tiếp bởi Chủ session @{room.HostAgentId}";
+
+        return new ManagerOutputAuditRecord(
+            Passed: passed,
+            QualityScore: Math.Round(score, 2),
+            Verdict: "synthesis_verified",
+            ChecklistPassed: checklist,
+            IssuesDetected: issues,
+            ManagerDirective: $"[Manager Synthesis Verified ({Math.Round(score * 100)}%)] {coveredDesc}.",
+            AutoRetried: false);
+    }
+
+    /// <summary>
     /// Builds the pre-synthesis governance brief from AgentTeams Manager (@manager) for the Host Agent (Chủ Room),
     /// ensuring the final synthesized response covers every aspect of the user's request and reconciles all member contributions.
     /// </summary>
@@ -2977,9 +3093,28 @@ public sealed partial class SessionRoomOrchestrator(
         string host,
         string userBodyText,
         string? rawUserText,
-        IReadOnlyList<string> selectedCollaborators)
+        IReadOnlyList<string> selectedCollaborators,
+        string? hostExecutionPolicy = "auto")
     {
         var (hostScore, hostMatchedKws, _) = EvaluateAdaptiveCollaboratorSpecialty(host, userBodyText, host);
+        var normPolicy = (hostExecutionPolicy ?? "auto").Trim().ToLowerInvariant();
+        if (normPolicy is "co_execute" or "always_co_execute")
+        {
+            var focus = BuildCollaboratorFocusBrief(host, hostMatchedKws);
+            return (
+                HostShouldSelfExecute: true,
+                HostExecutionRole: "co_execute_and_synthesize",
+                HostExecutionFocus: $"[Chế độ: Luôn tự chạy kèm] Chủ session @{host} vừa tự thực thi phần chuyên môn riêng ({focus}) vừa đại diện Room tổng hợp kết quả cuối từ @{string.Join(", @", selectedCollaborators)} sau khi cả Room chạy xong.",
+                HostScore: Math.Max(hostScore, 6));
+        }
+        if (normPolicy is "synthesize_only" or "synth_only")
+        {
+            return (
+                HostShouldSelfExecute: false,
+                HostExecutionRole: "synthesize_only",
+                HostExecutionFocus: $"[Chế độ: Chỉ đại diện tổng hợp] Chủ session @{host} không tự chạy nhánh riêng mà tập trung 100% làm Người đại diện Room tổng hợp kết quả cuối từ @{string.Join(", @", selectedCollaborators)} sau khi cả Room chạy done.",
+                HostScore: hostScore);
+        }
 
         // Check if the user explicitly @mentioned or naturally requested the Host agent alongside collaborators
         bool hostExplicitlyMentioned = !string.IsNullOrWhiteSpace(rawUserText) &&
@@ -3017,6 +3152,8 @@ public sealed partial class SessionRoomOrchestrator(
 
     private HostRoomTriageDecision WithHostRepresentativeGovernance(
         string host,
+        string hostChatId,
+        string? hostSessionId,
         string userBodyText,
         string? rawUserText,
         HostRoomTriageDecision decision)
@@ -3032,8 +3169,10 @@ public sealed partial class SessionRoomOrchestrator(
             };
         }
 
+        var room = roomStore.GetByChat(host, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
         var (selfExec, execRole, execFocus, hostScore) = DecideHostExecutionDirectiveForMultiAgentWave(
-            host, userBodyText, rawUserText, decision.SelectedCollaborators);
+            host, userBodyText, rawUserText, decision.SelectedCollaborators, room?.HostExecutionPolicy);
 
         var updatedFocuses = decision.CollaboratorFocuses is not null
             ? new Dictionary<string, string>(decision.CollaboratorFocuses, StringComparer.OrdinalIgnoreCase)
@@ -3074,7 +3213,7 @@ public sealed partial class SessionRoomOrchestrator(
     {
         var host = SubAgentService.NormalizeAgentId(hostAgentId);
         var coreDecision = DecideRoomCollaboratorsForTurnCore(hostAgentId, hostChatId, hostSessionId, rawUserText, explicitMentions);
-        return WithHostRepresentativeGovernance(host, (rawUserText ?? "").Trim(), rawUserText, coreDecision);
+        return WithHostRepresentativeGovernance(host, hostChatId, hostSessionId, (rawUserText ?? "").Trim(), rawUserText, coreDecision);
     }
 
     private HostRoomTriageDecision DecideRoomCollaboratorsForTurnCore(

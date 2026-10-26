@@ -882,4 +882,51 @@ public class SessionRoomTests
         coExecBrief.Should().Contain("[TỰ THỰC THI PHẦN VIỆC CỦA CHỦ SESSION]");
         coExecBrief.Should().Contain("[ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]");
     }
+
+    [Fact]
+    public async Task HostSynthesisCoverageAudit_And_HostExecutionPolicyOverride_WorkAsExpected()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            NextReply = "- **[Đóng góp chuyên môn]**: Phân tích chi tiết đạt chuẩn."
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-synth-audit-policy-01";
+        await orchestrator.EnsureRoomAsync("mons", chatId, "zen", chatId, ct, ["ken"]);
+
+        // 1. Test Proposal 5: HostExecutionPolicy = "co_execute" forces HostShouldSelfExecute = true even on a pure sales query
+        await orchestrator.SetRoomTriagePolicyAsync("mons", chatId, "auto", ct, "co_execute");
+        var forcedCoExec = orchestrator.DecideRoomCollaboratorsForTurn("mons", chatId, chatId, "@zen @ken lên bảng báo giá bán B2B");
+        forcedCoExec.HostShouldSelfExecute.Should().BeTrue();
+        forcedCoExec.HostExecutionRole.Should().Be("co_execute_and_synthesize");
+
+        // 2. Test Proposal 5: HostExecutionPolicy = "synthesize_only" forces HostShouldSelfExecute = false even on a backend/docker query
+        await orchestrator.SetRoomTriagePolicyAsync("mons", chatId, "auto", ct, "synthesize_only");
+        var forcedSynthOnly = orchestrator.DecideRoomCollaboratorsForTurn("mons", chatId, chatId, "@zen báo giá và triển khai backend API docker");
+        forcedSynthOnly.HostShouldSelfExecute.Should().BeFalse();
+        forcedSynthOnly.HostExecutionRole.Should().Be("synthesize_only");
+
+        // 3. Test Proposal 2: Execute wave for zen & ken, then RecordHostSynthesisTurnAsync attaches ManagerSynthesisCoverageAudit (100%_room_coverage)
+        await orchestrator.ExecuteCollaboratorWaveAsync("mons", chatId, ["zen", "ken"], "@zen @ken phân tích gói B2B", null, chatId, null, "parallel", null, ct);
+        var synthRes = await orchestrator.RecordHostSynthesisTurnAsync(
+            "mons",
+            chatId,
+            "Tổng hợp đại diện Room từ @zen và @ken: Phương án gói B2B kèm lộ trình sản phẩm hoàn chỉnh.",
+            "Hội tụ kết quả từ cả Room",
+            null,
+            chatId,
+            ct);
+
+        synthRes.Should().NotBeNull();
+        var synthTurn = synthRes!.Value.Turn;
+        synthTurn.ManagerAudit.Should().NotBeNull();
+        synthTurn.ManagerAudit!.Passed.Should().BeTrue();
+        synthTurn.ManagerAudit.Verdict.Should().Be("synthesis_verified");
+        synthTurn.ManagerAudit.ChecklistPassed.Should().Contain(["covered:@zen", "covered:@ken", "100%_room_coverage"]);
+    }
 }

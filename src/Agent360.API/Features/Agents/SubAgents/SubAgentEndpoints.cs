@@ -228,8 +228,18 @@ public sealed class SubAgentEndpoints : IEndpoint
                 CancellationToken ct) =>
             {
                 var orchestrator = http.RequestServices.GetRequiredService<SessionRoomOrchestrator>();
-                var room = await orchestrator.SetRoomTriagePolicyAsync(agentId, chatId, body?.TriagePolicy ?? "auto", ct);
-                return Results.Ok(new { room, triage_policy = room.TriagePolicy });
+                var room = await orchestrator.SetRoomTriagePolicyAsync(
+                    agentId,
+                    chatId,
+                    body?.TriagePolicy,
+                    ct,
+                    body?.HostExecutionPolicy);
+                return Results.Ok(new
+                {
+                    room,
+                    triage_policy = room.TriagePolicy,
+                    host_execution_policy = room.HostExecutionPolicy
+                });
             })
             .WithName("UpdateChatRoomTriagePolicy")
             .WithSummary("Switch the session Room triage mode between 'auto' (autonomous Host triage) and 'manual' (explicit @mention or reply only)");
