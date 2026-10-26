@@ -1213,6 +1213,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             : new Agent360.API.Features.Agents.SubAgents.HostRoomTriageDecision(explicitMentions.Count > 0, explicitMentions, explicitMentions.Count > 0 ? "explicit_mention" : "no_room_collaborators", "");
         var mentionedCollaborators = triageDecision.ShouldUseRoom ? triageDecision.SelectedCollaborators : [];
 
+        string? activeRoomRunId = null;
+        int activeRoomFinalRound = 1;
+        var existingMediaContentItems = effectiveRequest.Input?.FirstOrDefault()?.Content?
+            .Where(c => !string.Equals(c.Type, "text", StringComparison.OrdinalIgnoreCase))
+            .ToList() ?? [];
+
         Task? soloRoomInitTask = null;
         if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null)
         {
@@ -1221,6 +1227,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             if (!string.IsNullOrWhiteSpace(soloSmartContext) && !string.IsNullOrWhiteSpace(rawUserText))
             {
                 var enrichedSoloInput = $"{rawUserText}\n\n{soloSmartContext}";
+                var mergedSoloContent = new List<ConsoleChatContentItem> { new("text", enrichedSoloInput) };
+                mergedSoloContent.AddRange(existingMediaContentItems);
                 effectiveRequest = effectiveRequest with
                 {
                     Message = enrichedSoloInput,
@@ -1229,7 +1237,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         new ConsoleChatInputItem(
                             "user",
                             "message",
-                            [new ConsoleChatContentItem("text", enrichedSoloInput)])
+                            mergedSoloContent)
                     ]
                 };
             }
@@ -1373,6 +1381,43 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 catch {}
             }
 
+            activeRoomRunId = $"run_{Guid.NewGuid():N}"[..16];
+
+            // 2b. Narrator Bubble 1 (host_kickoff + inline receipt "Messaged @A and @B"):
+            // Emit immediately before waiting on specialist A2A calls so user sees Host leading the conversation right away.
+            var (kickoffRoom, kickoffTurn) = await roomOrchestrator.RecordHostKickoffTurnAsync(
+                agentTarget,
+                effectiveSessionId,
+                mentionedCollaborators,
+                rawUserText,
+                triageDecision,
+                activeRoomRunId,
+                qwenPawSessionId,
+                upstreamCts.Token);
+            latestRoom = kickoffRoom;
+
+            if (!ct.IsCancellationRequested)
+            {
+                var kickoffEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_turn",
+                    status = kickoffRoom.Status,
+                    collaborator_id = agentTarget,
+                    run_id = activeRoomRunId,
+                    round_no = 1,
+                    visibility = "main",
+                    receipt = kickoffTurn.Receipt,
+                    room = kickoffRoom,
+                    turn = kickoffTurn
+                });
+                try
+                {
+                    await httpContext.Response.WriteAsync($"data: {kickoffEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                }
+                catch {}
+            }
+
             var baseHistorySnippet = recentSessionHistory.Length > 0
                 ? $"### Các lượt trao đổi gần đây trong phiên chat:\n{recentSessionHistory}"
                 : null;
@@ -1397,6 +1442,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                             @object = "room_turn",
                             status = completedRoom.Status,
                             collaborator_id = finishedCollab,
+                            run_id = activeRoomRunId,
+                            round_no = 1,
+                            visibility = "room",
                             step_index = completedStepCount,
                             total_collaborators = mentionedCollaborators.Count,
                             execution_strategy = triageDecision.ExecutionStrategy,
@@ -1411,16 +1459,117 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         catch {}
                     }
                 },
-                upstreamCts.Token);
+                upstreamCts.Token,
+                activeRoomRunId,
+                1);
 
             latestRoom = waveRoom;
-            foreach (var ctTurn in waveTurns)
+            var allWaveTurns = new List<Agent360.API.Features.Agents.SubAgents.SessionRoomTurn>(waveTurns);
+
+            // 2c. Check if Manager decides a Round 2 cross-examination wave is warranted
+            var followUpDecision = roomOrchestrator.DecideFollowUpRound(
+                latestRoom ?? baseRoom,
+                rawUserText,
+                triageDecision,
+                waveTurns);
+
+            if (followUpDecision.ShouldRunRound2)
             {
-                accumulatedContext.AppendLine($"- @{ctTurn.AuthorId} ({ctTurn.AuthorName}): {ctTurn.Text}");
+                activeRoomFinalRound = 2;
+                var round1Summary = string.Join("\n", waveTurns.Select(t => $"- @{t.AuthorId} ({t.AuthorName}): {t.Text}"));
+                var round2Context = baseHistorySnippet is not null
+                    ? $"{baseHistorySnippet}\n\n### Kết quả Vòng 1 của các chuyên viên trong Room (để kiểm tra chéo ở Vòng 2):\n{round1Summary}"
+                    : $"### Kết quả Vòng 1 của các chuyên viên trong Room (để kiểm tra chéo ở Vòng 2):\n{round1Summary}";
+
+                int round2StepCount = 0;
+                var (round2Room, round2Turns) = await roomOrchestrator.ExecuteCollaboratorWaveAsync(
+                    agentTarget,
+                    effectiveSessionId,
+                    mentionedCollaborators,
+                    rawUserText ?? "",
+                    round2Context,
+                    qwenPawSessionId,
+                    followUpDecision.Round2Focuses,
+                    triageDecision.ExecutionStrategy,
+                    async (completedRoom, collabTurn, finishedCollab) =>
+                    {
+                        round2StepCount++;
+                        if (!ct.IsCancellationRequested)
+                        {
+                            var roomTurnEvt = System.Text.Json.JsonSerializer.Serialize(new
+                            {
+                                @object = "room_turn",
+                                status = completedRoom.Status,
+                                collaborator_id = finishedCollab,
+                                run_id = activeRoomRunId,
+                                round_no = 2,
+                                visibility = "room",
+                                step_index = round2StepCount,
+                                total_collaborators = mentionedCollaborators.Count,
+                                execution_strategy = triageDecision.ExecutionStrategy,
+                                room = completedRoom,
+                                turn = collabTurn
+                            });
+                            try
+                            {
+                                await httpContext.Response.WriteAsync($"data: {roomTurnEvt}\n\n", ct);
+                                await httpContext.Response.Body.FlushAsync(ct);
+                            }
+                            catch {}
+                        }
+                    },
+                    upstreamCts.Token,
+                    activeRoomRunId,
+                    2);
+
+                latestRoom = round2Room;
+                allWaveTurns.AddRange(round2Turns);
+            }
+
+            // 2d. Narrator Bubble 2 (host_progress + inline receipt "N messages with @A and @B" or "Message from @A"):
+            var progressRoundNo = mentionedCollaborators.Count > 1 ? Math.Max(2, activeRoomFinalRound) : 1;
+            var (progressRoom, progressTurn) = await roomOrchestrator.RecordHostProgressTurnAsync(
+                agentTarget,
+                effectiveSessionId,
+                mentionedCollaborators,
+                rawUserText,
+                triageDecision,
+                allWaveTurns,
+                activeRoomRunId,
+                progressRoundNo,
+                qwenPawSessionId,
+                upstreamCts.Token);
+            latestRoom = progressRoom;
+
+            if (!ct.IsCancellationRequested)
+            {
+                var progressEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "room_turn",
+                    status = progressRoom.Status,
+                    collaborator_id = agentTarget,
+                    run_id = activeRoomRunId,
+                    round_no = progressRoundNo,
+                    visibility = "main",
+                    receipt = progressTurn.Receipt,
+                    room = progressRoom,
+                    turn = progressTurn
+                });
+                try
+                {
+                    await httpContext.Response.WriteAsync($"data: {progressEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                }
+                catch {}
+            }
+
+            foreach (var ctTurn in allWaveTurns)
+            {
+                accumulatedContext.AppendLine($"- [Vòng {ctTurn.RoundNo}] @{ctTurn.AuthorId} ({ctTurn.AuthorName}): {ctTurn.Text}");
             }
 
             var cleanUserObjective = Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator.StripCollaboratorMentions(rawUserText, mentionedCollaborators);
-            var managerSynthesisBrief = roomOrchestrator.BuildManagerSynthesisBrief(latestRoom ?? baseRoom, cleanUserObjective, triageDecision, waveTurns);
+            var managerSynthesisBrief = roomOrchestrator.BuildManagerSynthesisBrief(latestRoom ?? baseRoom, cleanUserObjective, triageDecision, allWaveTurns);
 
             if (latestRoom is not null && !ct.IsCancellationRequested)
             {
@@ -1429,6 +1578,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     @object = "room_event",
                     status = "synthesizing",
                     collaborator_id = agentTarget,
+                    run_id = activeRoomRunId,
+                    round_no = activeRoomFinalRound,
                     synthesis_owner_id = triageDecision.SynthesisOwnerId ?? agentTarget,
                     host_should_self_execute = triageDecision.HostShouldSelfExecute,
                     host_execution_role = triageDecision.HostExecutionRole,
@@ -1451,6 +1602,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 ? $"AgentTeams Manager (@agentteams-manager) đã tiếp nhận yêu cầu trong Room, điều phối @{string.Join(", @", mentionedCollaborators)} chạy xong phần việc được chỉ định và ưu tiên Chủ session (@{agentTarget}) làm Người đại diện Room tổng hợp kết quả cuối. {hostSelfExecNote}"
                 : $"AgentTeams Manager (@agentteams-manager) đã điều phối @{string.Join(", @", mentionedCollaborators)} trong Room chạy xong chuyên môn và ưu tiên Chủ session (@{agentTarget}) làm Người đại diện Room tổng hợp kết quả cuối ({triageDecision.Reason}). {hostSelfExecNote}";
             var synthesizedInput = $"{rawUserText}\n\n[SHARED SESSION ROOM CONTEXT]\nLưu ý hệ thống: {triageHeader}\n{managerSynthesisBrief}\n\nCác chuyên viên AI trong Room đã hoàn tất (done) phần chạy của mình và qua kiểm định của AgentTeams Manager:\n{accumulatedContext}\nVới vai trò Chủ session kiêm Người đại diện Room (@{agentTarget}), hãy thực hiện đúng quyết định của Manager ở trên và đưa ra câu phản hồi tổng hợp cuối cùng hoàn chỉnh, mạch lạc và trực tiếp nhất cho người dùng.";
+            var mergedRoomContent = new List<ConsoleChatContentItem> { new("text", synthesizedInput) };
+            mergedRoomContent.AddRange(existingMediaContentItems);
             effectiveRequest = effectiveRequest with
             {
                 Message = synthesizedInput,
@@ -1459,7 +1612,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     new ConsoleChatInputItem(
                         "user",
                         "message",
-                        [new ConsoleChatContentItem("text", synthesizedInput)])
+                        mergedRoomContent)
                 ]
             };
         }
@@ -1520,7 +1673,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                                 if (!string.IsNullOrWhiteSpace(synthText))
                                 {
                                     await roomOrchestrator.RecordHostSynthesisTurnAsync(
-                                        agentTarget, effectiveSessionId, synthText, synthReasoning, null, qwenPawSessionId, CancellationToken.None);
+                                        agentTarget, effectiveSessionId, synthText, synthReasoning, null, qwenPawSessionId, CancellationToken.None, activeRoomRunId, activeRoomFinalRound);
                                 }
                             }
                         }

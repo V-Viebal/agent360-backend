@@ -36,19 +36,35 @@ public sealed record ManagerOutputAuditRecord(
     [property: JsonPropertyName("manager_directive")] string ManagerDirective,
     [property: JsonPropertyName("auto_retried")] bool AutoRetried = false);
 
+public sealed record SessionRoomInlineReceipt(
+    [property: JsonPropertyName("kind")] string Kind, // "dispatch" | "exchange" | "reply"
+    [property: JsonPropertyName("round_no")] int RoundNo,
+    [property: JsonPropertyName("participants")] IReadOnlyList<string> Participants,
+    [property: JsonPropertyName("message_count")] int MessageCount = 0,
+    [property: JsonPropertyName("label")] string? Label = null);
+
+public sealed record RoomFollowUpRoundDecision(
+    [property: JsonPropertyName("should_run_round_2")] bool ShouldRunRound2,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("round_2_focuses")] IReadOnlyDictionary<string, string> Round2Focuses);
+
 public sealed record SessionRoomTurn(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("turn_no")] int TurnNo,
     [property: JsonPropertyName("author_id")] string AuthorId,
     [property: JsonPropertyName("author_name")] string AuthorName,
     [property: JsonPropertyName("author_role")] string AuthorRole, // "host" | "collaborator" | "manager" | "admin" | "user"
-    [property: JsonPropertyName("kind")] string Kind, // "request" | "collaborator_progress" | "collaborator_reply" | "question" | "answer" | "manager_guard" | "synthesis"
+    [property: JsonPropertyName("kind")] string Kind, // "request" | "host_kickoff" | "host_progress" | "collaborator_progress" | "collaborator_reply" | "question" | "answer" | "manager_guard" | "synthesis"
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("target_agent_id")] string? TargetAgentId,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("reasoning")] string? Reasoning = null,
     [property: JsonPropertyName("steps")] IReadOnlyList<SessionRoomStep>? Steps = null,
-    [property: JsonPropertyName("manager_audit")] ManagerOutputAuditRecord? ManagerAudit = null);
+    [property: JsonPropertyName("manager_audit")] ManagerOutputAuditRecord? ManagerAudit = null,
+    [property: JsonPropertyName("run_id")] string? RunId = null,
+    [property: JsonPropertyName("round_no")] int RoundNo = 1,
+    [property: JsonPropertyName("visibility")] string Visibility = "room", // "main" | "room"
+    [property: JsonPropertyName("receipt")] SessionRoomInlineReceipt? Receipt = null);
 
 public sealed record MessageReactionRecord(
     [property: JsonPropertyName("emoji")] string Emoji,
@@ -93,8 +109,11 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt,
     [property: JsonPropertyName("room_title")] string? RoomTitle = null,
     [property: JsonPropertyName("reactions")] IReadOnlyDictionary<string, IReadOnlyList<MessageReactionRecord>>? Reactions = null,
-    [property: JsonPropertyName("triage_policy")] string? TriagePolicy = "auto",
-    [property: JsonPropertyName("host_execution_policy")] string? HostExecutionPolicy = "auto"); // "auto" | "co_execute" | "synthesize_only"
+        [property: JsonPropertyName("triage_policy")] string? TriagePolicy = "auto",
+    [property: JsonPropertyName("host_execution_policy")] string? HostExecutionPolicy = "auto", // "auto" | "co_execute" | "synthesize_only"
+    [property: JsonPropertyName("active_run_id")] string? ActiveRunId = null,
+    [property: JsonPropertyName("active_round")] int ActiveRound = 1,
+    [property: JsonPropertyName("run_state")] string? RunState = null);
 
 public sealed record UpdateRoomTriagePolicyRequest(
     [property: JsonPropertyName("triage_policy")] string? TriagePolicy = null,
@@ -136,9 +155,10 @@ public sealed record HostRoomTriageDecision(
     [property: JsonPropertyName("adaptive_scores")] IReadOnlyDictionary<string, int>? AdaptiveScores = null,
     [property: JsonPropertyName("suggested_collaborators")] IReadOnlyList<string>? SuggestedCollaborators = null,
     [property: JsonPropertyName("synthesis_owner_id")] string? SynthesisOwnerId = null,
-    [property: JsonPropertyName("host_should_self_execute")] bool HostShouldSelfExecute = true,
+[property: JsonPropertyName("host_should_self_execute")] bool HostShouldSelfExecute = true,
     [property: JsonPropertyName("host_execution_role")] string HostExecutionRole = "solo_execute_and_respond", // "co_execute_and_synthesize" | "synthesize_only" | "solo_execute_and_respond"
-    [property: JsonPropertyName("host_execution_focus")] string? HostExecutionFocus = null);
+    [property: JsonPropertyName("host_execution_focus")] string? HostExecutionFocus = null,
+    [property: JsonPropertyName("collaboration_mode")] string CollaborationMode = "deliberation"); // "solo" | "consultation" | "deliberation"
 
 public sealed record AdaptiveSpecialtyProfileDto(
     [property: JsonPropertyName("collaborator_id")] string CollaboratorId,
@@ -734,7 +754,8 @@ public sealed class SessionRoomStore
 
     private static System.Text.Json.Nodes.JsonObject CreateRoomTurnMessageNode(SessionCollaborationRoom room, SessionRoomTurn turn)
     {
-        var isSynthesis = turn.Kind == "synthesis";
+        var isHostNarratorTurn = turn.Kind is "synthesis" or "host_kickoff" or "host_progress" ||
+                                 string.Equals(turn.AuthorRole, "host", StringComparison.OrdinalIgnoreCase);
         return new System.Text.Json.Nodes.JsonObject
         {
             ["id"] = turn.Id,
@@ -750,10 +771,14 @@ public sealed class SessionRoomStore
             ["metadata"] = new System.Text.Json.Nodes.JsonObject
             {
                 ["timestamp"] = turn.CreatedAt.ToString("O"),
-                ["sender_agent_id"] = isSynthesis ? null : turn.AuthorId,
-                ["sender_agent_name"] = isSynthesis ? null : turn.AuthorName,
+                ["sender_agent_id"] = isHostNarratorTurn ? null : turn.AuthorId,
+                ["sender_agent_name"] = isHostNarratorTurn ? null : turn.AuthorName,
                 ["author_role"] = turn.AuthorRole,
                 ["turn_kind"] = turn.Kind,
+                ["run_id"] = turn.RunId,
+                ["round_no"] = turn.RoundNo,
+                ["visibility"] = turn.Visibility,
+                ["receipt"] = turn.Receipt is not null ? JsonSerializer.SerializeToNode(turn.Receipt) : null,
                 ["room_id"] = room.RoomId,
                 ["matrix_room_id"] = room.MatrixRoomId,
                 ["element_room_url"] = room.ElementRoomUrl,
@@ -762,6 +787,26 @@ public sealed class SessionRoomStore
                 ["manager_audit"] = turn.ManagerAudit is not null ? JsonSerializer.SerializeToNode(turn.ManagerAudit) : null
             }
         };
+    }
+
+    private static string StripSharedRoomContextPreservingAttachments(string rawStr)
+    {
+        if (string.IsNullOrEmpty(rawStr)) return rawStr;
+        var idx = rawStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) idx = rawStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return rawStr;
+
+        var head = rawStr[..idx].TrimEnd();
+        var tail = rawStr[idx..];
+        var attachMatches = Regex.Matches(tail, @"\[Attached File:\s*[^\n\r]+?\s*\([^()\n\r]+\)\]", RegexOptions.IgnoreCase);
+        foreach (Match m in attachMatches)
+        {
+            if (!head.Contains(m.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                head = string.IsNullOrWhiteSpace(head) ? m.Value : $"{head}\n\n{m.Value}";
+            }
+        }
+        return head;
     }
 
     public SessionCollaborationRoom? GetByChatIdOnly(string hostChatId)
@@ -1060,15 +1105,13 @@ public sealed class SessionRoomStore
                 }
             }
 
-            // 3. Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages so the UI only shows the user's clean message
+            // 3. Strip internal [SHARED SESSION ROOM CONTEXT] synthesis block from persisted user messages while preserving [Attached File: ...] tags
             foreach (var msgNode in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
             {
                 if (!string.Equals(msgNode["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) continue;
                 if (msgNode["content"] is System.Text.Json.Nodes.JsonValue strVal && strVal.TryGetValue<string>(out var rawStr) && !string.IsNullOrEmpty(rawStr))
                 {
-                    var idx = rawStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
-                    if (idx < 0) idx = rawStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
-                    if (idx >= 0) msgNode["content"] = rawStr[..idx].TrimEnd();
+                    msgNode["content"] = StripSharedRoomContextPreservingAttachments(rawStr);
                 }
                 else if (msgNode["content"] is System.Text.Json.Nodes.JsonArray contentArr)
                 {
@@ -1076,81 +1119,121 @@ public sealed class SessionRoomStore
                     {
                         if (part["text"] is System.Text.Json.Nodes.JsonValue tVal && tVal.TryGetValue<string>(out var partStr) && !string.IsNullOrEmpty(partStr))
                         {
-                            var idx = partStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
-                            if (idx < 0) idx = partStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
-                            if (idx >= 0) part["text"] = partStr[..idx].TrimEnd();
+                            part["text"] = StripSharedRoomContextPreservingAttachments(partStr);
                         }
                     }
                 }
             }
 
-            // 4. Group Room turns into Collaboration Waves (Request -> Collaborator Replies -> Host Synthesis)
-            // and anchor each wave to its matching user message so User -> Collaborators -> Host Synthesis order is strictly preserved across all turns!
+            // 4. Narrator-style Wave Reconstruction:
+            // Specialist replies (collaborator_reply, question, manager_guard) have visibility="room" and STAY inside collaboration_room.turns.
+            // On the main chat timeline (messages), only Host narrator bubbles (host_kickoff, host_progress, synthesis) are projected!
             var workList = messagesArr
                 .OfType<System.Text.Json.Nodes.JsonObject>()
+                .Where(m =>
+                {
+                    var vis = m["metadata"]?["visibility"]?.ToString();
+                    var kind = m["metadata"]?["turn_kind"]?.ToString();
+                    var sender = m["metadata"]?["sender_agent_id"]?.ToString();
+                    if (string.Equals(vis, "room", StringComparison.OrdinalIgnoreCase)) return false;
+                    if (kind is "collaborator_reply" or "collaborator_progress" or "question" or "manager_guard") return false;
+                    if (!string.IsNullOrEmpty(sender) && !string.Equals(sender, normHost, StringComparison.OrdinalIgnoreCase)) return false;
+                    return true;
+                })
                 .Select(m => (System.Text.Json.Nodes.JsonObject)System.Text.Json.Nodes.JsonNode.Parse(m.ToJsonString())!)
                 .ToList();
 
-            var waves = new List<(SessionRoomTurn? RequestTurn, List<SessionRoomTurn> Replies, SessionRoomTurn? SynthesisTurn)>();
+            var waves = new List<(
+                string RunId,
+                SessionRoomTurn? RequestTurn,
+                List<SessionRoomTurn> NarratorTurns,
+                List<SessionRoomTurn> CollaboratorReplies,
+                SessionRoomTurn? SynthesisTurn)>();
+
             SessionRoomTurn? curReq = null;
+            var curNarrators = new List<SessionRoomTurn>();
             var curReplies = new List<SessionRoomTurn>();
             SessionRoomTurn? curSynth = null;
+            string? curRunId = null;
+
+            void FlushCurrentWave()
+            {
+                if (curReq is null && curNarrators.Count == 0 && curReplies.Count == 0 && curSynth is null)
+                    return;
+                var resolvedRunId = curRunId
+                    ?? curReq?.RunId
+                    ?? curNarrators.FirstOrDefault()?.RunId
+                    ?? curReplies.FirstOrDefault()?.RunId
+                    ?? curSynth?.RunId
+                    ?? curReq?.Id
+                    ?? $"run_legacy_{waves.Count + 1}";
+                waves.Add((resolvedRunId, curReq, curNarrators, curReplies, curSynth));
+                curReq = null;
+                curNarrators = [];
+                curReplies = [];
+                curSynth = null;
+                curRunId = null;
+            }
 
             foreach (var turn in room.Turns.OrderBy(t => t.TurnNo))
             {
                 if (turn.Kind == "request" && string.Equals(turn.AuthorRole, "manager", StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                if (!string.IsNullOrWhiteSpace(turn.RunId) &&
+                    !string.IsNullOrWhiteSpace(curRunId) &&
+                    !string.Equals(turn.RunId, curRunId, StringComparison.OrdinalIgnoreCase))
+                {
+                    FlushCurrentWave();
+                }
+
                 if (turn.Kind == "request")
                 {
                     if (curReq is not null && curReplies.Count == 0 && curSynth is null &&
-                        string.Equals(curReq.Text.Trim(), turn.Text.Trim(), StringComparison.OrdinalIgnoreCase))
+                        string.Equals(StripSharedRoomContextPreservingAttachments(curReq.Text).Trim(), StripSharedRoomContextPreservingAttachments(turn.Text).Trim(), StringComparison.OrdinalIgnoreCase))
                     {
-                        continue; // duplicate request turn in same wave
+                        if (!string.IsNullOrWhiteSpace(turn.RunId)) curRunId = turn.RunId;
+                        continue;
                     }
                     if (curReq is not null || curReplies.Count > 0 || curSynth is not null)
                     {
-                        waves.Add((curReq, curReplies, curSynth));
-                        curReplies = [];
-                        curSynth = null;
+                        FlushCurrentWave();
                     }
                     curReq = turn;
+                    if (!string.IsNullOrWhiteSpace(turn.RunId)) curRunId = turn.RunId;
+                    continue;
+                }
+
+                if (turn.Kind is "host_kickoff" or "host_progress")
+                {
+                    if (curSynth is not null) FlushCurrentWave();
+                    if (!string.IsNullOrWhiteSpace(turn.RunId)) curRunId ??= turn.RunId;
+                    curNarrators.Add(turn);
                     continue;
                 }
 
                 if (turn.Kind is "collaborator_reply" or "question" or "manager_guard")
                 {
-                    if (curSynth is not null)
-                    {
-                        waves.Add((curReq, curReplies, curSynth));
-                        curReq = null;
-                        curReplies = [];
-                        curSynth = null;
-                    }
+                    if (curSynth is not null) FlushCurrentWave();
+                    if (!string.IsNullOrWhiteSpace(turn.RunId)) curRunId ??= turn.RunId;
                     curReplies.Add(turn);
                     continue;
                 }
 
                 if (turn.Kind == "synthesis")
                 {
+                    if (!string.IsNullOrWhiteSpace(turn.RunId)) curRunId ??= turn.RunId;
                     curSynth = turn;
-                    waves.Add((curReq, curReplies, curSynth));
-                    curReq = null;
-                    curReplies = [];
-                    curSynth = null;
+                    FlushCurrentWave();
                 }
             }
-
-            if (curReq is not null || curReplies.Count > 0 || curSynth is not null)
-            {
-                waves.Add((curReq, curReplies, curSynth));
-            }
+            FlushCurrentWave();
 
             var matchedUserMsgIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var (reqTurn, replies, synthTurn) in waves)
+            foreach (var (waveRunId, reqTurn, narratorTurns, replies, synthTurn) in waves)
             {
-                var reqClean = reqTurn?.Text.Trim() ?? "";
+                var reqClean = StripSharedRoomContextPreservingAttachments(reqTurn?.Text ?? "").Trim();
                 int anchorUserIdx = -1;
 
                 if (!string.IsNullOrWhiteSpace(reqClean))
@@ -1163,7 +1246,9 @@ public sealed class SessionRoomStore
                         var mid = m["id"]?.ToString() ?? $"idx_{i}";
                         if (matchedUserMsgIds.Contains(mid))
                             continue;
-                        if (string.Equals(ExtractMessageNodeText(m), reqClean, StringComparison.OrdinalIgnoreCase))
+                        var mText = StripSharedRoomContextPreservingAttachments(ExtractMessageNodeText(m)).Trim();
+                        if (string.Equals(mText, reqClean, StringComparison.OrdinalIgnoreCase) ||
+                            (mText.Length > 0 && reqClean.Length > 0 && (mText.StartsWith(reqClean, StringComparison.OrdinalIgnoreCase) || reqClean.StartsWith(mText, StringComparison.OrdinalIgnoreCase))))
                         {
                             anchorUserIdx = i;
                             matchedUserMsgIds.Add(mid);
@@ -1171,7 +1256,7 @@ public sealed class SessionRoomStore
                         }
                     }
 
-                    if (anchorUserIdx < 0 && reqTurn is not null)
+                    if (anchorUserIdx < 0 && reqTurn is not null && replies.Count > 0)
                     {
                         var userNode = new System.Text.Json.Nodes.JsonObject
                         {
@@ -1184,7 +1269,8 @@ public sealed class SessionRoomStore
                             ["metadata"] = new System.Text.Json.Nodes.JsonObject
                             {
                                 ["timestamp"] = reqTurn.CreatedAt.ToString("O"),
-                                ["room_id"] = room.RoomId
+                                ["room_id"] = room.RoomId,
+                                ["run_id"] = waveRunId
                             }
                         };
                         workList.Add(userNode);
@@ -1193,33 +1279,111 @@ public sealed class SessionRoomStore
                     }
                 }
 
+                if (anchorUserIdx >= 0)
+                {
+                    var uMeta = workList[anchorUserIdx]["metadata"] as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+                    uMeta["run_id"] = waveRunId;
+                    uMeta["room_id"] = room.RoomId;
+                    workList[anchorUserIdx]["metadata"] = uMeta;
+                }
+
+                // Synthesize narrator turns (host_kickoff + host_progress) for legacy waves that had collaborator_reply turns but no persisted narrator turns yet
+                var effectiveNarrators = new List<SessionRoomTurn>(narratorTurns);
+                if (effectiveNarrators.Count == 0 && replies.Count > 0)
+                {
+                    var collabIds = replies
+                        .Where(r => r.Kind == "collaborator_reply")
+                        .Select(r => SubAgentService.NormalizeAgentId(r.AuthorId))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (collabIds.Count > 0)
+                    {
+                        var mode = SessionRoomOrchestrator.ClassifyCollaborationMode(collabIds, reqClean);
+                        var kickoffText = SessionRoomOrchestrator.BuildHostKickoffNarrationText(normHost, collabIds, reqClean, mode);
+                        var kickoffReceipt = SessionRoomOrchestrator.BuildInlineReceipt("dispatch", 1, collabIds, collabIds.Count);
+                        var baseTs = reqTurn?.CreatedAt ?? replies[0].CreatedAt;
+                        effectiveNarrators.Add(new SessionRoomTurn(
+                            $"rt_kickoff_{waveRunId}",
+                            (reqTurn?.TurnNo ?? 1),
+                            normHost,
+                            normHost,
+                            "host",
+                            "host_kickoff",
+                            kickoffText,
+                            string.Join(",", collabIds),
+                            baseTs.AddMilliseconds(5),
+                            RunId: waveRunId,
+                            RoundNo: 1,
+                            Visibility: "main",
+                            Receipt: kickoffReceipt));
+
+                        var maxRound = Math.Max(1, replies.Max(r => r.RoundNo > 0 ? r.RoundNo : 1));
+                        var progText = SessionRoomOrchestrator.BuildHostProgressNarrationText(normHost, collabIds, reqClean, mode, replies, maxRound);
+                        var progReceiptKind = collabIds.Count == 1 && mode == "consultation" ? "reply" : "exchange";
+                        var progReceipt = SessionRoomOrchestrator.BuildInlineReceipt(progReceiptKind, maxRound, collabIds, replies.Count(r => r.Kind == "collaborator_reply"));
+                        effectiveNarrators.Add(new SessionRoomTurn(
+                            $"rt_progress_{waveRunId}",
+                            replies[^1].TurnNo,
+                            normHost,
+                            normHost,
+                            "host",
+                            "host_progress",
+                            progText,
+                            string.Join(",", collabIds),
+                            replies[^1].CreatedAt.AddMilliseconds(5),
+                            RunId: waveRunId,
+                            RoundNo: maxRound,
+                            Visibility: "main",
+                            Receipt: progReceipt));
+                    }
+                }
+
                 int insertPos = anchorUserIdx >= 0 ? anchorUserIdx + 1 : workList.Count;
-                // Advance past any already-inserted collaborator replies right after anchorUserIdx
                 while (insertPos < workList.Count &&
-                       !string.IsNullOrEmpty(workList[insertPos]["metadata"]?["sender_agent_id"]?.ToString()))
+                       workList[insertPos]["metadata"]?["turn_kind"]?.ToString() is "host_kickoff" or "host_progress")
                 {
                     insertPos++;
                 }
 
-                foreach (var replyTurn in replies)
+                foreach (var narTurn in effectiveNarrators)
                 {
-                    if (workList.Any(m => string.Equals(m["id"]?.ToString(), replyTurn.Id, StringComparison.OrdinalIgnoreCase)))
+                    if (workList.Any(m => string.Equals(m["id"]?.ToString(), narTurn.Id, StringComparison.OrdinalIgnoreCase)))
                         continue;
-                    workList.Insert(insertPos, CreateRoomTurnMessageNode(room, replyTurn));
+                    workList.Insert(insertPos, CreateRoomTurnMessageNode(room, narTurn));
                     insertPos++;
                 }
 
                 if (synthTurn is not null)
                 {
-                    bool synthAlreadyPresent = workList.Any(m =>
-                        string.Equals(m["id"]?.ToString(), synthTurn.Id, StringComparison.OrdinalIgnoreCase) ||
-                        (string.Equals(m["role"]?.ToString(), "assistant", StringComparison.OrdinalIgnoreCase) &&
-                         string.IsNullOrEmpty(m["metadata"]?["sender_agent_id"]?.ToString()) &&
-                         string.Equals(ExtractMessageNodeText(m), synthTurn.Text.Trim(), StringComparison.OrdinalIgnoreCase)));
-
-                    if (!synthAlreadyPresent)
+                    System.Text.Json.Nodes.JsonObject? existingSynthNode = null;
+                    for (int i = insertPos; i < workList.Count; i++)
                     {
-                        workList.Insert(insertPos, CreateRoomTurnMessageNode(room, synthTurn));
+                        var m = workList[i];
+                        if (string.Equals(m["id"]?.ToString(), synthTurn.Id, StringComparison.OrdinalIgnoreCase) ||
+                            (string.Equals(m["role"]?.ToString(), "assistant", StringComparison.OrdinalIgnoreCase) &&
+                             m["metadata"]?["turn_kind"]?.ToString() is not ("host_kickoff" or "host_progress") &&
+                             string.Equals(ExtractMessageNodeText(m), synthTurn.Text.Trim(), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            existingSynthNode = m;
+                            break;
+                        }
+                    }
+
+                    if (existingSynthNode is not null)
+                    {
+                        var sMeta = existingSynthNode["metadata"] as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+                        sMeta["run_id"] = waveRunId;
+                        sMeta["round_no"] = synthTurn.RoundNo;
+                        sMeta["turn_kind"] = "synthesis";
+                        sMeta["visibility"] = "main";
+                        sMeta["room_id"] = room.RoomId;
+                        sMeta["matrix_room_id"] = room.MatrixRoomId;
+                        sMeta["element_room_url"] = room.ElementRoomUrl;
+                        existingSynthNode["metadata"] = sMeta;
+                    }
+                    else
+                    {
+                        workList.Insert(insertPos, CreateRoomTurnMessageNode(room, synthTurn with { RunId = waveRunId, Visibility = "main" }));
                     }
                 }
             }
@@ -1912,7 +2076,9 @@ public sealed partial class SessionRoomOrchestrator(
         string objective,
         string? recentContextSnippet = null,
         string? hostSessionId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? runId = null,
+        int roundNo = 1)
     {
         var room = await EnsureRoomAsync(hostAgentId, hostChatId, collaboratorAgentId, hostSessionId, ct);
         var host = room.HostAgentId;
@@ -1953,7 +2119,10 @@ public sealed partial class SessionRoomOrchestrator(
                     "manager_guard",
                     $"[Manager Loop Guard] Phiên trao đổi với @{collab} trong Room {room.MatrixRoomId} đã đạt ngưỡng tối đa ({room.MaxRoomTurns} lượt). Yêu cầu Host Agent ({host}) tổng hợp kết quả hiện có cho người dùng.",
                     host,
-                    now);
+                    now,
+                    RunId: runId ?? room.ActiveRunId,
+                    RoundNo: roundNo,
+                    Visibility: "room");
 
                 var guardedRoom = await roomStore.SaveAsync(room with
                 {
@@ -2026,12 +2195,18 @@ public sealed partial class SessionRoomOrchestrator(
                                 status = "dispatched"
                             }),
                             State: "success")
-                    ]);
+                    ],
+                    RunId: runId ?? room.ActiveRunId,
+                    RoundNo: roundNo,
+                    Visibility: "room");
 
                 room = await roomStore.SaveAsync(room with
                 {
                     Status = "collaborator_running",
                     ActiveCollaboratorId = collab,
+                    ActiveRunId = runId ?? room.ActiveRunId ?? reqTurn.Id,
+                    ActiveRound = roundNo,
+                    RunState = roundNo >= 2 ? "round_2_dispatched" : "round_1_dispatched",
                     Participants = runningParticipants,
                     CurrentTurnCount = room.Turns.Count + 1,
                     Turns = [.. room.Turns, reqTurn],
@@ -2191,7 +2366,10 @@ public sealed partial class SessionRoomOrchestrator(
                         }),
                         State: managerAudit.Passed ? "success" : "warning")
                 ],
-                ManagerAudit: managerAudit);
+                ManagerAudit: managerAudit,
+                RunId: runId ?? latestRoom.ActiveRunId,
+                RoundNo: roundNo,
+                Visibility: "room");
 
             var finishedParticipants = latestRoom.Participants.Select(p =>
                 string.Equals(p.AgentId, collab, StringComparison.OrdinalIgnoreCase)
@@ -2236,7 +2414,9 @@ public sealed partial class SessionRoomOrchestrator(
         IReadOnlyDictionary<string, string>? collaboratorFocuses = null,
         string executionStrategy = "parallel",
         Func<SessionCollaborationRoom, SessionRoomTurn, string, Task>? onCollaboratorCompleted = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? runId = null,
+        int roundNo = 1)
     {
         var collabs = collaboratorAgentIds
             .Where(c => !string.IsNullOrWhiteSpace(c))
@@ -2276,7 +2456,9 @@ public sealed partial class SessionRoomOrchestrator(
                     objective,
                     sbCtx.Length > 0 ? sbCtx.ToString() : null,
                     hostSessionId,
-                    ct);
+                    ct,
+                    runId,
+                    roundNo);
                 return (Collab: collab, Room: completedRoom, Turn: turn);
             }).ToList();
 
@@ -2330,7 +2512,9 @@ public sealed partial class SessionRoomOrchestrator(
                     objective,
                     sbCtx.Length > 0 ? sbCtx.ToString() : null,
                     hostSessionId,
-                    ct);
+                    ct,
+                    runId,
+                    roundNo);
 
                 latestRoom = completedRoom;
                 turns.Add(turn);
@@ -2398,6 +2582,349 @@ public sealed partial class SessionRoomOrchestrator(
         return (updatedRoom, turn);
     }
 
+    public static string ClassifyCollaborationMode(IReadOnlyList<string> selectedCollaborators, string? userText)
+    {
+        if (selectedCollaborators is null || selectedCollaborators.Count == 0)
+            return "solo";
+
+        if (selectedCollaborators.Count >= 2)
+            return "deliberation";
+
+        var lower = (userText ?? "").ToLowerInvariant();
+        if (lower.Contains("thảo luận") || lower.Contains("bàn luận") || lower.Contains("phản biện") ||
+            lower.Contains("vòng 2") || lower.Contains("vòng hai") || lower.Contains("cùng nhau"))
+        {
+            return "deliberation";
+        }
+
+        return "consultation";
+    }
+
+    public static string FormatAgentShortDisplayName(string slug)
+    {
+        var full = FriendlyAgentName(slug);
+        var idx = full.IndexOf(" (", StringComparison.Ordinal);
+        return idx > 0 ? full[..idx].Trim() : full;
+    }
+
+    public static string FormatNaturalAgentList(IReadOnlyList<string> slugs)
+    {
+        var names = slugs.Select(FormatAgentShortDisplayName).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        return names.Count switch
+        {
+            0 => "các chuyên viên",
+            1 => names[0],
+            2 => $"{names[0]} và {names[1]}",
+            _ => $"{string.Join(", ", names.Take(names.Count - 1))} và {names[^1]}"
+        };
+    }
+
+    public static SessionRoomInlineReceipt BuildInlineReceipt(
+        string kind,
+        int roundNo,
+        IReadOnlyList<string> collaborators,
+        int messageCount = 0)
+    {
+        var normList = collaborators
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Select(SubAgentService.NormalizeAgentId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var count = Math.Max(messageCount, normList.Count);
+        var joinedNames = normList.Count switch
+        {
+            0 => "room",
+            1 => FormatAgentShortDisplayName(normList[0]),
+            2 => $"{FormatAgentShortDisplayName(normList[0])} and {FormatAgentShortDisplayName(normList[1])}",
+            _ => $"{string.Join(", ", normList.Take(normList.Count - 1).Select(FormatAgentShortDisplayName))} and {FormatAgentShortDisplayName(normList[^1])}"
+        };
+
+        var label = kind switch
+        {
+            "dispatch" => $"Messaged {joinedNames}",
+            "reply" => $"Message from {joinedNames}",
+            _ => count <= 1 && normList.Count == 1
+                ? $"Message from {joinedNames}"
+                : $"{count} messages with {joinedNames}"
+        };
+
+        return new SessionRoomInlineReceipt(
+            Kind: kind,
+            RoundNo: Math.Max(1, roundNo),
+            Participants: normList,
+            MessageCount: count,
+            Label: label);
+    }
+
+    public static string BuildHostKickoffNarrationText(
+        string hostAgentId,
+        IReadOnlyList<string> collaborators,
+        string? rawUserText,
+        string collaborationMode = "deliberation")
+    {
+        var names = FormatNaturalAgentList(collaborators);
+        if (string.Equals(collaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) || collaborators.Count == 1)
+        {
+            var singleName = collaborators.Count > 0 ? FormatAgentShortDisplayName(collaborators[0]) : names;
+            return $"Để mình hỏi {singleName} xem {singleName} nghĩ sao về phương án và yêu cầu này nhé.";
+        }
+
+        return $"Ok, lần này cả nhóm sẽ thảo luận thật sự. Mình gửi yêu cầu chung cho {names} để mỗi bạn phản biện, kiểm tra chéo theo chuyên môn và chọn ra phương án tối ưu kèm cách triển khai cụ thể, rồi mình chốt thành một đáp án cuối cùng.";
+    }
+
+    public static string BuildHostProgressNarrationText(
+        string hostAgentId,
+        IReadOnlyList<string> collaborators,
+        string? rawUserText,
+        string collaborationMode,
+        IReadOnlyList<SessionRoomTurn>? completedTurns = null,
+        int roundNo = 1,
+        IReadOnlyDictionary<string, string>? focuses = null)
+    {
+        var names = FormatNaturalAgentList(collaborators);
+        if (string.Equals(collaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) || collaborators.Count == 1)
+        {
+            var singleSlug = collaborators.FirstOrDefault() ?? "zen";
+            var singleName = FormatAgentShortDisplayName(singleSlug);
+            var specialtyShort = singleSlug.ToLowerInvariant() switch
+            {
+                "zen" => "tính khả thi thương mại, định giá và hiệu quả chi phí",
+                "climax-default" or "climax-team" => "định vị thương hiệu, thông điệp truyền thông và sức hút thị trường",
+                "planthy-pm" or "planthy-team" => "lộ trình triển khai, thứ tự ưu tiên và kiểm soát rủi ro vận hành",
+                "mons" or "ken" => "kiến trúc kỹ thuật, tích hợp code và độ ổn định hạ tầng",
+                _ => "các điểm mấu chốt và thứ tự ưu tiên thực hiện"
+            };
+            return $"Mình đã gửi phương án cho {singleName} và nhờ {singleName} nhận xét thẳng, nhất là về {specialtyShort} và nên làm gì trước. Có ý kiến của {singleName} là mình gửi bạn ngay.";
+        }
+
+        var roleParts = new List<string>();
+        foreach (var c in collaborators)
+        {
+            var cName = FormatAgentShortDisplayName(c);
+            var roleDesc = c.ToLowerInvariant() switch
+            {
+                "zen" => "phụ trách phần bài toán thương mại, cấu trúc chi phí và hiệu quả đầu tư",
+                "climax-default" or "climax-team" => "phụ trách phần định vị thương hiệu, trải nghiệm thị giác và chiến lược truyền thông",
+                "planthy-pm" or "planthy-team" => "phụ trách phần lộ trình thực thi, phân kỳ giai đoạn và checklist nghiệm thu",
+                "mons" or "ken" => "phụ trách phần kiến trúc kỹ thuật, tích hợp hệ thống và tối ưu hiệu năng",
+                _ => "phụ trách rà soát chuyên sâu và kiểm tra chéo các phương án"
+            };
+            roleParts.Add($"{cName} {roleDesc}.");
+        }
+
+        var roleSummary = string.Join(" ", roleParts);
+        var roundLabel = roundNo >= 2 ? "vòng hai" : "phần thảo luận chuyên sâu";
+        var countPhrase = collaborators.Count == 2 ? "cả hai" : "cả nhóm";
+        return $"Mình đã gửi {roundLabel} cho {names}. {roleSummary} Có phản hồi của {countPhrase} là mình chốt đáp án cuối cho bạn.";
+    }
+
+    public RoomFollowUpRoundDecision DecideFollowUpRound(
+        SessionCollaborationRoom room,
+        string? rawUserText,
+        HostRoomTriageDecision triageDecision,
+        IReadOnlyList<SessionRoomTurn> round1Turns)
+    {
+        var collabs = triageDecision.SelectedCollaborators;
+        if (collabs.Count < 2 ||
+            string.Equals(triageDecision.CollaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) ||
+            room.MaxRoomTurns < 2)
+        {
+            return new RoomFollowUpRoundDecision(false, "Single-round sufficient", new Dictionary<string, string>());
+        }
+
+        var lower = (rawUserText ?? "").ToLowerInvariant();
+        bool explicitDeepDeliberation =
+            lower.Contains("vòng 2") ||
+            lower.Contains("vòng hai") ||
+            lower.Contains("2 vòng") ||
+            lower.Contains("hai vòng") ||
+            lower.Contains("phản biện chéo");
+
+        bool auditNeedsCrossCheck = round1Turns.Any(t => t.ManagerAudit is { Passed: false });
+
+        if (!explicitDeepDeliberation && !auditNeedsCrossCheck)
+        {
+            return new RoomFollowUpRoundDecision(
+                false,
+                "Round 1 specialist outputs passed quality gate; synthesizing directly while projecting round exchange summary.",
+                triageDecision.CollaboratorFocuses ?? new Dictionary<string, string>());
+        }
+
+        var round2Focuses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in collabs)
+        {
+            round2Focuses[c] = $"[Vòng 2 — Phản biện & Kiểm tra chéo]: Đối chiếu đề xuất của các chuyên viên khác ở Vòng 1 và chốt phương án tối ưu nhất thuộc mảng của @{c} ({DescribeAgentSpecialty(c)}).";
+        }
+
+        return new RoomFollowUpRoundDecision(
+            true,
+            explicitDeepDeliberation
+                ? "User requested explicit multi-round cross-examination."
+                : "Manager quality audit requested Round 2 cross-verification.",
+            round2Focuses);
+    }
+
+    public async Task<(SessionCollaborationRoom Room, SessionRoomTurn Turn)> RecordHostKickoffTurnAsync(
+        string hostAgentId,
+        string hostChatId,
+        IReadOnlyList<string> collaborators,
+        string? rawUserText,
+        HostRoomTriageDecision decision,
+        string runId,
+        string? hostSessionId = null,
+        CancellationToken ct = default)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var room = roomStore.GetByChat(host, hostChatId)
+            ?? await EnsureRoomAsync(host, hostChatId, collaborators.FirstOrDefault(), hostSessionId, ct, collaborators);
+
+        var now = DateTimeOffset.UtcNow;
+        if (room.Turns.Count > 0 && now <= room.Turns[^1].CreatedAt)
+        {
+            now = room.Turns[^1].CreatedAt.AddMilliseconds(15);
+        }
+
+        var collabMode = decision.CollaborationMode;
+        var kickoffText = BuildHostKickoffNarrationText(host, collaborators, rawUserText, collabMode);
+        var receipt = BuildInlineReceipt("dispatch", 1, collaborators, collaborators.Count);
+
+        var turn = new SessionRoomTurn(
+            $"rt_kickoff_{Guid.NewGuid():N}"[..18],
+            room.Turns.Count + 1,
+            host,
+            FriendlyAgentName(host),
+            "host",
+            "host_kickoff",
+            kickoffText,
+            string.Join(",", collaborators),
+            now,
+            Reasoning: $"Chủ session (@{host}) mở luồng dẫn chuyện và điều phối yêu cầu tới {FormatNaturalAgentList(collaborators)} trong Room {room.MatrixRoomId}.",
+            Steps:
+            [
+                new SessionRoomStep(
+                    Kind: "tool_call",
+                    Id: $"step_kickoff_{Guid.NewGuid():N}"[..14],
+                    CallId: $"call_kickoff_{Guid.NewGuid():N}"[..14],
+                    Tool: "room_narrator_kickoff",
+                    Args: JsonSerializer.Serialize(new
+                    {
+                        run_id = runId,
+                        round_no = 1,
+                        collaboration_mode = collabMode,
+                        participants = collaborators
+                    }),
+                    Result: receipt.Label ?? "Dispatched",
+                    State: "success")
+            ],
+            RunId: runId,
+            RoundNo: 1,
+            Visibility: "main",
+            Receipt: receipt);
+
+        var updatedRoom = await roomStore.SaveAsync(room with
+        {
+            Status = "collaborator_running",
+            ActiveRunId = runId,
+            ActiveRound = 1,
+            RunState = "kickoff_published",
+            CurrentTurnCount = room.Turns.Count + 1,
+            Turns = [.. room.Turns, turn],
+            UpdatedAt = now
+        });
+
+        BroadcastRoomTurnToHostSession(updatedRoom, turn, "completed");
+        _ = PostTurnToRealMatrixRoomAsync(updatedRoom, turn);
+        return (updatedRoom, turn);
+    }
+
+    public async Task<(SessionCollaborationRoom Room, SessionRoomTurn Turn)> RecordHostProgressTurnAsync(
+        string hostAgentId,
+        string hostChatId,
+        IReadOnlyList<string> collaborators,
+        string? rawUserText,
+        HostRoomTriageDecision decision,
+        IReadOnlyList<SessionRoomTurn> completedTurns,
+        string runId,
+        int roundNo = 2,
+        string? hostSessionId = null,
+        CancellationToken ct = default)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var room = roomStore.GetByChat(host, hostChatId)
+            ?? await EnsureRoomAsync(host, hostChatId, collaborators.FirstOrDefault(), hostSessionId, ct, collaborators);
+
+        var now = DateTimeOffset.UtcNow;
+        if (room.Turns.Count > 0 && now <= room.Turns[^1].CreatedAt)
+        {
+            now = room.Turns[^1].CreatedAt.AddMilliseconds(20);
+        }
+
+        var collabMode = decision.CollaborationMode;
+        var progressText = BuildHostProgressNarrationText(
+            host,
+            collaborators,
+            rawUserText,
+            collabMode,
+            completedTurns,
+            roundNo,
+            decision.CollaboratorFocuses);
+
+        var receiptKind = collaborators.Count == 1 && string.Equals(collabMode, "consultation", StringComparison.OrdinalIgnoreCase)
+            ? "reply"
+            : "exchange";
+        var msgCount = Math.Max(collaborators.Count, completedTurns.Count(t => t.Kind == "collaborator_reply"));
+        var receipt = BuildInlineReceipt(receiptKind, roundNo, collaborators, msgCount);
+
+        var turn = new SessionRoomTurn(
+            $"rt_progress_{Guid.NewGuid():N}"[..19],
+            room.Turns.Count + 1,
+            host,
+            FriendlyAgentName(host),
+            "host",
+            "host_progress",
+            progressText,
+            string.Join(",", collaborators),
+            now,
+            Reasoning: $"Chủ session (@{host}) cập nhật tiến độ trao đổi ({receipt.Label}) trong Room {room.MatrixRoomId} trước khi chốt đáp án cuối.",
+            Steps:
+            [
+                new SessionRoomStep(
+                    Kind: "tool_call",
+                    Id: $"step_progress_{Guid.NewGuid():N}"[..15],
+                    CallId: $"call_progress_{Guid.NewGuid():N}"[..15],
+                    Tool: "room_narrator_progress",
+                    Args: JsonSerializer.Serialize(new
+                    {
+                        run_id = runId,
+                        round_no = roundNo,
+                        collaboration_mode = collabMode,
+                        participants = collaborators,
+                        message_count = msgCount
+                    }),
+                    Result: receipt.Label ?? "Completed",
+                    State: "success")
+            ],
+            RunId: runId,
+            RoundNo: roundNo,
+            Visibility: "main",
+            Receipt: receipt);
+
+        var updatedRoom = await roomStore.SaveAsync(room with
+        {
+            Status = "synthesizing",
+            ActiveRunId = runId,
+            ActiveRound = roundNo,
+            RunState = "synthesizing",
+            CurrentTurnCount = room.Turns.Count + 1,
+            Turns = [.. room.Turns, turn],
+            UpdatedAt = now
+        });
+
+        BroadcastRoomTurnToHostSession(updatedRoom, turn, "completed");
+        _ = PostTurnToRealMatrixRoomAsync(updatedRoom, turn);
+        return (updatedRoom, turn);
+    }
+
     public async Task<(SessionCollaborationRoom Room, SessionRoomTurn Turn)?> RecordHostSynthesisTurnAsync(
         string hostAgentId,
         string hostChatId,
@@ -2405,7 +2932,9 @@ public sealed partial class SessionRoomOrchestrator(
         string? reasoning = null,
         IReadOnlyList<SessionRoomStep>? steps = null,
         string? hostSessionId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? runId = null,
+        int roundNo = 1)
     {
         if (string.IsNullOrWhiteSpace(synthesisText)) return null;
         var room = roomStore.GetByChat(hostAgentId, hostChatId);
@@ -2417,6 +2946,10 @@ public sealed partial class SessionRoomOrchestrator(
         {
             now = room.Turns[^1].CreatedAt.AddMilliseconds(50);
         }
+
+        var resolvedRunId = runId
+            ?? room.ActiveRunId
+            ?? room.Turns.LastOrDefault(t => !string.IsNullOrWhiteSpace(t.RunId))?.RunId;
 
         // Proposal 2: Manager Host Synthesis Coverage Audit
         var synthAudit = AuditHostSynthesisOutput(room, synthesisText);
@@ -2435,6 +2968,7 @@ public sealed partial class SessionRoomOrchestrator(
                 manager = ManagerAgentId,
                 synthesis_owner = host,
                 room_id = room.MatrixRoomId,
+                run_id = resolvedRunId,
                 checklist_expected = synthAudit.ChecklistPassed
             }),
             Result: JsonSerializer.Serialize(new
@@ -2459,12 +2993,18 @@ public sealed partial class SessionRoomOrchestrator(
             now,
             reasoning,
             mergedSteps,
-            ManagerAudit: synthAudit);
+            ManagerAudit: synthAudit,
+            RunId: resolvedRunId,
+            RoundNo: Math.Max(1, roundNo),
+            Visibility: "main");
 
         var updatedRoom = await roomStore.SaveAsync(room with
         {
             Status = "completed",
             ActiveCollaboratorId = null,
+            ActiveRunId = resolvedRunId,
+            ActiveRound = Math.Max(1, roundNo),
+            RunState = "completed",
             CurrentTurnCount = room.Turns.Count + 1,
             Turns = [.. room.Turns, turn],
             UpdatedAt = now
@@ -2955,7 +3495,16 @@ public sealed partial class SessionRoomOrchestrator(
             sb.AppendLine($"  1. [KHÔNG CẦN TỰ CHẠY LẶP LẠI]: Manager quyết định các agents trong Room đã thực thi xong (done) toàn bộ các nhánh chuyên môn cần thiết; bạn (@{room.HostAgentId}) không cần tự chạy lại công cụ hay phân tích lại từ đầu.");
             sb.AppendLine($"  2. [ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]: Với tư cách Chủ session kiêm Người đại diện Room, hãy ưu tiên đúc kết và tổng hợp các kết quả đã chạy xong từ các agents trong Room thành câu phản hồi cuối cùng thống nhất, trực diện nhất cho người dùng.");
         }
-        sb.AppendLine("  3. Loại bỏ mọi sự trùng lặp giữa các chuyên viên; làm nổi bật các đề xuất hành động cụ thể (Actionable Takeaways) và gom các câu hỏi làm rõ phạm vi (nếu có) thành 1 ý ngắn gọn ở cuối bài.");
+        if (string.Equals(triageDecision.CollaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) && collaboratorTurns.Count == 1)
+        {
+            var consultName = FormatAgentShortDisplayName(collaboratorTurns[0].AuthorId);
+            sb.AppendLine($"  3. [PHONG CÁCH DẪN CHUYỆN THAM VẤN (CONSULTATION)]: Vì trên giao diện chính người dùng CHỈ trò chuyện trực tiếp với bạn (@{room.HostAgentId}) và không thấy bubble riêng của {consultName}, hãy mở đầu bằng câu dẫn tự nhiên như: \"{consultName} đồng ý gần hết với phương án chính, nhưng góp ý các điểm mà mình thấy hợp lý:\", tiếp theo liệt kê rõ ràng thành danh sách đánh số (1, 2, 3...) các góp ý sắc bén của {consultName}, và kết thúc bằng 1 câu chốt nêu rõ quan điểm của chính bạn (ví dụ: \"Mình cũng nghĩ đi theo hướng này cho bản đầu là gọn và hiệu quả nhất.\").");
+        }
+        else
+        {
+            sb.AppendLine($"  3. [PHONG CÁCH DẪN CHUYỆN HỘI ĐỒNG (DELIBERATION)]: Vì trên giao diện chính người dùng CHỈ nhìn thấy câu trả lời dẫn chuyện của bạn (@{room.HostAgentId}), hãy mở đầu bằng câu đúc kết đồng thuận tự nhiên (ví dụ: \"Cả nhóm đều chốt cùng một ý: ...\" hoặc \"Sau khi thảo luận và kiểm tra chéo, tụi mình thống nhất phương án tối ưu như sau:\"), làm nổi bật các quyết định cốt lõi bằng chữ in đậm, phân tích rõ lý do chọn hướng đó và các bước thực hiện tiếp theo.");
+        }
+        sb.AppendLine("  4. Tuyệt đối không lặp lại nguyên văn các thẻ hệ thống nội bộ; viết tự nhiên, súc tích và đi thẳng vào kết quả đã thống nhất.");
         return sb.ToString();
     }
 
@@ -3227,7 +3776,8 @@ public sealed partial class SessionRoomOrchestrator(
                 SynthesisOwnerId = host,
                 HostShouldSelfExecute = true,
                 HostExecutionRole = "solo_execute_and_respond",
-                HostExecutionFocus = $"Chủ session @{host} trực tiếp tự thực thi và đại diện phiên đưa ra câu trả lời cuối cùng."
+                HostExecutionFocus = $"Chủ session @{host} trực tiếp tự thực thi và đại diện phiên đưa ra câu trả lời cuối cùng.",
+                CollaborationMode = "solo"
             };
         }
 
@@ -3254,6 +3804,7 @@ public sealed partial class SessionRoomOrchestrator(
             ? $"{decision.Reason[..^1]} ({hostRoleSummary})."
             : $"{decision.Reason} ({hostRoleSummary}).";
 
+        var collabMode = ClassifyCollaborationMode(decision.SelectedCollaborators, userBodyText);
         return decision with
         {
             Reason = enrichedReason,
@@ -3262,7 +3813,8 @@ public sealed partial class SessionRoomOrchestrator(
             SynthesisOwnerId = host,
             HostShouldSelfExecute = selfExec,
             HostExecutionRole = execRole,
-            HostExecutionFocus = execFocus
+            HostExecutionFocus = execFocus,
+            CollaborationMode = collabMode
         };
     }
 
@@ -3794,16 +4346,22 @@ public sealed partial class SessionRoomOrchestrator(
         SessionRoomTurn turn,
         string eventStatus)
     {
+        var isHostNarrator = turn.Kind is "synthesis" or "host_kickoff" or "host_progress" ||
+                             string.Equals(turn.AuthorRole, "host", StringComparison.OrdinalIgnoreCase);
         var metadataJson = JsonSerializer.Serialize(new
         {
             room_id = room.RoomId,
             matrix_room_id = room.MatrixRoomId,
             element_room_url = room.ElementRoomUrl,
-            sender_agent_id = turn.AuthorId,
-            sender_agent_name = turn.AuthorName,
+            sender_agent_id = isHostNarrator ? null : turn.AuthorId,
+            sender_agent_name = isHostNarrator ? null : turn.AuthorName,
             author_role = turn.AuthorRole,
             turn_kind = turn.Kind,
             turn_no = turn.TurnNo,
+            run_id = turn.RunId,
+            round_no = turn.RoundNo,
+            visibility = turn.Visibility,
+            receipt = turn.Receipt,
             target_agent_id = turn.TargetAgentId,
             reasoning = turn.Reasoning,
             steps = turn.Steps,

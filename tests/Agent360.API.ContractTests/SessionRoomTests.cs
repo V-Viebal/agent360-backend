@@ -569,16 +569,27 @@ public class SessionRoomTests
         var enriched = roomStore.EnrichChatHistoryJson(rawHistoryWithEmbeddedContext, "gm-boc", "chat-rehydrate-01");
         enriched.Should().NotContain("[SHARED SESSION ROOM CONTEXT]");
         using var doc = System.Text.Json.JsonDocument.Parse(enriched);
-        var msgsText = string.Join("\n", doc.RootElement.GetProperty("messages").EnumerateArray().Select(m => m.GetProperty("content")[0].GetProperty("text").GetString()));
-        msgsText.Should().Contain("Chiến lược thương mại Bánh mì Zeroism giá 89.000đ");
-        msgsText.Should().Contain("Định vị bánh mì Sài Gòn bản chay vỏ giòn nhân thực vật thật.");
-        msgsText.Should().Contain("Lộ trình 90 ngày chuẩn hóa bếp Thảo Điền trước khi mở Quận 3.");
+        var msgElements = doc.RootElement.GetProperty("messages").EnumerateArray().ToList();
+        var msgsText = string.Join("\n", msgElements.Select(m => m.GetProperty("content")[0].GetProperty("text").GetString()));
+
+        // Main chat messages only contain user prompt + 3 Host narrator bubbles (host_kickoff, host_progress, synthesis), never raw specialist bubbles
+        msgsText.Should().Contain("Ok, lần này cả nhóm sẽ thảo luận thật sự.");
+        msgsText.Should().Contain("Mình đã gửi phần thảo luận chuyên sâu cho Zen, Climax Default và Planthy PM.");
+        msgsText.Should().Contain("Tổng hợp chiến lược Bánh mì chay Zeroism từ Zen, Climax và Planthy.");
+        msgElements.Where(m => m.GetProperty("role").GetString() == "assistant")
+            .All(m => !m.TryGetProperty("metadata", out var md) || !md.TryGetProperty("sender_agent_id", out var sid) || sid.ValueKind == System.Text.Json.JsonValueKind.Null)
+            .Should().BeTrue();
 
         var rehydratedRoom = roomStore.GetByChat("gm-boc", "chat-rehydrate-01");
         rehydratedRoom.Should().NotBeNull();
         rehydratedRoom!.Participants.Where(p => p.Role == "collaborator").Select(p => p.AgentId)
             .Should().BeEquivalentTo(["zen", "climax-default", "planthy-pm"]);
-        rehydratedRoom.Turns.Where(t => t.Kind == "collaborator_reply").Should().HaveCount(3);
+        var collabReplies = rehydratedRoom.Turns.Where(t => t.Kind == "collaborator_reply").ToList();
+        collabReplies.Should().HaveCount(3);
+        var roomTurnsText = string.Join("\n", collabReplies.Select(t => t.Text));
+        roomTurnsText.Should().Contain("Chiến lược thương mại Bánh mì Zeroism giá 89.000đ");
+        roomTurnsText.Should().Contain("Định vị bánh mì Sài Gòn bản chay vỏ giòn nhân thực vật thật.");
+        roomTurnsText.Should().Contain("Lộ trình 90 ngày chuẩn hóa bếp Thảo Điền trước khi mở Quận 3.");
     }
 
     [Fact]
@@ -973,5 +984,134 @@ public class SessionRoomTests
             room, "climax-default", "Định vị thương hiệu", "BuildSpecialtySynthesisFallback(collab, objective)");
         directAudit.Passed.Should().BeFalse();
         directAudit.IssuesDetected.Should().Contain(x => x.Contains("internal_method_leak"));
+    }
+
+    [Fact]
+    public async Task NarratorRoomWorkflow_DeliberationAndConsultation_ProducesThreeHostBubblesWithReceipts_AndPreservesMultiMediaLongChatOnReload()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            NextReply = "Góp ý chuyên sâu: Ưu tiên SVG thuần cho bản đầu để tối ưu tốc độ tải và kiểm soát nét vẽ tay."
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-narrator-multimedia-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default"]);
+
+        // 1. Deliberation turn with multi-media attachments (image, video, audio, document)
+        var userPrompt1 =
+            "@zen @climax-default 3 tụi em cùng thảo luận, đưa ra đáp án chi tiết nhất\n\n" +
+            "[Attached File: mascot-sketch.png (/api/agents/gm-boc/console/files/mascot-sketch.png)]\n" +
+            "[Attached File: bun-demo.mp4 (/api/agents/gm-boc/console/files/bun-demo.mp4)]\n" +
+            "[Attached File: voice-note.mp3 (/api/agents/gm-boc/console/files/voice-note.mp3)]\n" +
+            "[Attached File: brand-brief.pdf (/api/agents/gm-boc/console/files/brand-brief.pdf)]";
+
+        var decision1 = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, userPrompt1);
+        decision1.ShouldUseRoom.Should().BeTrue();
+        decision1.CollaborationMode.Should().Be("deliberation");
+
+        var runId1 = "run_delib_01";
+        var (_, kickoff1) = await orchestrator.RecordHostKickoffTurnAsync("gm-boc", chatId, decision1.SelectedCollaborators, userPrompt1, decision1, runId1, chatId, ct);
+        kickoff1.Kind.Should().Be("host_kickoff");
+        kickoff1.Visibility.Should().Be("main");
+        kickoff1.Receipt.Should().NotBeNull();
+        kickoff1.Receipt!.Kind.Should().Be("dispatch");
+        kickoff1.Receipt.Label.Should().Contain("Messaged");
+
+        var (_, wave1Turns) = await orchestrator.ExecuteCollaboratorWaveAsync(
+            "gm-boc", chatId, decision1.SelectedCollaborators, userPrompt1, null, chatId, decision1.CollaboratorFocuses, "parallel", null, ct, runId1, 1);
+        wave1Turns.Should().OnlyContain(t => t.Visibility == "room" && t.RunId == runId1 && t.RoundNo == 1);
+
+        var (_, progress1) = await orchestrator.RecordHostProgressTurnAsync(
+            "gm-boc", chatId, decision1.SelectedCollaborators, userPrompt1, decision1, wave1Turns, runId1, 2, chatId, ct);
+        progress1.Kind.Should().Be("host_progress");
+        progress1.Visibility.Should().Be("main");
+        progress1.Receipt.Should().NotBeNull();
+        progress1.Receipt!.Kind.Should().Be("exchange");
+        progress1.Receipt.Label.Should().Contain("2 messages with");
+
+        var synth1 = await orchestrator.RecordHostSynthesisTurnAsync(
+            "gm-boc", chatId, "Cả ba đứa đều chốt cùng một ý: tự vẽ bằng SVG kết hợp Rive.", "Tổng hợp vòng thảo luận", null, chatId, ct, runId1, 2);
+        synth1.Should().NotBeNull();
+        synth1!.Value.Turn.Visibility.Should().Be("main");
+        synth1.Value.Turn.RunId.Should().Be(runId1);
+
+        // 2. Consultation turn with a single collaborator (@zen em thấy sao)
+        var userPrompt2 = "@zen em thấy sao";
+        var decision2 = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, userPrompt2);
+        decision2.ShouldUseRoom.Should().BeTrue();
+        decision2.CollaborationMode.Should().Be("consultation");
+
+        var runId2 = "run_consult_02";
+        var (_, kickoff2) = await orchestrator.RecordHostKickoffTurnAsync("gm-boc", chatId, decision2.SelectedCollaborators, userPrompt2, decision2, runId2, chatId, ct);
+        kickoff2.Text.Should().Contain("Để mình hỏi Zen xem Zen nghĩ sao");
+        kickoff2.Receipt!.Label.Should().Be("Messaged Zen");
+
+        var (_, wave2Turns) = await orchestrator.ExecuteCollaboratorWaveAsync(
+            "gm-boc", chatId, decision2.SelectedCollaborators, userPrompt2, null, chatId, decision2.CollaboratorFocuses, "sequential", null, ct, runId2, 1);
+
+        var (_, progress2) = await orchestrator.RecordHostProgressTurnAsync(
+            "gm-boc", chatId, decision2.SelectedCollaborators, userPrompt2, decision2, wave2Turns, runId2, 1, chatId, ct);
+        progress2.Receipt!.Kind.Should().Be("reply");
+        progress2.Receipt.Label.Should().Be("Message from Zen");
+
+        await orchestrator.RecordHostSynthesisTurnAsync(
+            "gm-boc", chatId, "Zen đồng ý gần hết với đáp án chốt, nhưng góp ý ba điểm hợp lý. Mình cũng nghĩ đi theo hướng này cho bản đầu là gọn nhất.", null, null, chatId, ct, runId2, 1);
+
+        // 3. Verify reload via EnrichChatHistoryJson preserves all 4 media types AND projects only Host narrator bubbles with receipts
+        var rawHistoryObj = new
+        {
+            messages = new object[]
+            {
+                new
+                {
+                    id = "usr_1",
+                    role = "user",
+                    type = "message",
+                    content = new[] { new { type = "text", text = userPrompt1 + "\n\n[SHARED SESSION ROOM CONTEXT]\nInternal context" } }
+                },
+                new
+                {
+                    id = "asst_1",
+                    role = "assistant",
+                    type = "message",
+                    content = new[] { new { type = "text", text = "Cả ba đứa đều chốt cùng một ý: tự vẽ bằng SVG kết hợp Rive." } }
+                },
+                new
+                {
+                    id = "usr_2",
+                    role = "user",
+                    type = "message",
+                    content = new[] { new { type = "text", text = "@zen em thấy sao\n\n[SHARED SESSION ROOM CONTEXT]\nInternal context 2" } }
+                },
+                new
+                {
+                    id = "asst_2",
+                    role = "assistant",
+                    type = "message",
+                    content = new[] { new { type = "text", text = "Zen đồng ý gần hết với đáp án chốt, nhưng góp ý ba điểm hợp lý. Mình cũng nghĩ đi theo hướng này cho bản đầu là gọn nhất." } }
+                }
+            }
+        };
+        var rawHistory = System.Text.Json.JsonSerializer.Serialize(rawHistoryObj);
+
+        var enriched = roomStore.EnrichChatHistoryJson(rawHistory, "gm-boc", chatId);
+        enriched.Should().NotContain("[SHARED SESSION ROOM CONTEXT]");
+        enriched.Should().Contain("mascot-sketch.png");
+        enriched.Should().Contain("bun-demo.mp4");
+        enriched.Should().Contain("voice-note.mp3");
+        enriched.Should().Contain("brand-brief.pdf");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(enriched);
+        var msgs = doc.RootElement.GetProperty("messages").EnumerateArray().ToList();
+        // 2 user messages + 3 host bubbles for run 1 + 3 host bubbles for run 2 = 8 messages total
+        msgs.Should().HaveCount(8);
+        msgs.Where(m => m.GetProperty("role").GetString() == "assistant")
+            .All(m => !m.TryGetProperty("metadata", out var md) || !md.TryGetProperty("sender_agent_id", out var sid) || sid.ValueKind == System.Text.Json.JsonValueKind.Null)
+            .Should().BeTrue();
     }
 }
