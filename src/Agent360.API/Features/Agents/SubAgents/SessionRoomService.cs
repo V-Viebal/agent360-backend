@@ -989,6 +989,10 @@ public sealed class SessionRoomStore
                 messagesArr.Clear();
                 foreach (var m in soloFiltered) messagesArr.Add(m);
                 node.Remove("collaboration_room");
+                if (room?.Reactions is { Count: > 0 })
+                {
+                    node["reaction_records"] = JsonSerializer.SerializeToNode(room.Reactions);
+                }
                 return node.ToJsonString();
             }
 
