@@ -46,11 +46,14 @@ public static class OptionsConfiguration
                 )
                 .ValidateOnStart();
 
-            
             webApplicationBuilder.Services.AddOptions<StorageOptions>()
                 .BindConfiguration(StorageOptions.StorageSection);
-webApplicationBuilder.Services.AddOptions<QwenPawOptions>()
+
+            webApplicationBuilder.Services.AddOptions<QwenPawOptions>()
                 .BindConfiguration(QwenPawOptions.Section);
+
+            webApplicationBuilder.Services.AddOptions<ComposioOptions>()
+                .BindConfiguration(ComposioOptions.SectionName);
 
             return webApplicationBuilder;
         }

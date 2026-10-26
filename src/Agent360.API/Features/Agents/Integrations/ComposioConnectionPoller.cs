@@ -33,15 +33,19 @@ public sealed class ComposioConnectionPoller : BackgroundService, IComposioConne
 
     private readonly ConcurrentDictionary<string, ComposioConnectionPollStatus> _tracked = new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Options.ComposioOptions> _composioOptions;
+
     public ComposioConnectionPoller(
         HttpClient httpClient,
         IFleetInstanceRoutingService routing,
         IMemoryCache cache,
+        Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Options.ComposioOptions> composioOptions,
         ILogger<ComposioConnectionPoller> logger)
     {
         _httpClient = httpClient;
         _routing = routing;
         _cache = cache;
+        _composioOptions = composioOptions;
         _logger = logger;
     }
 

@@ -341,11 +341,14 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 HttpContext http,
                 IComposioConnectionPoller poller,
                 IMemoryCache cache,
+                Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Options.ComposioOptions> composioOptions,
                 ILogger<ComposioIntegrationEndpoint> logger,
                 CancellationToken ct) =>
             {
-                // Optional webhook secret validation if configured
-                var expectedSecret = Environment.GetEnvironmentVariable("COMPOSIO_WEBHOOK_SECRET");
+                // Dynamic hot-reloaded secret from IOptionsMonitor (or environment fallback)
+                var expectedSecret = composioOptions.CurrentValue.WebhookSecret 
+                    ?? Environment.GetEnvironmentVariable("COMPOSIO_WEBHOOK_SECRET");
+
                 if (!string.IsNullOrWhiteSpace(expectedSecret))
                 {
                     var incomingSig = http.Request.Headers["X-Composio-Signature"].ToString();
