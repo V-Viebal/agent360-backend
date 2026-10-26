@@ -740,6 +740,15 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                             {
                                 var redirectUrl = appResEl.TryGetProperty("redirect_url", out var r) ? r.GetString() : null;
                                 var status = appResEl.TryGetProperty("status", out var s) ? s.GetString() : "initiated";
+                                var accounts = appResEl.TryGetProperty("accounts", out var a) && a.ValueKind == JsonValueKind.Array
+                                    ? a.EnumerateArray()
+                                    : Enumerable.Empty<JsonElement>();
+                                var hasActiveAccount = string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) ||
+                                                       accounts.Any(acc => string.Equals(acc.TryGetProperty("status", out var st) ? st.GetString() : "", "active", StringComparison.OrdinalIgnoreCase));
+                                if (hasActiveAccount)
+                                {
+                                    return new ComposioConnectionResult(null, "active");
+                                }
                                 return new ComposioConnectionResult(redirectUrl, status ?? "initiated");
                             }
                         }

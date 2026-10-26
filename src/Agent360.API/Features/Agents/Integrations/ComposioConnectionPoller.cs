@@ -29,6 +29,7 @@ public sealed class ComposioConnectionPoller : BackgroundService, IComposioConne
     private readonly HttpClient _httpClient;
     private readonly IFleetInstanceRoutingService _routing;
     private readonly IMemoryCache _cache;
+    private readonly SessionMultiplexerHub _multiplexerHub;
     private readonly ILogger<ComposioConnectionPoller> _logger;
 
     private readonly ConcurrentDictionary<string, ComposioConnectionPollStatus> _tracked = new(StringComparer.OrdinalIgnoreCase);
@@ -39,12 +40,14 @@ public sealed class ComposioConnectionPoller : BackgroundService, IComposioConne
         HttpClient httpClient,
         IFleetInstanceRoutingService routing,
         IMemoryCache cache,
+        SessionMultiplexerHub multiplexerHub,
         Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Options.ComposioOptions> composioOptions,
         ILogger<ComposioConnectionPoller> logger)
     {
         _httpClient = httpClient;
         _routing = routing;
         _cache = cache;
+        _multiplexerHub = multiplexerHub;
         _composioOptions = composioOptions;
         _logger = logger;
     }
@@ -212,6 +215,18 @@ public sealed class ComposioConnectionPoller : BackgroundService, IComposioConne
                                     var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(current.AgentId, "mcp");
                                     _cache.Remove(cacheKey);
                                     _cache.Remove(cacheKey + ":last-good");
+
+                                    // Broadcast realtime WebSocket notification to all active clients
+                                    var wsPayload = JsonSerializer.Serialize(new
+                                    {
+                                        type = "composio_connection_activated",
+                                        app_slug = current.AppSlug,
+                                        agent_id = current.AgentId,
+                                        status = "active",
+                                        message = $"Ứng dụng {current.AppSlug.ToUpperInvariant()} đã được kích hoạt thành công cho {current.AgentId}!",
+                                        timestamp = DateTime.UtcNow.ToString("O")
+                                    });
+                                    _ = _multiplexerHub.BroadcastAsync(wsPayload);
                                 }
                                 else
                                 {
