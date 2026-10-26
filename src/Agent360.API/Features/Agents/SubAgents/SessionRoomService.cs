@@ -46,7 +46,8 @@ public sealed record SessionRoomInlineReceipt(
 public sealed record RoomFollowUpRoundDecision(
     [property: JsonPropertyName("should_run_round_2")] bool ShouldRunRound2,
     [property: JsonPropertyName("reason")] string Reason,
-    [property: JsonPropertyName("round_2_focuses")] IReadOnlyDictionary<string, string> Round2Focuses);
+    [property: JsonPropertyName("round_2_focuses")] IReadOnlyDictionary<string, string> Round2Focuses,
+    [property: JsonPropertyName("additional_collaborators")] IReadOnlyList<string>? AdditionalCollaborators = null);
 
 public sealed record SessionRoomTurn(
     [property: JsonPropertyName("id")] string Id,
@@ -1319,7 +1320,14 @@ public sealed class SessionRoomStore
 
                         var maxRound = Math.Max(1, replies.Max(r => r.RoundNo > 0 ? r.RoundNo : 1));
                         var progText = SessionRoomOrchestrator.BuildHostProgressNarrationText(normHost, collabIds, reqClean, mode, replies, maxRound);
-                        var progReceiptKind = collabIds.Count == 1 && mode == "consultation" ? "reply" : "exchange";
+                        var progReceiptKind = mode switch
+                        {
+                            "consultation" => "reply",
+                            "relay_pipeline" => "relay",
+                            "adversarial_review" => "review",
+                            "task_decomposition" => "workstreams",
+                            _ => collabIds.Count == 1 ? "reply" : "exchange"
+                        };
                         var progReceipt = SessionRoomOrchestrator.BuildInlineReceipt(progReceiptKind, maxRound, collabIds, replies.Count(r => r.Kind == "collaborator_reply"));
                         effectiveNarrators.Add(new SessionRoomTurn(
                             $"rt_progress_{waveRunId}",
@@ -2582,22 +2590,103 @@ public sealed partial class SessionRoomOrchestrator(
         return (updatedRoom, turn);
     }
 
-    public static string ClassifyCollaborationMode(IReadOnlyList<string> selectedCollaborators, string? userText)
+    public static string ClassifyCollaborationMode(
+        IReadOnlyList<string> selectedCollaborators,
+        string? userText,
+        string? triageMode = null)
     {
         if (selectedCollaborators is null || selectedCollaborators.Count == 0)
             return "solo";
 
+        var lower = (userText ?? "").ToLowerInvariant();
+
+        // 1. Peer Assist: dynamic recruitment of a missing specialist into the Room or explicit peer-support request
+        if (string.Equals(triageMode, "manager_specialist_recruitment", StringComparison.OrdinalIgnoreCase) ||
+            Regex.IsMatch(lower, @"\b(?:kéo\s+thêm|mời\s+thêm|nhờ\s+thêm|hỗ\s+trợ\s+thêm|hỗ\s+trợ\s+chéo|bổ\s+sung\s+góc\s+nhìn|peer\s+assist)\b", RegexOptions.IgnoreCase))
+        {
+            return "peer_assist";
+        }
+
+        // 2. Relay Pipeline: sequential handoff chain where Agent A's output feeds Agent B -> Agent C
+        if (selectedCollaborators.Count >= 2 &&
+            Regex.IsMatch(
+                lower,
+                @"(?:sau\s+đó\s+chuyển|tiếp\s+theo\s+chuyển|rồi\s+chuyển\s+cho|bàn\s+giao\s+sang|bàn\s+giao\s+cho|dựa\s+trên\s+kết\s+quả\s+của|lần\s+lượt\s+từng\s+bước|theo\s+thứ\s+tự|tuần\s+tự|pipeline|nối\s+tiếp)",
+                RegexOptions.IgnoreCase))
+        {
+            return "relay_pipeline";
+        }
+
+        // 3. Adversarial Review / Red-Team Stress Test: finding blind spots, risks, vulnerabilities, or critical audit
+        if (Regex.IsMatch(
+                lower,
+                @"(?:phản\s+biện\s+chéo|phản\s+biện\s+gắt|bắt\s+lỗi|vạch\s+lỗi|tìm\s+lỗ\s+hổng|lỗ\s+hổng|stress\s*test|red\s*team|kiểm\s+định\s+rủi\s+ro|thẩm\s+định\s+rủi\s+ro|soi\s+rủi\s+ro)",
+                RegexOptions.IgnoreCase))
+        {
+            return "adversarial_review";
+        }
+
+        // 4. Task Decomposition (Divide & Conquer): breaking a large multi-domain objective into modular workstreams
+        if (Regex.IsMatch(
+                lower,
+                @"(?:chia\s+đầu\s+việc|chia\s+phần|chia\s+nhỏ|phân\s+rã|từng\s+hạng\s+mục|mỗi\s+người\s+một\s+phần|mỗi\s+bạn\s+một\s+mảng|kế\s+hoạch\s+tổng\s+thể\s+từ\s+a\s*-\s*z)",
+                RegexOptions.IgnoreCase))
+        {
+            return "task_decomposition";
+        }
+
+        // 5. Multi-agent Deliberation (2+ collaborators discussing & building consensus)
         if (selectedCollaborators.Count >= 2)
             return "deliberation";
 
-        var lower = (userText ?? "").ToLowerInvariant();
         if (lower.Contains("thảo luận") || lower.Contains("bàn luận") || lower.Contains("phản biện") ||
             lower.Contains("vòng 2") || lower.Contains("vòng hai") || lower.Contains("cùng nhau"))
         {
             return "deliberation";
         }
 
+        // 6. Focused 1-on-1 Consultation
         return "consultation";
+    }
+
+    public static IReadOnlyList<string> OrderCollaboratorsForRelayPipeline(
+        IReadOnlyList<string> collaborators,
+        string? userText)
+    {
+        if (collaborators is null || collaborators.Count <= 1)
+            return collaborators ?? [];
+
+        // If user explicitly mentioned agents in a specific order in the prompt, preserve the user's explicit sequence
+        var explicitOrder = new List<string>();
+        if (!string.IsNullOrWhiteSpace(userText))
+        {
+            foreach (Match m in MentionRegex().Matches(userText))
+            {
+                var slug = SubAgentService.NormalizeAgentId(m.Groups[1].Value);
+                if (collaborators.Contains(slug, StringComparer.OrdinalIgnoreCase) &&
+                    !explicitOrder.Contains(slug, StringComparer.OrdinalIgnoreCase))
+                {
+                    explicitOrder.Add(slug);
+                }
+            }
+        }
+        if (explicitOrder.Count == collaborators.Count)
+            return explicitOrder;
+
+        // Otherwise order by natural value-chain stage: Discovery/Brand -> Commercial/Pricing -> Planning/WBS -> Tech/Ops
+        static int StagePriority(string slug) => slug.ToLowerInvariant() switch
+        {
+            "climax-default" or "climax-team" => 1,
+            "zen" or "gm-gao" or "gm-lua" => 2,
+            "planthy-pm" or "planthy-team" => 3,
+            "mons" or "ken" or "its-default" or "gl-default" => 4,
+            _ => 5
+        };
+
+        return collaborators
+            .OrderBy(StagePriority)
+            .ThenBy(c => c, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public static string FormatAgentShortDisplayName(string slug)
@@ -2643,6 +2732,9 @@ public sealed partial class SessionRoomOrchestrator(
         {
             "dispatch" => $"Messaged {joinedNames}",
             "reply" => $"Message from {joinedNames}",
+            "relay" => $"{count} relay steps with {joinedNames}",
+            "review" => $"{count} review checks with {joinedNames}",
+            "workstreams" => $"{count} workstreams with {joinedNames}",
             _ => count <= 1 && normList.Count == 1
                 ? $"Message from {joinedNames}"
                 : $"{count} messages with {joinedNames}"
@@ -2663,13 +2755,34 @@ public sealed partial class SessionRoomOrchestrator(
         string collaborationMode = "deliberation")
     {
         var names = FormatNaturalAgentList(collaborators);
-        if (string.Equals(collaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) || collaborators.Count == 1)
-        {
-            var singleName = collaborators.Count > 0 ? FormatAgentShortDisplayName(collaborators[0]) : names;
-            return $"Để mình hỏi {singleName} xem {singleName} nghĩ sao về phương án và yêu cầu này nhé.";
-        }
+        var mode = (collaborationMode ?? "deliberation").ToLowerInvariant();
 
-        return $"Ok, lần này cả nhóm sẽ thảo luận thật sự. Mình gửi yêu cầu chung cho {names} để mỗi bạn phản biện, kiểm tra chéo theo chuyên môn và chọn ra phương án tối ưu kèm cách triển khai cụ thể, rồi mình chốt thành một đáp án cuối cùng.";
+        switch (mode)
+        {
+            case "relay_pipeline":
+            {
+                var chain = string.Join(" → ", collaborators.Select(FormatAgentShortDisplayName));
+                return $"Mình kích hoạt chuỗi phối hợp nối tiếp ({chain}): bạn trước hoàn tất phần khung sẽ bàn giao trực tiếp số liệu và đầu ra sang bạn kế tiếp để toàn bộ phương án ăn khớp từ đầu tới cuối.";
+            }
+            case "adversarial_review":
+                return $"Để phương án không bị sót điểm mù, mình gửi yêu cầu cho {names} chạy chế độ phản biện & kiểm định rủi ro: vừa đề xuất hướng tối ưu vừa soi kỹ các lỗ hổng thực tế trước khi mình chốt.";
+            case "task_decomposition":
+                return $"Yêu cầu này gồm nhiều hạng mục chuyên sâu nên mình phân rã đầu việc cho {names} cùng chạy song song từng cấu phần độc lập, sau đó mình lắp ghép thành bản kế hoạch tổng thể thống nhất.";
+            case "peer_assist":
+                return $"Để câu trả lời đầy đủ mọi góc độ chuyên môn, mình kéo thêm {names} vào Room cùng phối hợp bổ sung dữ kiện chuyên sâu, rồi mình tổng hợp lại ngay cho bạn.";
+            case "consultation":
+            {
+                var singleName = collaborators.Count > 0 ? FormatAgentShortDisplayName(collaborators[0]) : names;
+                return $"Để mình hỏi {singleName} xem {singleName} nghĩ sao về phương án và yêu cầu này nhé.";
+            }
+            default:
+                if (collaborators.Count == 1)
+                {
+                    var singleName = FormatAgentShortDisplayName(collaborators[0]);
+                    return $"Để mình hỏi {singleName} xem {singleName} nghĩ sao về phương án và yêu cầu này nhé.";
+                }
+                return $"Ok, lần này cả nhóm sẽ thảo luận thật sự. Mình gửi yêu cầu chung cho {names} để mỗi bạn phản biện, kiểm tra chéo theo chuyên môn và chọn ra phương án tối ưu kèm cách triển khai cụ thể, rồi mình chốt thành một đáp án cuối cùng.";
+        }
     }
 
     public static string BuildHostProgressNarrationText(
@@ -2682,7 +2795,9 @@ public sealed partial class SessionRoomOrchestrator(
         IReadOnlyDictionary<string, string>? focuses = null)
     {
         var names = FormatNaturalAgentList(collaborators);
-        if (string.Equals(collaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) || collaborators.Count == 1)
+        var mode = (collaborationMode ?? "deliberation").ToLowerInvariant();
+
+        if (mode == "consultation" || (collaborators.Count == 1 && mode is not ("peer_assist" or "adversarial_review")))
         {
             var singleSlug = collaborators.FirstOrDefault() ?? "zen";
             var singleName = FormatAgentShortDisplayName(singleSlug);
@@ -2711,11 +2826,25 @@ public sealed partial class SessionRoomOrchestrator(
             };
             roleParts.Add($"{cName} {roleDesc}.");
         }
-
         var roleSummary = string.Join(" ", roleParts);
-        var roundLabel = roundNo >= 2 ? "vòng hai" : "phần thảo luận chuyên sâu";
-        var countPhrase = collaborators.Count == 2 ? "cả hai" : "cả nhóm";
-        return $"Mình đã gửi {roundLabel} cho {names}. {roleSummary} Có phản hồi của {countPhrase} là mình chốt đáp án cuối cho bạn.";
+
+        switch (mode)
+        {
+            case "relay_pipeline":
+                return $"Chuỗi bàn giao nối tiếp giữa {names} đã hoàn tất từng chặng. {roleSummary} Mình đang khớp nối toàn bộ đầu ra thành bản chốt cuối cùng cho bạn.";
+            case "adversarial_review":
+                return $"Đã hoàn tất vòng phản biện & kiểm định rủi ro cùng {names}. {roleSummary} Mình đang tổng hợp cả phương án chính lẫn các chốt chặn rủi ro để gửi bạn.";
+            case "task_decomposition":
+                return $"Các cấu phần chuyên sâu từ {names} đã hoàn tất đồng bộ. {roleSummary} Mình đang lắp ghép các mảnh ghép thành bản kế hoạch tổng thể cho bạn.";
+            case "peer_assist":
+                return $"Đã nhận đầy đủ phần hỗ trợ chuyên môn từ {names}. {roleSummary} Mình tổng hợp lại thành câu trả lời hoàn chỉnh cho bạn ngay.";
+            default:
+            {
+                var roundLabel = roundNo >= 2 ? "vòng hai" : "phần thảo luận chuyên sâu";
+                var countPhrase = collaborators.Count == 2 ? "cả hai" : "cả nhóm";
+                return $"Mình đã gửi {roundLabel} cho {names}. {roleSummary} Có phản hồi của {countPhrase} là mình chốt đáp án cuối cho bạn.";
+            }
+        }
     }
 
     public RoomFollowUpRoundDecision DecideFollowUpRound(
@@ -2725,15 +2854,59 @@ public sealed partial class SessionRoomOrchestrator(
         IReadOnlyList<SessionRoomTurn> round1Turns)
     {
         var collabs = triageDecision.SelectedCollaborators;
+        if (room.MaxRoomTurns < 2)
+        {
+            return new RoomFollowUpRoundDecision(false, "Max room turns reached", new Dictionary<string, string>());
+        }
+
+        var host = SubAgentService.NormalizeAgentId(room.HostAgentId);
+        var executedSlugs = round1Turns
+            .Select(t => SubAgentService.NormalizeAgentId(t.AuthorId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Dynamic Peer-Assist Detection:
+        // Check if any Round 1 specialist response explicitly @mentioned or recommended pulling in another teammate in the Room/Fleet
+        var peerAssistCandidates = new List<string>();
+        foreach (var r1 in round1Turns)
+        {
+            var mentionedInReply = DetectMentionedCollaborators(r1.Text, host);
+            foreach (var mSlug in mentionedInReply)
+            {
+                var normM = SubAgentService.NormalizeAgentId(mSlug);
+                if (!string.Equals(normM, host, StringComparison.OrdinalIgnoreCase) &&
+                    !executedSlugs.Contains(normM) &&
+                    !peerAssistCandidates.Contains(normM, StringComparer.OrdinalIgnoreCase))
+                {
+                    peerAssistCandidates.Add(normM);
+                }
+            }
+        }
+
+        if (peerAssistCandidates.Count > 0)
+        {
+            var peerFocuses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var peer in peerAssistCandidates.Take(2))
+            {
+                peerFocuses[peer] = $"[Vòng 2 — Hỗ trợ Đồng đội (Peer Assist)]: Dựa trên phân tích Vòng 1 của {FormatNaturalAgentList(collabs)}, hãy bổ sung ngay góc nhìn chuyên sâu thuộc mảng của @{peer} ({DescribeAgentSpecialty(peer)}).";
+            }
+            return new RoomFollowUpRoundDecision(
+                true,
+                $"Round 1 specialist requested peer assistance from @{string.Join(", @", peerFocuses.Keys)}.",
+                peerFocuses,
+                peerFocuses.Keys.ToList());
+        }
+
         if (collabs.Count < 2 ||
             string.Equals(triageDecision.CollaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) ||
-            room.MaxRoomTurns < 2)
+            string.Equals(triageDecision.CollaborationMode, "relay_pipeline", StringComparison.OrdinalIgnoreCase))
         {
-            return new RoomFollowUpRoundDecision(false, "Single-round sufficient", new Dictionary<string, string>());
+            return new RoomFollowUpRoundDecision(false, "Single-round or sequential relay sufficient", new Dictionary<string, string>());
         }
 
         var lower = (rawUserText ?? "").ToLowerInvariant();
         bool explicitDeepDeliberation =
+            string.Equals(triageDecision.CollaborationMode, "adversarial_review", StringComparison.OrdinalIgnoreCase) ||
             lower.Contains("vòng 2") ||
             lower.Contains("vòng hai") ||
             lower.Contains("2 vòng") ||
@@ -2753,13 +2926,15 @@ public sealed partial class SessionRoomOrchestrator(
         var round2Focuses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in collabs)
         {
-            round2Focuses[c] = $"[Vòng 2 — Phản biện & Kiểm tra chéo]: Đối chiếu đề xuất của các chuyên viên khác ở Vòng 1 và chốt phương án tối ưu nhất thuộc mảng của @{c} ({DescribeAgentSpecialty(c)}).";
+            round2Focuses[c] = string.Equals(triageDecision.CollaborationMode, "adversarial_review", StringComparison.OrdinalIgnoreCase)
+                ? $"[Vòng 2 — Phản biện Đỏ-Xanh & Chốt chặn Rủi ro]: Kiểm định chéo các giả định của đồng đội ở Vòng 1, chỉ ra rủi ro thực tế và đề xuất phương án bọc lót thuộc mảng @{c} ({DescribeAgentSpecialty(c)})."
+                : $"[Vòng 2 — Phản biện & Kiểm tra chéo]: Đối chiếu đề xuất của các chuyên viên khác ở Vòng 1 và chốt phương án tối ưu nhất thuộc mảng của @{c} ({DescribeAgentSpecialty(c)}).";
         }
 
         return new RoomFollowUpRoundDecision(
             true,
             explicitDeepDeliberation
-                ? "User requested explicit multi-round cross-examination."
+                ? "Multi-round cross-examination / adversarial review triggered."
                 : "Manager quality audit requested Round 2 cross-verification.",
             round2Focuses);
     }
@@ -2869,9 +3044,14 @@ public sealed partial class SessionRoomOrchestrator(
             roundNo,
             decision.CollaboratorFocuses);
 
-        var receiptKind = collaborators.Count == 1 && string.Equals(collabMode, "consultation", StringComparison.OrdinalIgnoreCase)
-            ? "reply"
-            : "exchange";
+        var receiptKind = (collabMode ?? "deliberation").ToLowerInvariant() switch
+        {
+            "consultation" => "reply",
+            "relay_pipeline" => "relay",
+            "adversarial_review" => "review",
+            "task_decomposition" => "workstreams",
+            _ => collaborators.Count == 1 ? "reply" : "exchange"
+        };
         var msgCount = Math.Max(collaborators.Count, completedTurns.Count(t => t.Kind == "collaborator_reply"));
         var receipt = BuildInlineReceipt(receiptKind, roundNo, collaborators, msgCount);
 
@@ -3495,14 +3675,29 @@ public sealed partial class SessionRoomOrchestrator(
             sb.AppendLine($"  1. [KHÔNG CẦN TỰ CHẠY LẶP LẠI]: Manager quyết định các agents trong Room đã thực thi xong (done) toàn bộ các nhánh chuyên môn cần thiết; bạn (@{room.HostAgentId}) không cần tự chạy lại công cụ hay phân tích lại từ đầu.");
             sb.AppendLine($"  2. [ĐẠI DIỆN ROOM TỔNG HỢP CUỐI]: Với tư cách Chủ session kiêm Người đại diện Room, hãy ưu tiên đúc kết và tổng hợp các kết quả đã chạy xong từ các agents trong Room thành câu phản hồi cuối cùng thống nhất, trực diện nhất cho người dùng.");
         }
-        if (string.Equals(triageDecision.CollaborationMode, "consultation", StringComparison.OrdinalIgnoreCase) && collaboratorTurns.Count == 1)
+        switch ((triageDecision.CollaborationMode ?? "deliberation").ToLowerInvariant())
         {
-            var consultName = FormatAgentShortDisplayName(collaboratorTurns[0].AuthorId);
-            sb.AppendLine($"  3. [PHONG CÁCH DẪN CHUYỆN THAM VẤN (CONSULTATION)]: Vì trên giao diện chính người dùng CHỈ trò chuyện trực tiếp với bạn (@{room.HostAgentId}) và không thấy bubble riêng của {consultName}, hãy mở đầu bằng câu dẫn tự nhiên như: \"{consultName} đồng ý gần hết với phương án chính, nhưng góp ý các điểm mà mình thấy hợp lý:\", tiếp theo liệt kê rõ ràng thành danh sách đánh số (1, 2, 3...) các góp ý sắc bén của {consultName}, và kết thúc bằng 1 câu chốt nêu rõ quan điểm của chính bạn (ví dụ: \"Mình cũng nghĩ đi theo hướng này cho bản đầu là gọn và hiệu quả nhất.\").");
-        }
-        else
-        {
-            sb.AppendLine($"  3. [PHONG CÁCH DẪN CHUYỆN HỘI ĐỒNG (DELIBERATION)]: Vì trên giao diện chính người dùng CHỈ nhìn thấy câu trả lời dẫn chuyện của bạn (@{room.HostAgentId}), hãy mở đầu bằng câu đúc kết đồng thuận tự nhiên (ví dụ: \"Cả nhóm đều chốt cùng một ý: ...\" hoặc \"Sau khi thảo luận và kiểm tra chéo, tụi mình thống nhất phương án tối ưu như sau:\"), làm nổi bật các quyết định cốt lõi bằng chữ in đậm, phân tích rõ lý do chọn hướng đó và các bước thực hiện tiếp theo.");
+            case "consultation" when collaboratorTurns.Count >= 1:
+            {
+                var consultName = FormatAgentShortDisplayName(collaboratorTurns[0].AuthorId);
+                sb.AppendLine($"  3. [KỊCH BẢN THAM VẤN CHUYÊN GIA (CONSULTATION)]: Vì trên giao diện chính người dùng CHỈ trò chuyện trực tiếp với bạn (@{room.HostAgentId}) và không thấy bubble riêng của {consultName}, hãy mở đầu bằng câu dẫn tự nhiên như: \"{consultName} đồng ý gần hết với phương án chính, nhưng góp ý các điểm mà mình thấy hợp lý:\", tiếp theo liệt kê rõ ràng thành danh sách đánh số (1, 2, 3...) các góp ý sắc bén của {consultName}, và kết thúc bằng 1 câu chốt nêu rõ quan điểm của chính bạn (ví dụ: \"Mình cũng nghĩ đi theo hướng này cho bản đầu là gọn và hiệu quả nhất.\").");
+                break;
+            }
+            case "relay_pipeline":
+                sb.AppendLine($"  3. [KỊCH BẢN CHUỖI BÀN GIAO NỐI TIẾP (RELAY PIPELINE)]: Các thành viên trong Room vừa chạy theo dây chuyền nối tiếp (người trước bàn giao đầu ra cho người sau). Hãy trình bày câu trả lời cuối cùng như một dòng chảy liền mạch giữa các chặng (Định vị/Ý tưởng → Bài toán Thương mại/Chi phí → Lộ trình Thực thi/Kỹ thuật), đảm bảo số liệu và thông điệp của chặng trước ăn khớp 100% với chặng sau.");
+                break;
+            case "adversarial_review":
+                sb.AppendLine($"  3. [KỊCH BẢN PHẢN BIỆN ĐỎ-XANH & KIỂM ĐỊNH RỦI RO (ADVERSARIAL REVIEW)]: Hãy trình bày câu trả lời theo cấu trúc 3 phần rõ rệt: (1) **Phương án đề xuất cốt lõi**, (2) **Các điểm mù / rủi ro thực tế đã được đồng đội phản biện & bắt lỗi**, và (3) **Chốt chặn bảo vệ (Mitigation Plan) & Quyết định cuối cùng của nhóm**.");
+                break;
+            case "task_decomposition":
+                sb.AppendLine($"  3. [KỊCH BẢN CHIA ĐỂ TRỊ & LẮP GHÉP TỔNG THỂ (TASK DECOMPOSITION)]: Hãy hợp nhất các cấu phần chuyên sâu từ từng thành viên thành một Bản Kế Hoạch Tổng Thể (Master Deliverable) có cấu trúc đồng nhất, phân tách rõ từng hạng mục kèm bảng tổng kết hành động thực thi ngay.");
+                break;
+            case "peer_assist":
+                sb.AppendLine($"  3. [KỊCH BẢN HỖ TRỢ ĐỒNG ĐỘI CHÉO (PEER ASSIST)]: Hãy kết hợp mượt mà phần phân tích chính với các dữ kiện chuyên môn bổ sung từ đồng đội vừa tham gia hỗ trợ, tạo thành một câu trả lời trọn vẹn không còn khoảng trống kiến thức liên ngành.");
+                break;
+            default:
+                sb.AppendLine($"  3. [KỊCH BẢN HỘI ĐỒNG THẢO LUẬN & ĐỒNG THUẬN (DELIBERATION)]: Vì trên giao diện chính người dùng CHỈ nhìn thấy câu trả lời dẫn chuyện của bạn (@{room.HostAgentId}), hãy mở đầu bằng câu đúc kết đồng thuận tự nhiên (ví dụ: \"Cả nhóm đều chốt cùng một ý: ...\" hoặc \"Sau khi thảo luận và kiểm tra chéo, tụi mình thống nhất phương án tối ưu như sau:\"), làm nổi bật các quyết định cốt lõi bằng chữ in đậm, phân tích rõ lý do chọn hướng đó và các bước thực hiện tiếp theo.");
+                break;
         }
         sb.AppendLine("  4. Tuyệt đối không lặp lại nguyên văn các thẻ hệ thống nội bộ; viết tự nhiên, súc tích và đi thẳng vào kết quả đã thống nhất.");
         return sb.ToString();
@@ -3804,9 +3999,18 @@ public sealed partial class SessionRoomOrchestrator(
             ? $"{decision.Reason[..^1]} ({hostRoleSummary})."
             : $"{decision.Reason} ({hostRoleSummary}).";
 
-        var collabMode = ClassifyCollaborationMode(decision.SelectedCollaborators, userBodyText);
+        var collabMode = ClassifyCollaborationMode(decision.SelectedCollaborators, userBodyText, decision.Mode);
+        var finalCollaborators = string.Equals(collabMode, "relay_pipeline", StringComparison.OrdinalIgnoreCase)
+            ? OrderCollaboratorsForRelayPipeline(decision.SelectedCollaborators, rawUserText)
+            : decision.SelectedCollaborators;
+        var finalStrategy = string.Equals(collabMode, "relay_pipeline", StringComparison.OrdinalIgnoreCase) || finalCollaborators.Count <= 1
+            ? "sequential"
+            : decision.ExecutionStrategy;
+
         return decision with
         {
+            SelectedCollaborators = finalCollaborators,
+            ExecutionStrategy = finalStrategy,
             Reason = enrichedReason,
             CollaboratorFocuses = updatedFocuses,
             AdaptiveScores = updatedScores.Count > 0 ? updatedScores : decision.AdaptiveScores,

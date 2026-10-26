@@ -1114,4 +1114,65 @@ public class SessionRoomTests
             .All(m => !m.TryGetProperty("metadata", out var md) || !md.TryGetProperty("sender_agent_id", out var sid) || sid.ValueKind == System.Text.Json.JsonValueKind.Null)
             .Should().BeTrue();
     }
+
+    [Fact]
+    public async Task AdaptiveTeamPlaybooks_RelayPipeline_AdversarialReview_TaskDecomposition_AndDynamicPeerAssist_WorkAsATeam()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient
+        {
+            NextReply = "Phân tích thương mại xong, đề xuất nhờ @planthy-pm lập tiếp bảng tiến độ triển khai WBS chi tiết."
+        };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-team-playbooks-01";
+        await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default", "planthy-pm"]);
+
+        // 1. Relay Pipeline Playbook (sequential value-chain handoff: climax-default -> zen -> planthy-pm)
+        var relayPrompt = "@planthy-pm @zen @climax-default Hãy làm lần lượt từng bước theo thứ tự rồi bàn giao sang nhau để lên gói ra mắt sản phẩm";
+        var relayDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, relayPrompt);
+        relayDecision.CollaborationMode.Should().Be("relay_pipeline");
+        relayDecision.ExecutionStrategy.Should().Be("sequential");
+        var (_, relayKickoff) = await orchestrator.RecordHostKickoffTurnAsync(
+            "gm-boc", chatId, relayDecision.SelectedCollaborators, relayPrompt, relayDecision, "run_relay_01", chatId, ct);
+        relayKickoff.Text.Should().Contain("chuỗi phối hợp nối tiếp");
+        var (_, relayProgress) = await orchestrator.RecordHostProgressTurnAsync(
+            "gm-boc", chatId, relayDecision.SelectedCollaborators, relayPrompt, relayDecision, [], "run_relay_01", 1, chatId, ct);
+        relayProgress.Receipt.Should().NotBeNull();
+        relayProgress.Receipt!.Kind.Should().Be("relay");
+        relayProgress.Receipt.Label.Should().Contain("relay steps with");
+
+        // 2. Adversarial Review Playbook (Red-Team / Risk stress-testing)
+        var advPrompt = "@zen @climax-default Hãy phản biện chéo, bắt lỗi và kiểm định rủi ro phương án định giá này";
+        var advDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, advPrompt);
+        advDecision.CollaborationMode.Should().Be("adversarial_review");
+        var (_, advKickoff) = await orchestrator.RecordHostKickoffTurnAsync(
+            "gm-boc", chatId, advDecision.SelectedCollaborators, advPrompt, advDecision, "run_adv_02", chatId, ct);
+        advKickoff.Text.Should().Contain("phản biện & kiểm định rủi ro");
+        var (_, advProgress) = await orchestrator.RecordHostProgressTurnAsync(
+            "gm-boc", chatId, advDecision.SelectedCollaborators, advPrompt, advDecision, [], "run_adv_02", 2, chatId, ct);
+        advProgress.Receipt!.Kind.Should().Be("review");
+        advProgress.Receipt.Label.Should().Contain("review checks with");
+
+        // 3. Task Decomposition Playbook (Divide & Conquer modular assembly)
+        var decompPrompt = "@zen @climax-default @planthy-pm Hãy chia đầu việc mỗi người một phần để lập kế hoạch tổng thể từ A-Z";
+        var decompDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, decompPrompt);
+        decompDecision.CollaborationMode.Should().Be("task_decomposition");
+        var (_, decompProgress) = await orchestrator.RecordHostProgressTurnAsync(
+            "gm-boc", chatId, decompDecision.SelectedCollaborators, decompPrompt, decompDecision, [], "run_decomp_03", 2, chatId, ct);
+        decompProgress.Receipt!.Kind.Should().Be("workstreams");
+        decompProgress.Receipt.Label.Should().Contain("workstreams with");
+
+        // 4. Dynamic Peer-Assist in Round 2 (when Round 1 specialist @zen recommends pulling in @planthy-pm)
+        var consultDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen đánh giá nhanh gói này");
+        var (roomAfterR1, r1Turns) = await orchestrator.ExecuteCollaboratorWaveAsync(
+            "gm-boc", chatId, ["zen"], "@zen đánh giá nhanh gói này", null, chatId, null, "sequential", null, ct, "run_peer_04", 1);
+        var followUp = orchestrator.DecideFollowUpRound(roomAfterR1, "@zen đánh giá nhanh gói này", consultDecision, r1Turns);
+        followUp.ShouldRunRound2.Should().BeTrue();
+        followUp.AdditionalCollaborators.Should().NotBeNull();
+        followUp.AdditionalCollaborators.Should().Contain("planthy-pm");
+    }
 }

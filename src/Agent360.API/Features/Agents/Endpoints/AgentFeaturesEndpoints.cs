@@ -1473,19 +1473,29 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 triageDecision,
                 waveTurns);
 
+            var effectiveWaveCollaborators = mentionedCollaborators.ToList();
             if (followUpDecision.ShouldRunRound2)
             {
                 activeRoomFinalRound = 2;
+                var round2Collaborators = followUpDecision.AdditionalCollaborators is { Count: > 0 }
+                    ? followUpDecision.AdditionalCollaborators
+                    : mentionedCollaborators;
+                foreach (var addCollab in round2Collaborators)
+                {
+                    if (!effectiveWaveCollaborators.Contains(addCollab, StringComparer.OrdinalIgnoreCase))
+                        effectiveWaveCollaborators.Add(addCollab);
+                }
+
                 var round1Summary = string.Join("\n", waveTurns.Select(t => $"- @{t.AuthorId} ({t.AuthorName}): {t.Text}"));
                 var round2Context = baseHistorySnippet is not null
-                    ? $"{baseHistorySnippet}\n\n### Kết quả Vòng 1 của các chuyên viên trong Room (để kiểm tra chéo ở Vòng 2):\n{round1Summary}"
-                    : $"### Kết quả Vòng 1 của các chuyên viên trong Room (để kiểm tra chéo ở Vòng 2):\n{round1Summary}";
+                    ? $"{baseHistorySnippet}\n\n### Kết quả Vòng 1 của các chuyên viên trong Room (để kiểm tra chéo / hỗ trợ bổ sung ở Vòng 2):\n{round1Summary}"
+                    : $"### Kết quả Vòng 1 của các chuyên viên trong Room (để kiểm tra chéo / hỗ trợ bổ sung ở Vòng 2):\n{round1Summary}";
 
                 int round2StepCount = 0;
                 var (round2Room, round2Turns) = await roomOrchestrator.ExecuteCollaboratorWaveAsync(
                     agentTarget,
                     effectiveSessionId,
-                    mentionedCollaborators,
+                    round2Collaborators,
                     rawUserText ?? "",
                     round2Context,
                     qwenPawSessionId,
@@ -1505,7 +1515,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                                 round_no = 2,
                                 visibility = "room",
                                 step_index = round2StepCount,
-                                total_collaborators = mentionedCollaborators.Count,
+                                total_collaborators = round2Collaborators.Count,
                                 execution_strategy = triageDecision.ExecutionStrategy,
                                 room = completedRoom,
                                 turn = collabTurn
@@ -1527,11 +1537,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             // 2d. Narrator Bubble 2 (host_progress + inline receipt "N messages with @A and @B" or "Message from @A"):
-            var progressRoundNo = mentionedCollaborators.Count > 1 ? Math.Max(2, activeRoomFinalRound) : 1;
+            var progressRoundNo = effectiveWaveCollaborators.Count > 1 ? Math.Max(2, activeRoomFinalRound) : 1;
             var (progressRoom, progressTurn) = await roomOrchestrator.RecordHostProgressTurnAsync(
                 agentTarget,
                 effectiveSessionId,
-                mentionedCollaborators,
+                effectiveWaveCollaborators,
                 rawUserText,
                 triageDecision,
                 allWaveTurns,
