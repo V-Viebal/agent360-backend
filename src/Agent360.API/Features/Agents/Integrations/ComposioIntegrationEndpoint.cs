@@ -341,6 +341,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 HttpContext http,
                 IComposioConnectionPoller poller,
                 IMemoryCache cache,
+                IConfiguration config,
                 Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Options.ComposioOptions> composioOptions,
                 ILogger<ComposioIntegrationEndpoint> logger,
                 CancellationToken ct) =>
@@ -441,6 +442,25 @@ This skill provides autonomous capabilities for interacting with {displayName} t
 
                     logger.LogInformation("[ComposioWebhook] Received verified event '{Type}' for App '{App}', Agent '{Agent}', Status '{Status}'",
                         eventType, appSlug, agentId, status);
+
+                    // Record connection delivery event in system audit log
+                    _ = AuditLogger.LogAsync(
+                        config,
+                        actorId: null,
+                        actorExternalId: "composio:webhook",
+                        action: $"composio.connection.{(status ?? "active").ToLowerInvariant()}",
+                        targetResource: $"agent:{agentId}:app:{appSlug}",
+                        details: new
+                        {
+                            event_id = eventId,
+                            event_type = eventType,
+                            app_slug = appSlug,
+                            agent_id = agentId,
+                            status = status,
+                            received_at = DateTimeOffset.UtcNow
+                        },
+                        ipAddress: http.Connection.RemoteIpAddress?.ToString(),
+                        ct: CancellationToken.None);
 
                     if (!string.IsNullOrWhiteSpace(appSlug) && !string.IsNullOrWhiteSpace(agentId))
                     {

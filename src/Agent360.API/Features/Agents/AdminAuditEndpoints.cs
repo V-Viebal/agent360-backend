@@ -76,6 +76,48 @@ public sealed class AdminAuditEndpoints : IEndpoint
         .WithName("AdminGetAuditLogs")
         .WithSummary("Get security audit logs (Admin only)");
 
+                // Composio Webhook Connection Deliveries Audit Log
+        group.MapGet("composio-connections", async (IConfiguration config, [FromQuery] int limit = 50, CancellationToken ct = default) =>
+        {
+            var logs = new List<AuditLogEntryDto>();
+            var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+            if (string.IsNullOrWhiteSpace(connStr)) return Results.Ok(logs);
+
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+
+            var sql = @"
+                SELECT ""Id"", ""ActorId"", ""ActorExternalId"", ""Action"", ""TargetResource"", ""Details"", ""IpAddress"", ""CreatedAt""
+                FROM user_management.""AuditLogs""
+                WHERE ""Action"" LIKE 'composio.connection%' OR ""ActorExternalId"" = 'composio:webhook'
+                ORDER BY ""CreatedAt"" DESC
+                LIMIT $1;
+            ";
+
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue(Math.Clamp(limit, 1, 200));
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var id = reader.GetInt64(0);
+                var actorId = reader.IsDBNull(1) ? (long?)null : reader.GetInt64(1);
+                var actorExtId = reader.IsDBNull(2) ? null : reader.GetString(2);
+                var action = reader.GetString(3);
+                var target = reader.GetString(4);
+                var detailsRaw = reader.GetString(5);
+                var ip = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var createdAt = reader.GetFieldValue<DateTimeOffset>(7);
+
+                var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(detailsRaw) ? "{}" : detailsRaw).RootElement.Clone();
+                logs.Add(new AuditLogEntryDto(id, actorId, actorExtId, action, target, doc, ip, createdAt));
+            }
+
+            return Results.Ok(logs);
+        })
+        .WithName("AdminGetComposioConnectionAuditLogs")
+        .WithSummary("Get Composio webhook connection delivery audit trails (Admin only)");
+
         // List & update user quotas
         group.MapGet("quotas", async (IConfiguration config, CancellationToken ct) =>
         {
