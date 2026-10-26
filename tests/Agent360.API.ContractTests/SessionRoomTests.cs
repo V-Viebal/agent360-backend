@@ -928,5 +928,11 @@ public class SessionRoomTests
         synthTurn.ManagerAudit!.Passed.Should().BeTrue();
         synthTurn.ManagerAudit.Verdict.Should().Be("synthesis_verified");
         synthTurn.ManagerAudit.ChecklistPassed.Should().Contain(["covered:@zen", "covered:@ken", "100%_room_coverage"]);
+
+        // 4. Verify that when A2A returns empty/fallback, ExecuteCollaboratorTurnAsync invokes BuildSpecialtySynthesisFallback (never emitting literal "BuildSpecialtySynthesisFallback(collab, objective)")
+        a2a.NextReply = "";
+        var (_, fallbackTurn) = await orchestrator.ExecuteCollaboratorTurnAsync("mons", chatId, "zen", "Tư vấn báo giá B2B", null, chatId, ct);
+        fallbackTurn.Text.Should().NotContain("BuildSpecialtySynthesisFallback");
+        fallbackTurn.Text.Should().Contain("Chiến lược Thương mại & Cấu trúc Doanh thu");
     }
 }

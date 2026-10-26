@@ -332,7 +332,31 @@ public sealed class SessionRoomStore
         foreach (var incoming in rooms)
         {
             var normHost = SubAgentService.NormalizeAgentId(incoming.HostAgentId);
-            var normalizedIncoming = incoming with { HostAgentId = normHost };
+            string lastReqText = "";
+            var healedTurns = new List<SessionRoomTurn>(incoming.Turns.Count);
+            bool anyHealed = false;
+            foreach (var t in incoming.Turns)
+            {
+                if (t.Kind == "request" && !string.IsNullOrWhiteSpace(t.Text))
+                {
+                    lastReqText = t.Text;
+                }
+                if (!string.IsNullOrWhiteSpace(t.Text) &&
+                    (t.Text.Contains("BuildSpecialtySynthesisFallback(collab, objective)", StringComparison.OrdinalIgnoreCase) ||
+                     t.Text.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var healedText = SessionRoomOrchestrator.BuildSpecialtySynthesisFallback(t.AuthorId, lastReqText);
+                    healedTurns.Add(t with { Text = healedText });
+                    anyHealed = true;
+                }
+                else
+                {
+                    healedTurns.Add(t);
+                }
+            }
+            var normalizedIncoming = anyHealed
+                ? incoming with { HostAgentId = normHost, Turns = healedTurns }
+                : incoming with { HostAgentId = normHost };
 
             var matchIdx = byHostAndSession.FindIndex(existing =>
                 string.Equals(existing.HostAgentId, normHost, StringComparison.OrdinalIgnoreCase) &&
@@ -818,8 +842,9 @@ public sealed class SessionRoomStore
                 var repText = m.Groups[3].Value.Trim();
                 if (string.IsNullOrWhiteSpace(repText)) continue;
 
-                // Replace raw legacy timeout/not-found fallback text with structured domain synthesis fallback so the user always gets actionable insights
-                if (repText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase))
+                // Replace raw legacy timeout/not-found or literal fallback text with structured domain synthesis fallback so the user always gets actionable insights
+                if (repText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase) ||
+                    repText.Contains("BuildSpecialtySynthesisFallback(collab, objective)", StringComparison.OrdinalIgnoreCase))
                 {
                     repText = SessionRoomOrchestrator.BuildSpecialtySynthesisFallback(agId, cleanUserText);
                 }
@@ -974,8 +999,10 @@ public sealed class SessionRoomStore
                             {
                                 if (updatedTurns[ti].Kind == "collaborator_reply" &&
                                     string.Equals(updatedTurns[ti].AuthorId, agId, StringComparison.OrdinalIgnoreCase) &&
-                                    updatedTurns[ti].Text.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase) &&
-                                    !repText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase))
+                                    (updatedTurns[ti].Text.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase) ||
+                                     updatedTurns[ti].Text.Contains("BuildSpecialtySynthesisFallback(collab, objective)", StringComparison.OrdinalIgnoreCase)) &&
+                                    !repText.Contains("hiện đang bận hoặc không phản hồi kịp thời", StringComparison.OrdinalIgnoreCase) &&
+                                    !repText.Contains("BuildSpecialtySynthesisFallback(collab, objective)", StringComparison.OrdinalIgnoreCase))
                                 {
                                     updatedTurns[ti] = updatedTurns[ti] with { Text = repText };
                                     modifiedRoom = true;
@@ -2053,7 +2080,7 @@ public sealed partial class SessionRoomOrchestrator(
 
         var replyText = chatResult.Success && !string.IsNullOrWhiteSpace(chatResult.Text)
             ? chatResult.Text.Trim()
-            : $"BuildSpecialtySynthesisFallback(collab, objective)";
+            : BuildSpecialtySynthesisFallback(collab, objective);
 
         // 4. Clean any raw QUESTION_FOR_PARENT: prefix so UI and synthesis remain natural
         var question = chatResult.Success ? SubAgentPolicy.ExtractQuestion(replyText) : null;
