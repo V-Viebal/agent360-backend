@@ -1175,4 +1175,74 @@ public class SessionRoomTests
         followUp.AdditionalCollaborators.Should().NotBeNull();
         followUp.AdditionalCollaborators.Should().Contain("planthy-pm");
     }
+
+    [Fact]
+    public async Task ComprehensiveTeamScenarioMatrix_CoversAll12Playbooks_AndAll6WaveDynamicsStates()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient { NextReply = "Phân tích chuẩn xác." };
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var chatId = "chat-all-12-playbooks-01";
+        var room = await orchestrator.EnsureRoomAsync("gm-boc", chatId, "zen", chatId, ct, ["climax-default", "planthy-pm"]);
+
+        // 1. Verify classification of the 6 newly added playbooks (making 12 total)
+        orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @climax-default Brainstorm phát tán ý tưởng sáng tạo thêm phương án mới")
+            .CollaborationMode.Should().Be("brainstorm_divergence");
+
+        orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @climax-default Nên chọn phương án SVG thuần hay Rive, phân xử đánh đổi trade-off")
+            .CollaborationMode.Should().Be("debate_arbitration");
+
+        orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @planthy-pm Khẩn cấp! Sự cố nghiêm trọng, kích hoạt war room xử lý sự cố ngay")
+            .CollaborationMode.Should().Be("incident_war_room");
+
+        orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @climax-default Kiểm chứng và đối soát xác minh số liệu báo giá này")
+            .CollaborationMode.Should().Be("fact_check_verification");
+
+        var refineDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @climax-default Hãy chuốt lại và nâng cấp bản thảo này cho hoàn chỉnh");
+        refineDecision.CollaborationMode.Should().Be("progressive_refinement");
+        refineDecision.ExecutionStrategy.Should().Be("sequential");
+
+        orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @climax-default @planthy-pm Hãy chấm điểm và bình chọn xếp hạng top phương án theo thang điểm 10")
+            .CollaborationMode.Should().Be("consensus_voting");
+
+        // 2. Verify AnalyzeTeamWaveDynamics detects inter-agent Conflict & triggers Round 2 Reconciliation
+        var conflictTurns = new[]
+        {
+            new SessionRoomTurn("t1", 1, "zen", "Zen", "collaborator", "collaborator_reply", "Chưa cần dùng Rive lúc này vì quá tốn kém, nên cắt giảm chi phí.", "gm-boc", DateTimeOffset.UtcNow),
+            new SessionRoomTurn("t2", 2, "climax-default", "Climax", "collaborator", "collaborator_reply", "Bắt buộc phải ưu tiên đầu tư ngay Rive để giữ trải nghiệm cao cấp.", "gm-boc", DateTimeOffset.UtcNow)
+        };
+        var conflictDynamics = SessionRoomOrchestrator.AnalyzeTeamWaveDynamics(conflictTurns, "Chọn công nghệ animation");
+        conflictDynamics.DynamicsState.Should().Be("conflict_detected");
+        conflictDynamics.HasConflict.Should().BeTrue();
+        conflictDynamics.SynthesisDirective.Should().Contain("TRỌNG TÀI PHÂN XỬ BẤT ĐỒNG");
+
+        var delibDecision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", chatId, chatId, "@zen @climax-default cùng đánh giá phương án animation");
+        var r2ConflictDecision = orchestrator.DecideFollowUpRound(room, "cùng đánh giá phương án animation", delibDecision, conflictTurns);
+        r2ConflictDecision.ShouldRunRound2.Should().BeTrue();
+        r2ConflictDecision.Reason.Should().Contain("conflict");
+
+        // 3. Verify AnalyzeTeamWaveDynamics detects Missing Scope / Clarification Needed
+        var clarifyTurns = new[]
+        {
+            new SessionRoomTurn("t3", 3, "zen", "Zen", "collaborator", "collaborator_reply", "Phương án sơ bộ khả thi, tuy nhiên cần làm rõ ngân sách tối đa của chiến dịch.", "gm-boc", DateTimeOffset.UtcNow)
+        };
+        var clarifyDynamics = SessionRoomOrchestrator.AnalyzeTeamWaveDynamics(clarifyTurns, "Lên báo giá");
+        clarifyDynamics.DynamicsState.Should().Be("clarification_needed");
+        clarifyDynamics.NeedsUserClarification.Should().BeTrue();
+        clarifyDynamics.SynthesisDirective.Should().Contain("1 CÂU HỎI LÀM RÕ");
+
+        // 4. Verify AnalyzeTeamWaveDynamics detects Partial Fallback Recovery
+        var fallbackTurns = new[]
+        {
+            new SessionRoomTurn("t4", 4, "zen", "Zen", "collaborator", "collaborator_reply", "**[Đóng góp chuyên môn từ @zen — Chiến lược Thương mại]**", "gm-boc", DateTimeOffset.UtcNow),
+            new SessionRoomTurn("t5", 5, "climax-default", "Climax", "collaborator", "collaborator_reply", "Định vị thương hiệu chuẩn chỉnh.", "gm-boc", DateTimeOffset.UtcNow)
+        };
+        var fallbackDynamics = SessionRoomOrchestrator.AnalyzeTeamWaveDynamics(fallbackTurns, "Lên kế hoạch");
+        fallbackDynamics.DynamicsState.Should().Be("partial_degraded_recovery");
+        fallbackDynamics.HasPartialFallback.Should().BeTrue();
+    }
 }
