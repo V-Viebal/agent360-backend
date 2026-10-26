@@ -153,4 +153,17 @@ public sealed class AgentFeaturesMappingTests
         Assert.Equal(48, trend[0].AgentLlmCalls);
         Assert.Equal(32, trend[0].ToolCalls);
     }
+
+    [Fact]
+    public void ComposioWebhook_PayloadDeserializesCorrectly()
+    {
+        var json = "{\"type\":\"connection.activated\",\"data\":{\"toolkit\":\"github\",\"agent_id\":\"mkai\",\"status\":\"active\"}}";
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.Equal("connection.activated", root.GetProperty("type").GetString());
+        var dataEl = root.GetProperty("data");
+        Assert.Equal("github", dataEl.GetProperty("toolkit").GetString());
+        Assert.Equal("mkai", dataEl.GetProperty("agent_id").GetString());
+        Assert.Equal("active", dataEl.GetProperty("status").GetString());
+    }
 }

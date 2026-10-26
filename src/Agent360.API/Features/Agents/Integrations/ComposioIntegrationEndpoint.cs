@@ -333,6 +333,86 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             .WithSummary("Query pending/active OAuth connection status for agent app")
             .AllowAnonymous();
 
+        
+        // 2c. Inbound Webhook Receiver for Composio connection events
+        routeBuilder.MapPost(
+            "webhooks/composio",
+            async (
+                HttpContext http,
+                IComposioConnectionPoller poller,
+                IMemoryCache cache,
+                ILogger<ComposioIntegrationEndpoint> logger,
+                CancellationToken ct) =>
+            {
+                // Optional webhook secret validation if configured
+                var expectedSecret = Environment.GetEnvironmentVariable("COMPOSIO_WEBHOOK_SECRET");
+                if (!string.IsNullOrWhiteSpace(expectedSecret))
+                {
+                    var incomingSig = http.Request.Headers["X-Composio-Signature"].ToString();
+                    if (string.IsNullOrWhiteSpace(incomingSig) || !string.Equals(incomingSig, expectedSecret, StringComparison.Ordinal))
+                    {
+                        logger.LogWarning("[ComposioWebhook] Rejected webhook with invalid or missing signature");
+                        return Results.Unauthorized();
+                    }
+                }
+
+                try
+                {
+                    using var reader = new StreamReader(http.Request.Body);
+                    var rawBody = await reader.ReadToEndAsync(ct);
+                    if (string.IsNullOrWhiteSpace(rawBody))
+                    {
+                        return Results.BadRequest(new { error = "Empty body" });
+                    }
+
+                    using var doc = JsonDocument.Parse(rawBody);
+                    var root = doc.RootElement;
+
+                    // Typical Composio event structure: { "type": "connection.activated" / "connection.status.updated", "data": { "toolkit": "github", "agent_id": "...", "status": "active" } }
+                    var eventType = root.TryGetProperty("type", out var t) ? t.GetString() : (root.TryGetProperty("event", out var ev) ? ev.GetString() : "unknown");
+                    var dataEl = root.TryGetProperty("data", out var d) ? d : root;
+
+                    var appSlug = dataEl.TryGetProperty("toolkit", out var tk) ? tk.GetString() :
+                                  (dataEl.TryGetProperty("app_slug", out var asg) ? asg.GetString() :
+                                  (dataEl.TryGetProperty("app", out var ap) ? ap.GetString() : null));
+
+                    var agentId = dataEl.TryGetProperty("agent_id", out var ag) ? ag.GetString() :
+                                  (http.Request.Headers.TryGetValue("X-Agent-Id", out var hAg) ? hAg.ToString() : "mons");
+
+                    var status = dataEl.TryGetProperty("status", out var st) ? st.GetString() : "active";
+
+                    logger.LogInformation("[ComposioWebhook] Received event '{Type}' for App '{App}', Agent '{Agent}', Status '{Status}'",
+                        eventType, appSlug, agentId, status);
+
+                    if (!string.IsNullOrWhiteSpace(appSlug) && !string.IsNullOrWhiteSpace(agentId))
+                    {
+                        var cleanSlug = appSlug.ToLowerInvariant().Trim();
+                        var cleanAgent = agentId.Replace("bot:agent360:", "").ToLowerInvariant().Trim();
+
+                        // Update poller tracking status
+                        if (poller is ComposioConnectionPoller concretePoller)
+                        {
+                            // Invalidate agent MCP cache so new tools are immediately visible
+                            var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(cleanAgent, "mcp");
+                            cache.Remove(cacheKey);
+                            cache.Remove(cacheKey + ":last-good");
+                        }
+                    }
+
+                    return Results.Ok(new { success = true, received_event = eventType });
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "[ComposioWebhook] Failed to process inbound webhook payload");
+                    return Results.BadRequest(new { error = "Invalid JSON or event payload" });
+                }
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("ComposioWebhookReceiver")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Inbound webhook receiver for instant Composio connection events")
+            .AllowAnonymous();
+
         // 3. Refresh Tool Schema on-demand: Re-discovers tools via SSE and hot-updates SKILL.md
         routeBuilder.MapPost(
             "integrations/composio/refresh-schema",

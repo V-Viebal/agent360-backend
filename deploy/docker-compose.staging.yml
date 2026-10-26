@@ -32,6 +32,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Staging
       QwenPaw__BaseUrl: https://ai.hmz.one
       Agent360__SubAgents__StoragePath: /data/subagents
+      Agent360__Iam360__StoragePath: /data/iam360
       Cors__AllowedOrigins: "https://staging-agent360.antares.vn;http://localhost:5173"
     labels:
       - "traefik.enable=true"

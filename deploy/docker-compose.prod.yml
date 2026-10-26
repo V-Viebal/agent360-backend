@@ -31,6 +31,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Production
       QwenPaw__BaseUrl: https://ai.hmz.one
       Agent360__SubAgents__StoragePath: /data/subagents
+      Agent360__Iam360__StoragePath: /data/iam360
       Cors__AllowedOrigins: "https://agent360.antares.vn;https://community-agent360.antares.vn;http://localhost:5173"
     labels:
       - "traefik.enable=true"
