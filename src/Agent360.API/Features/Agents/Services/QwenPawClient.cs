@@ -215,6 +215,14 @@ public sealed class QwenPawClient : IQwenPawClient
         "climax" => $"climax-{profileId}",
         "planthy" => profileId == "default" ? "planthy-pm" : $"planthy-{profileId}",
         "agentteams" => profileId == "default" ? "agentteams-manager" : $"agentteams-manager-{profileId}",
+        "qwenpaw-test" => profileId switch
+        {
+            "default" => "qwenpaw-test-ba",
+            "agentcore-acc" => "qwenpaw-test-acc",
+            "QwenPaw_QA_Agent_0.2" => "qwenpaw-test-qa",
+            _ => $"qwenpaw-test-ba-{profileId}"
+        },
+        "qwenpaw-base-test" => profileId == "default" ? "qwenpaw-base-test" : $"qwenpaw-base-test-{profileId}",
         _ => profileId switch
         {
             "default" => "default-core",

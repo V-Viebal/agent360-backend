@@ -922,7 +922,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
                 return Results.Ok(list);
             }
-            catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Forbidden)
+            catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.ServiceUnavailable)
             {
                 // Non-AgentCore runtimes or unhosted agents legitimately have no chats
                 return TypedResults.Ok(Array.Empty<AgentSessionResponse>());
