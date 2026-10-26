@@ -334,7 +334,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             .AllowAnonymous();
 
         
-        // 2c. Inbound Webhook Receiver for Composio connection events
+        // 2c. Inbound Webhook Receiver for Composio connection events with Anti-Replay Protection & HMAC/Secret Validation
         routeBuilder.MapPost(
             "webhooks/composio",
             async (
@@ -345,16 +345,55 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 ILogger<ComposioIntegrationEndpoint> logger,
                 CancellationToken ct) =>
             {
-                // Dynamic hot-reloaded secret from IOptionsMonitor (or environment fallback)
+                // 1. Anti-Replay Protection: Timestamp tolerance check (max 5 minutes skew)
+                var tsHeader = http.Request.Headers["X-Composio-Timestamp"].ToString();
+                if (!string.IsNullOrWhiteSpace(tsHeader))
+                {
+                    if (long.TryParse(tsHeader, out var tsUnix))
+                    {
+                        var currentUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                        if (Math.Abs(currentUnix - tsUnix) > 300)
+                        {
+                            logger.LogWarning("[ComposioWebhook] Rejected stale webhook: timestamp skew {Skew}s exceeds 300s limit", Math.Abs(currentUnix - tsUnix));
+                            return Results.Problem(detail: "Webhook timestamp skew exceeds tolerance limit.", statusCode: StatusCodes.Status401Unauthorized, title: "Stale Webhook Timestamp");
+                        }
+                    }
+                }
+
+                // 2. Dynamic Secret / HMAC validation (from IOptionsMonitor or process environment)
                 var expectedSecret = composioOptions.CurrentValue.WebhookSecret 
                     ?? Environment.GetEnvironmentVariable("COMPOSIO_WEBHOOK_SECRET");
 
                 if (!string.IsNullOrWhiteSpace(expectedSecret))
                 {
                     var incomingSig = http.Request.Headers["X-Composio-Signature"].ToString();
-                    if (string.IsNullOrWhiteSpace(incomingSig) || !string.Equals(incomingSig, expectedSecret, StringComparison.Ordinal))
+                    if (string.IsNullOrWhiteSpace(incomingSig))
                     {
-                        logger.LogWarning("[ComposioWebhook] Rejected webhook with invalid or missing signature");
+                        logger.LogWarning("[ComposioWebhook] Rejected webhook: missing X-Composio-Signature header");
+                        return Results.Unauthorized();
+                    }
+
+                    // Direct token match or HMAC-SHA256 signature verification
+                    var valid = string.Equals(incomingSig, expectedSecret, StringComparison.Ordinal);
+                    if (!valid && incomingSig.StartsWith("sha256=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        http.Request.EnableBuffering();
+                        using var rawReader = new StreamReader(http.Request.Body, System.Text.Encoding.UTF8, leaveOpen: true);
+                        var bodyText = await rawReader.ReadToEndAsync(ct);
+                        http.Request.Body.Position = 0;
+
+                        var dataToSign = !string.IsNullOrWhiteSpace(tsHeader) ? $"{tsHeader}.{bodyText}" : bodyText;
+                        using var hmac = new System.Security.Cryptography.HMACSHA256(System.Text.Encoding.UTF8.GetBytes(expectedSecret));
+                        var computed = Convert.ToHexString(hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(dataToSign))).ToLowerInvariant();
+                        var cleanSig = incomingSig[7..].ToLowerInvariant();
+                        valid = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                            System.Text.Encoding.UTF8.GetBytes(computed),
+                            System.Text.Encoding.UTF8.GetBytes(cleanSig));
+                    }
+
+                    if (!valid)
+                    {
+                        logger.LogWarning("[ComposioWebhook] Rejected webhook: signature mismatch");
                         return Results.Unauthorized();
                     }
                 }
@@ -371,7 +410,23 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                     using var doc = JsonDocument.Parse(rawBody);
                     var root = doc.RootElement;
 
-                    // Typical Composio event structure: { "type": "connection.activated" / "connection.status.updated", "data": { "toolkit": "github", "agent_id": "...", "status": "active" } }
+                    // 3. Deduplication Nonce & Event ID Cache Check (Drop duplicate replay deliveries)
+                    var eventId = root.TryGetProperty("id", out var idProp) ? idProp.GetString() :
+                                  (root.TryGetProperty("event_id", out var evProp) ? evProp.GetString() :
+                                  (root.TryGetProperty("delivery_id", out var dProp) ? dProp.GetString() : null));
+
+                    if (!string.IsNullOrWhiteSpace(eventId))
+                    {
+                        var dedupeKey = $"composio:webhook:dedupe:{eventId}";
+                        if (cache.TryGetValue(dedupeKey, out _))
+                        {
+                            logger.LogInformation("[ComposioWebhook] Duplicate event {EventId} dropped via anti-replay nonce cache", eventId);
+                            return Results.Ok(new { status = "duplicate_dropped", event_id = eventId });
+                        }
+                        cache.Set(dedupeKey, true, TimeSpan.FromMinutes(15));
+                    }
+
+                    // 4. Typical Composio event structure: { "type": "connection.activated" / "connection.status.updated", "data": { "toolkit": "github", "agent_id": "...", "status": "active" } }
                     var eventType = root.TryGetProperty("type", out var t) ? t.GetString() : (root.TryGetProperty("event", out var ev) ? ev.GetString() : "unknown");
                     var dataEl = root.TryGetProperty("data", out var d) ? d : root;
 
@@ -384,7 +439,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
 
                     var status = dataEl.TryGetProperty("status", out var st) ? st.GetString() : "active";
 
-                    logger.LogInformation("[ComposioWebhook] Received event '{Type}' for App '{App}', Agent '{Agent}', Status '{Status}'",
+                    logger.LogInformation("[ComposioWebhook] Received verified event '{Type}' for App '{App}', Agent '{Agent}', Status '{Status}'",
                         eventType, appSlug, agentId, status);
 
                     if (!string.IsNullOrWhiteSpace(appSlug) && !string.IsNullOrWhiteSpace(agentId))
@@ -392,17 +447,13 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                         var cleanSlug = appSlug.ToLowerInvariant().Trim();
                         var cleanAgent = agentId.Replace("bot:agent360:", "").ToLowerInvariant().Trim();
 
-                        // Update poller tracking status
-                        if (poller is ComposioConnectionPoller concretePoller)
-                        {
-                            // Invalidate agent MCP cache so new tools are immediately visible
-                            var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(cleanAgent, "mcp");
-                            cache.Remove(cacheKey);
-                            cache.Remove(cacheKey + ":last-good");
-                        }
+                        // Invalidate agent MCP cache so new tools are immediately visible
+                        var cacheKey = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.CacheKey(cleanAgent, "mcp");
+                        cache.Remove(cacheKey);
+                        cache.Remove(cacheKey + ":last-good");
                     }
 
-                    return Results.Ok(new { success = true, received_event = eventType });
+                    return Results.Ok(new { success = true, received_event = eventType, event_id = eventId });
                 }
                 catch (Exception ex)
                 {

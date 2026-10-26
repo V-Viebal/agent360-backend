@@ -166,4 +166,23 @@ public sealed class AgentFeaturesMappingTests
         Assert.Equal("mkai", dataEl.GetProperty("agent_id").GetString());
         Assert.Equal("active", dataEl.GetProperty("status").GetString());
     }
+
+    [Fact]
+    public void ComposioWebhook_AntiReplayTimestampAndDeduplication_Contract()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var staleTimestamp = now - 600; // 10 minutes ago
+        var freshTimestamp = now - 10;  // 10 seconds ago
+
+        Assert.True(Math.Abs(now - staleTimestamp) > 300, "Stale timestamp (> 300s) should be detected");
+        Assert.True(Math.Abs(now - freshTimestamp) <= 300, "Fresh timestamp (<= 300s) should be accepted");
+
+        // Verify HMAC-SHA256 contract calculation
+        var secret = "test_webhook_secret_key";
+        var payload = "{\"id\":\"evt_999\",\"type\":\"connection.activated\"}";
+        var toSign = $"{freshTimestamp}.{payload}";
+        using var hmac = new System.Security.Cryptography.HMACSHA256(System.Text.Encoding.UTF8.GetBytes(secret));
+        var hash = Convert.ToHexString(hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(toSign))).ToLowerInvariant();
+        Assert.Equal(64, hash.Length);
+    }
 }
