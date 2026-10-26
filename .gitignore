@@ -5,7 +5,7 @@ obj/
 .vs/
 appsettings.Development.json
 deploy/backend.env
-.tmp/build-check/
+.tmp/
 .tmp/publish/
 .tmp/publish-linux/
 src/Agent360.API/_logs/
