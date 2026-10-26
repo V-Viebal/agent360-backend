@@ -820,6 +820,11 @@ public sealed class SessionRoomStore
         return head;
     }
 
+    public static bool IsMultiAgentRoom(SessionCollaborationRoom? room) =>
+        room is not null &&
+        (room.Participants.Any(p => string.Equals(p.Role, "collaborator", StringComparison.OrdinalIgnoreCase)) ||
+         room.Turns.Any(t => t.Kind is "collaborator_reply" or "collaborator_progress" or "question" or "host_kickoff" or "host_progress"));
+
     public SessionCollaborationRoom? GetByChatIdOnly(string hostChatId)
     {
         if (string.IsNullOrWhiteSpace(hostChatId)) return null;
@@ -937,8 +942,55 @@ public sealed class SessionRoomStore
                 ? (GetByChat(agentId, chatId) ?? GetByChatIdOnly(chatId))
                 : GetByChatIdOnly(chatId);
 
-            if (room is null && embeddedWaves.Count == 0)
-                return historyRaw;
+            // If this is an independent solo chat session (no collaborator agents in Room and no embedded multi-agent waves),
+            // only strip any legacy internal markers/reactions and return clean solo history without attaching collaboration_room!
+            if (!IsMultiAgentRoom(room) && embeddedWaves.Count == 0)
+            {
+                var soloFiltered = new List<System.Text.Json.Nodes.JsonObject>();
+                foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
+                {
+                    var role = msgObj["role"]?.ToString();
+                    var txt = ExtractMessageNodeText(msgObj);
+                    if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) &&
+                        txt.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (msgObj["content"] is System.Text.Json.Nodes.JsonValue sVal && sVal.TryGetValue<string>(out var rStr) && !string.IsNullOrEmpty(rStr))
+                        {
+                            msgObj["content"] = StripSharedRoomContextPreservingAttachments(rStr);
+                        }
+                        else if (msgObj["content"] is System.Text.Json.Nodes.JsonArray cArr)
+                        {
+                            foreach (var part in cArr.OfType<System.Text.Json.Nodes.JsonObject>())
+                            {
+                                if (part["text"] is System.Text.Json.Nodes.JsonValue tVal && tVal.TryGetValue<string>(out var pStr) && !string.IsNullOrEmpty(pStr))
+                                {
+                                    part["text"] = StripSharedRoomContextPreservingAttachments(pStr);
+                                }
+                            }
+                        }
+                    }
+                    if (room?.Reactions is { Count: > 0 })
+                    {
+                        var mid = msgObj["id"]?.ToString();
+                        if (!string.IsNullOrEmpty(mid) && room.Reactions.TryGetValue(mid, out var recs) && recs.Count > 0)
+                        {
+                            var reactArr = new System.Text.Json.Nodes.JsonArray();
+                            foreach (var e in recs.Select(r => r.Emoji).Distinct(StringComparer.OrdinalIgnoreCase))
+                                reactArr.Add(e);
+                            msgObj["reactions"] = reactArr;
+                        }
+                    }
+                    soloFiltered.Add(msgObj);
+                }
+                messagesArr.Clear();
+                foreach (var m in soloFiltered) messagesArr.Add(m);
+                node.Remove("collaboration_room");
+                return node.ToJsonString();
+            }
 
             var normHost = SubAgentService.NormalizeAgentId(agentId ?? room?.HostAgentId ?? "gm-boc");
             if (room is null)
@@ -4756,13 +4808,18 @@ public sealed partial class SessionRoomOrchestrator(
         var room = roomStore.GetByChat(host, hostChatId)
             ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? roomStore.GetByChat(host, hostSessionId!) : null);
 
-        var recentCollabTurns = room?.Turns
+        if (!SessionRoomStore.IsMultiAgentRoom(room))
+        {
+            // Independent solo chat session: never inject [SHARED SESSION ROOM CONTEXT] or force Room framing!
+            return null;
+        }
+
+        var recentCollabTurns = room!.Turns
             .Where(t => t.Kind is "collaborator_reply" or "question")
             .TakeLast(4)
-            .ToList() ?? [];
+            .ToList();
 
-        var suggested = decision.SuggestedCollaborators ?? [];
-        if (recentCollabTurns.Count == 0 && suggested.Count == 0)
+        if (recentCollabTurns.Count == 0)
         {
             return null;
         }
@@ -4771,24 +4828,12 @@ public sealed partial class SessionRoomOrchestrator(
         sb.AppendLine("[SHARED SESSION ROOM CONTEXT]");
         sb.AppendLine($"Lưu ý hệ thống: {decision.Reason}");
         sb.AppendLine($"- Vai trò chủ đạo của bạn: @{host} ({FriendlyAgentName(host)} — {DescribeAgentSpecialty(host)}).");
-
-        if (recentCollabTurns.Count > 0)
+        sb.AppendLine("- Ngữ cảnh liên tục từ các chuyên viên AI trong Room của phiên chat này (hãy kế thừa mạch lạc khi phản hồi cho người dùng):");
+        foreach (var ct in recentCollabTurns)
         {
-            sb.AppendLine("- Ngữ cảnh liên tục từ các chuyên viên AI trong Room của phiên chat này (hãy kế thừa mạch lạc khi phản hồi độc lập cho người dùng):");
-            foreach (var ct in recentCollabTurns)
-            {
-                var snippet = StripCollaboratorMentions(ct.Text);
-                if (snippet.Length > 340) snippet = snippet[..340] + "...";
-                sb.AppendLine($"  * @{ct.AuthorId} ({ct.AuthorName}): {snippet}");
-            }
-        }
-
-        if (suggested.Count > 0)
-        {
-            var angleDescriptions = suggested
-                .Select(s => $"@{s} ({FriendlyAgentName(s)} — {DescribeAgentSpecialty(s)})")
-                .ToList();
-            sb.AppendLine($"- Phân tích thông minh đa chiều (Smart Solo Mode): Yêu cầu này có giao thoa với các mảng chuyên sâu ({string.Join("; ", angleDescriptions)}). Hãy chủ động phân tích câu trả lời có cấu trúc rõ ràng bao quát cả góc nhìn chuyên môn của @{host} lẫn các khía cạnh liên quan trên, và có thể gợi ý ngắn gọn ở dòng cuối nếu người dùng muốn tag thêm @{string.Join(", @", suggested)} vào phiên chat để phối hợp sâu hơn.");
+            var snippet = StripCollaboratorMentions(ct.Text);
+            if (snippet.Length > 340) snippet = snippet[..340] + "...";
+            sb.AppendLine($"  * @{ct.AuthorId} ({ct.AuthorName}): {snippet}");
         }
 
         return sb.ToString().TrimEnd();

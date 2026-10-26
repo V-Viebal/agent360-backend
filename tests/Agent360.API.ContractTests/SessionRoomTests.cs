@@ -819,10 +819,9 @@ public class SessionRoomTests
         soloDecision.SuggestedCollaborators.Should().NotBeNull();
         soloDecision.SuggestedCollaborators.Should().Contain(["zen", "climax-default"]);
 
+        // Independent solo chat session (before any collaborators join the Room) MUST NOT inject [SHARED SESSION ROOM CONTEXT] or trigger Room flow
         var soloContext = orchestrator.BuildSoloSmartContextInjection("gm-boc", chatId, chatId, soloQuery, soloDecision);
-        soloContext.Should().NotBeNullOrWhiteSpace();
-        soloContext.Should().Contain("[SHARED SESSION ROOM CONTEXT]");
-        soloContext.Should().Contain("Smart Solo Mode");
+        soloContext.Should().BeNull();
 
         // Record Turn 1 (Solo Request + Solo Host Synthesis) in the session's Room
         await orchestrator.EnsureRoomAsync("gm-boc", chatId, null, chatId, ct);
@@ -1244,5 +1243,41 @@ public class SessionRoomTests
         var fallbackDynamics = SessionRoomOrchestrator.AnalyzeTeamWaveDynamics(fallbackTurns, "Lên kế hoạch");
         fallbackDynamics.DynamicsState.Should().Be("partial_degraded_recovery");
         fallbackDynamics.HasPartialFallback.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task IndependentSoloSession_NeverCreatesOrAttachesRoom_AndLeavesHistory100PercentPureSolo()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var roomStore = new SessionRoomStore();
+        var subStore = CreateTempSubAgentStore();
+        var a2a = new FakeRoomA2AClient();
+        var queue = new SessionQueueManager();
+        var orchestrator = new SessionRoomOrchestrator(roomStore, subStore, a2a, queue, NullLogger<SessionRoomOrchestrator>.Instance);
+
+        var soloChatId = "chat-pure-solo-01";
+        var soloPrompt = "Chào bạn, hãy phân tích bảng báo giá và lộ trình dự án này giúp mình nhé";
+
+        // 1. Triage on an independent solo session keeps ShouldUseRoom=false and CollaborationMode="solo"
+        var decision = orchestrator.DecideRoomCollaboratorsForTurn("gm-boc", soloChatId, soloChatId, soloPrompt);
+        decision.ShouldUseRoom.Should().BeFalse();
+        decision.CollaborationMode.Should().Be("solo");
+
+        // 2. BuildSoloSmartContextInjection returns null for an independent solo session (no [SHARED SESSION ROOM CONTEXT] injected)
+        var injected = orchestrator.BuildSoloSmartContextInjection("gm-boc", soloChatId, soloChatId, soloPrompt, decision);
+        injected.Should().BeNull();
+
+        // 3. Even if a legacy stub room (only Host, Manager, Admin, 0 collaborators) existed in store,
+        // IsMultiAgentRoom is false and EnrichChatHistoryJson strips any legacy marker and does NOT attach collaboration_room
+        var stubRoom = await orchestrator.EnsureRoomAsync("gm-boc", soloChatId, null, soloChatId, ct);
+        SessionRoomStore.IsMultiAgentRoom(stubRoom).Should().BeFalse();
+
+        var rawSoloHistory = "{\"messages\":[{\"id\":\"u1\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Xin chào bạn\"}]},{\"id\":\"a1\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Chào bạn! Mình có thể giúp gì cho bạn hôm nay?\"}]}]}";
+
+        var enrichedSolo = roomStore.EnrichChatHistoryJson(rawSoloHistory, "gm-boc", soloChatId);
+        enrichedSolo.Should().NotContain("collaboration_room");
+        using var doc = System.Text.Json.JsonDocument.Parse(enrichedSolo);
+        doc.RootElement.TryGetProperty("collaboration_room", out _).Should().BeFalse();
+        doc.RootElement.GetProperty("messages").GetArrayLength().Should().Be(2);
     }
 }

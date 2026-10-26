@@ -1219,8 +1219,13 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             .Where(c => !string.Equals(c.Type, "text", StringComparison.OrdinalIgnoreCase))
             .ToList() ?? [];
 
+        var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+        var existingSessionRoom = roomStore?.GetByChat(agentTarget, effectiveSessionId)
+            ?? (!string.IsNullOrWhiteSpace(qwenPawSessionId) ? roomStore?.GetByChat(agentTarget, qwenPawSessionId) : null);
+        bool hasActiveMultiAgentRoom = Agent360.API.Features.Agents.SubAgents.SessionRoomStore.IsMultiAgentRoom(existingSessionRoom);
+
         Task? soloRoomInitTask = null;
-        if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null)
+        if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null && hasActiveMultiAgentRoom)
         {
             var soloSmartContext = roomOrchestrator.BuildSoloSmartContextInjection(
                 agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision);
@@ -1242,16 +1247,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 };
             }
 
-            // Non-collaborator turn: dispatch room provisioning/title sync and Manager intake turn in background so QwenPaw receives the prompt with 0ms delay
+            // Only record Manager intake turn when this session ALREADY has an active multi-agent Room
             soloRoomInitTask = Task.Run(async () =>
             {
                 try
                 {
-                    var bgRoom = await roomOrchestrator.EnsureRoomAsync(agentTarget, effectiveSessionId, null, qwenPawSessionId, CancellationToken.None);
-                    if (string.IsNullOrWhiteSpace(bgRoom.RoomTitle) && !string.IsNullOrWhiteSpace(rawUserText))
-                    {
-                        await roomOrchestrator.SyncRoomTitleAsync(agentTarget, effectiveSessionId, rawUserText, CancellationToken.None);
-                    }
                     await roomOrchestrator.RecordManagerTriageTurnAsync(agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision, CancellationToken.None);
                 }
                 catch {}
@@ -1643,7 +1643,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             response.Dispose();
             upstreamCts.Dispose();
 
-            if (roomOrchestrator is not null)
+            if (roomOrchestrator is not null && (mentionedCollaborators.Count > 0 || hasActiveMultiAgentRoom))
             {
                 var capturedSoloInit = soloRoomInitTask;
                 _ = Task.Run(async () =>
@@ -1690,6 +1690,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     }
                     catch {}
                 });
+            }
+            else
+            {
+                client.InvalidateChatList(agentTarget);
             }
 
             return false;

@@ -117,6 +117,10 @@ public sealed class SubAgentEndpoints : IEndpoint
                         room = await orchestrator.EnsureRoomAsync(agentId, chatId, null, chatId, ct);
                     }
                 }
+                else if (ensure != true && !SessionRoomStore.IsMultiAgentRoom(room))
+                {
+                    room = null;
+                }
                 return Results.Ok(new { active = room is not null, room });
             })
             .WithName("GetChatSessionRoom")
