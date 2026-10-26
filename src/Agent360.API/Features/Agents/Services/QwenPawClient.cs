@@ -361,6 +361,10 @@ public sealed class QwenPawClient : IQwenPawClient
             var results = new List<AgentSummaryResponse>(guardianData.Agents.Count);
             foreach (var g in guardianData.Agents)
             {
+                if (g.AgentId.StartsWith("qwenpaw-base-test", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue; // Deduplicate Node 7th alias (ai-qwenpaw-base-test.antares.vn -> ai-test.antares.vn)
+                }
                 var isConfigured = !string.Equals(g.State, "NOT_CONFIGURED", StringComparison.OrdinalIgnoreCase);
                 var status = g.State switch
                 {

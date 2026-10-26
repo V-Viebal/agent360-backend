@@ -92,7 +92,6 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
             Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
             Build("qwenpaw-test", "7th", "Test QwenPaw (Node 7th)", "https://ai-test.antares.vn", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
-            Build("qwenpaw-base-test", "7th", "Base Test QwenPaw (Node 7th)", "https://ai-qwenpaw-base-test.antares.vn", "https://ai-qwenpaw-base-test.antares.vn", true, ""),
         ];
     }
 
@@ -119,7 +118,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
     {
         foreach (var g in guardianAgents)
         {
-            if (string.IsNullOrWhiteSpace(g.AgentId) || !string.Equals(g.Runtime, "qwenpaw", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(g.AgentId) || !string.Equals(g.Runtime, "qwenpaw", StringComparison.OrdinalIgnoreCase) || g.AgentId.StartsWith("qwenpaw-base-test", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             var raw = NormalizeAgentId(g.AgentId);
@@ -255,7 +254,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "qwenpaw-base-test-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
                 _ => raw["qwenpaw-base-test-".Length..]
             };
-            return Target(Instance("qwenpaw-base-test"), raw, profile);
+            return Target(Instance("qwenpaw-test"), raw, profile);
         }
 
         if (id.StartsWith("qwenpaw-test-"))
