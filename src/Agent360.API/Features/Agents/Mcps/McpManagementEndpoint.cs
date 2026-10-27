@@ -21,6 +21,11 @@ public sealed class McpManagementEndpoint : IEndpoint
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (!string.IsNullOrWhiteSpace(agentId) && httpContext.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, cancellationToken) is { } denied)
+                {
+                    return denied;
+                }
                 var list = new List<McpServerSummaryResponse>();
 
                 try
@@ -110,9 +115,11 @@ public sealed class McpManagementEndpoint : IEndpoint
                 string mcpKey,
                 [FromBody] ToggleMcpRequest request,
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
                 var target = routing.ResolveTarget(agentId);
                 var basePath = $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}";
                 using (var current = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"{basePath}/mcp/{Uri.EscapeDataString(mcpKey)}", timeout: TimeSpan.FromSeconds(30), ct: cancellationToken))

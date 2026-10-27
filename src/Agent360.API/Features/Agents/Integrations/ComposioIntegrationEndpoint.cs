@@ -36,6 +36,11 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                 {
                     targetAgent = targetAgent.Split(':').Last();
                 }
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, http, ct) is { } deniedMcp)
+                {
+                    return deniedMcp;
+                }
                 var target = routing.ResolveTarget(targetAgent);
                 if (target.Instance is null)
                 {
@@ -89,6 +94,7 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
             "integrations/composio/connect",
             async (
                 [FromBody] ComposioConnectRequest request,
+                HttpContext httpContext,
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
                 IMemoryCache cache,
@@ -105,6 +111,7 @@ public sealed class ComposioIntegrationEndpoint : IEndpoint
                 {
                     targetAgent = targetAgent.Split(':').Last();
                 }
+                if (await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, httpContext, ct) is { } deniedConn) return deniedConn;
 
                 var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent, allowWorkspaceFallback: true);
                 if (string.IsNullOrWhiteSpace(effectiveToken))
@@ -276,6 +283,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 [FromQuery] string appSlug,
                 [FromHeader(Name = "X-Agent-Id")] string? agentIdHeader,
                 [FromQuery] string? agentIdQuery,
+                HttpContext httpContext,
                 HttpClient httpClient,
                 IComposioConnectionPoller poller,
                 CancellationToken ct) =>
@@ -292,6 +300,11 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 if (targetAgent.Contains(':'))
                 {
                     targetAgent = targetAgent.Split(':').Last();
+                }
+                if (httpContext.User.Identity?.IsAuthenticated == true &&
+                    await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, httpContext, ct) is { } deniedStat)
+                {
+                    return deniedStat;
                 }
 
                 var displayName = appSlug.ToLowerInvariant().Trim();
@@ -506,6 +519,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             "integrations/composio/refresh-schema",
             async (
                 [FromBody] ComposioRefreshSchemaRequest request,
+                HttpContext httpContext,
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
                 CancellationToken ct) =>
@@ -520,6 +534,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 {
                     targetAgent = targetAgent.Split(':').Last();
                 }
+                if (await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, httpContext, ct) is { } deniedRef) return deniedRef;
 
                 var effectiveToken = InfisicalCredentialAuditService.ResolveAgentComposioToken(targetAgent, allowWorkspaceFallback: true);
                 if (string.IsNullOrWhiteSpace(effectiveToken))
@@ -604,6 +619,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
             async (
                 string clientKey,
                 [FromHeader(Name = "X-Agent-Id")] string? agentIdHeader,
+                HttpContext httpContext,
                 HttpClient httpClient,
                 IFleetInstanceRoutingService routing,
                 IMemoryCache cache,
@@ -614,6 +630,7 @@ This skill provides autonomous capabilities for interacting with {displayName} t
                 {
                     targetAgent = targetAgent.Split(':').Last();
                 }
+                if (await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, httpContext, ct) is { } deniedDel) return deniedDel;
                 var target = routing.ResolveTarget(targetAgent);
                 var requestUri = AgentUri(target, $"mcp/{Uri.EscapeDataString(clientKey)}");
 

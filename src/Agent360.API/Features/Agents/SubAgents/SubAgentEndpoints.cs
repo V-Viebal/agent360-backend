@@ -15,6 +15,20 @@ public sealed class SubAgentEndpoints : IEndpoint
             .MapToApiVersion(ApiVersion.Default)
             .AddEndpointFilter(RuntimeUnavailableFilter)
             .AddEndpointFilter<OperatorAuthFilter>()
+            .AddEndpointFilter(async (ctx, next) =>
+            {
+                var http = ctx.HttpContext;
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    http.Request.RouteValues.TryGetValue("agentId", out var rawId) &&
+                    rawId is string agentId && !string.IsNullOrWhiteSpace(agentId))
+                {
+                    if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, http.RequestAborted) is { } denied)
+                    {
+                        return denied;
+                    }
+                }
+                return await next(ctx);
+            })
             .AllowAnonymous();
 
         // ---- Registry ----

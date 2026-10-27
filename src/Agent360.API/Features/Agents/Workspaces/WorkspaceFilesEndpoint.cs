@@ -60,7 +60,7 @@ public sealed class WorkspaceFilesEndpoint : IEndpoint
             .WithName("ListWorkspaceFiles")
             .WithTags(EndpointTags.Agents)
             .WithSummary("List directories and files in workspace with Path ACL")
-            .AllowAnonymous();
+            .RequireAuthorization("Admin");
 
         // 2. Read file content safely
         routeBuilder.MapGet(
@@ -104,6 +104,6 @@ public sealed class WorkspaceFilesEndpoint : IEndpoint
             .WithName("GetWorkspaceFileContent")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Read safe content of a workspace file")
-            .AllowAnonymous();
+            .RequireAuthorization("Admin");
     }
 }

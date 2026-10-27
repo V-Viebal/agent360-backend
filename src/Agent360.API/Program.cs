@@ -110,9 +110,33 @@ try
         {
             policy.RequireAssertion(ctx =>
             {
-                // Operator token (same secret as Agent360 writes / sensitive reads) is an admin credential too:
-                // the operator UI, A2A control plane and E2E checks list the fleet without a Logto session.
-                if (ctx.Resource is HttpContext http)
+                var user = ctx.User;
+                var sub = user.FindFirst("sub")?.Value;
+
+                // 1. M2M service token sub check
+                if (string.Equals(sub, "skyer-m2m-backend", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                // 2. If caller is a resolved local DB user, PostgreSQL RBAC is authoritative!
+                //    A demoted user in DB must NEVER pass Admin policy via stale JWT claims or leftover operator headers.
+                if (ctx.Resource is HttpContext dbHttp && user.Identity?.IsAuthenticated == true)
+                {
+                    var currentUser = dbHttp.RequestServices.GetService<CurrentUser>();
+                    if (currentUser?.UserId is > 0)
+                    {
+                        var snapshotAccessor = dbHttp.RequestServices.GetService<Hmz.Core.SharedKernel.Authorization.IPermissionSnapshotAccessor>();
+                        if (snapshotAccessor?.Snapshot.Permissions is { Count: > 0 } perms)
+                        {
+                            return perms.Contains(Agent360.UserManagement.Domain.Constants.UserManagementPermissions.Users.ManageRoles);
+                        }
+                        return false;
+                    }
+                }
+
+                // 3. Headless Operator token (when no non-admin user session overrides it)
+                if (ctx.Resource is HttpContext http && user.Identity?.IsAuthenticated != true)
                 {
                     var sec = http.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>().CurrentValue;
                     if (Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.PresentsOperatorToken(http, sec))
@@ -121,31 +145,23 @@ try
                     }
                 }
 
-                var user = ctx.User;
                 if (!user.Identity?.IsAuthenticated ?? true) return false;
 
-                // 1. Roles claim check (case-insensitive for 'admin' or 'ADMIN')
+                // 4. Roles claim check (case-insensitive for 'admin' or 'ADMIN')
                 var roles = user.FindAll("roles").Concat(user.FindAll(System.Security.Claims.ClaimTypes.Role)).Select(c => c.Value);
                 if (roles.Any(r => string.Equals(r, "admin", StringComparison.OrdinalIgnoreCase) || string.Equals(r, "administrator", StringComparison.OrdinalIgnoreCase)))
                 {
                     return true;
                 }
 
-                // 2. Scopes claim check (contains 'admin:all')
+                // 5. Scopes claim check (contains 'admin:all')
                 var scopes = user.FindAll("scope").Concat(user.FindAll("scp")).SelectMany(c => c.Value.Split(' '));
                 if (scopes.Any(s => string.Equals(s, "admin:all", StringComparison.OrdinalIgnoreCase)))
                 {
                     return true;
                 }
 
-                // 3. M2M service token sub check
-                var sub = user.FindFirst("sub")?.Value;
-                if (string.Equals(sub, "skyer-m2m-backend", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-
-                // 4. Configured platform admins (Logto subject ids; access tokens carry no role/scope claims).
+                // 6. Configured platform admins (Logto subject ids; access tokens carry no role/scope claims).
                 if (ctx.Resource is HttpContext adminHttp &&
                     adminHttp.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()
                         .CurrentValue.IsAdminSubject(sub))

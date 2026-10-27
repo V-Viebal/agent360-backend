@@ -21,13 +21,18 @@ public sealed class AgentLoopModeEndpoint : IEndpoint
     {
         foreach (var route in new[] { "agents/{agentId}/loop-mode", "agents/{agentId}/config/loop-mode" })
         {
-            routeBuilder.MapGet(route, (string agentId, AgentLoopModeStore store) => Results.Ok(store.Get(agentId)))
+            routeBuilder.MapGet(route, async (string agentId, HttpContext httpContext, AgentLoopModeStore store, CancellationToken ct) =>
+                {
+                    if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+                    return Results.Ok(store.Get(agentId));
+                })
                 .MapToApiVersion(ApiVersion.Default)
                 .WithTags(EndpointTags.Agents)
                 .AllowAnonymous();
 
-            routeBuilder.MapMethods(route, ["POST", "PUT"], async (string agentId, HttpRequest request, AgentLoopModeStore store) =>
+            routeBuilder.MapMethods(route, ["POST", "PUT"], async (string agentId, HttpContext httpContext, HttpRequest request, AgentLoopModeStore store, CancellationToken ct) =>
                 {
+                    if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
                     JsonObject? body;
                     try { body = await JsonSerializer.DeserializeAsync<JsonObject>(request.Body); }
                     catch (JsonException) { body = null; }

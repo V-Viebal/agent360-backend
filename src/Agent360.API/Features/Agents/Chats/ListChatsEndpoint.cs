@@ -45,10 +45,12 @@ public sealed class ListChatsEndpoint : IEndpoint
             async Task<IResult> (
                 [FromQuery] string? agentId,
                 [FromQuery] string? channel,
+                HttpContext httpContext,
                 IQwenPawClient client,
                 SessionQueueManager queueManager,
                 CancellationToken cancellationToken) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
                 IReadOnlyList<QwenPawChatDto>? chats;
                 try
                 {
@@ -114,8 +116,9 @@ public sealed class ListChatsEndpoint : IEndpoint
         // Mark session as read
         routeBuilder.MapPost(
             "chats/{chatId}/read",
-            async (string chatId, [FromQuery] string? agentId, IFleetInstanceRoutingService routing, CancellationToken ct) =>
+            async (string chatId, [FromQuery] string? agentId, HttpContext httpContext, IFleetInstanceRoutingService routing, CancellationToken ct) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
                 ChannelResponseStore.MarkRead(chatId);
                 try
                 {
@@ -143,8 +146,9 @@ public sealed class ListChatsEndpoint : IEndpoint
 
         routeBuilder.MapPost(
             "agents/{agentId}/chats/{chatId}/read",
-            async (string agentId, string chatId, IFleetInstanceRoutingService routing, CancellationToken ct) =>
+            async (string agentId, string chatId, HttpContext httpContext, IFleetInstanceRoutingService routing, CancellationToken ct) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
                 ChannelResponseStore.MarkRead(chatId);
                 try
                 {

@@ -53,9 +53,11 @@ public sealed class SkillLibraryEndpoint : IEndpoint
                 string skillName,
                 [FromBody] ToggleSkillRequest request,
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
                 var target = routing.ResolveTarget(agentId);
                 var action = request.Enabled ? "enable" : "disable";
                 using var response = await routing.SendAsync(target.Instance!, HttpMethod.Post, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/skills/{Uri.EscapeDataString(skillName)}/{action}", ct: cancellationToken);

@@ -65,10 +65,29 @@ public sealed class OperatorAuthFilter(
         http.User.Identity?.IsAuthenticated == true && opt.IsAdminSubject(http.User.FindFirst("sub")?.Value
             ?? http.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value);
 
-    /// <summary>True only when a configured operator token is presented (never true by configuration alone).</summary>
+    /// <summary>True when the request carries a user JWT Bearer token (3 dot-separated segments) in Authorization or query.</summary>
+    public static bool HasUserJwtBearer(HttpContext http)
+    {
+        var auth = http.Request.Headers.Authorization.FirstOrDefault();
+        if (auth is not null && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            var tok = auth[7..].Trim();
+            if (tok.Count(c => c == '.') == 2) return true;
+        }
+        if (http.Request.Query.TryGetValue("access_token", out var qAt) && qAt.ToString().Count(c => c == '.') == 2)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>True only when a configured operator token is presented AND the request is not carrying a user JWT session.</summary>
     public static bool PresentsOperatorToken(HttpContext http, Agent360SecurityOptions opt)
     {
         if (string.IsNullOrWhiteSpace(opt.OperatorToken)) return false;
+        // Never allow an X-Agent360-Operator-Token header or query param to elevate a request that carries a user JWT Bearer token!
+        if (HasUserJwtBearer(http)) return false;
+
         var presented = http.Request.Headers[HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(presented))
         {

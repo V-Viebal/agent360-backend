@@ -16,9 +16,15 @@ public sealed class ToolManagementEndpoint : IEndpoint
             "tools",
             async Task<IResult> (
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (!string.IsNullOrWhiteSpace(agentId) && httpContext.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, cancellationToken) is { } denied)
+                {
+                    return denied;
+                }
                 var target = routing.ResolveTarget(agentId);
                 using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/tools", ct: cancellationToken);
                 response.EnsureSuccessStatusCode();
@@ -54,9 +60,11 @@ public sealed class ToolManagementEndpoint : IEndpoint
                 string toolName,
                 [FromBody] ToggleToolRequest request,
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
                 var target = routing.ResolveTarget(agentId);
                 var basePath = $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}";
                 using (var current = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"{basePath}/tools", timeout: TimeSpan.FromSeconds(30), ct: cancellationToken))

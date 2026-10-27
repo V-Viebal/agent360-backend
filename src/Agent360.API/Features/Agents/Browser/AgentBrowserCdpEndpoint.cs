@@ -25,8 +25,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         // Browser identity for the viewer: Selkies URL, CDP endpoint, owned profile, live tabs.
         routeBuilder.MapGet(
             "agents/{agentId}/browser",
-            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, CancellationToken ct) =>
             {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
                 var info = await directory.GetAsync(agentId, ct);
                 return info is null
                     ? TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser profile" })
@@ -61,8 +66,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         // before the viewer opens it, so the user sees this agent's tabs, not the last agent's.
         routeBuilder.MapPost(
             "agents/{agentId}/browser/focus",
-            async Task<IResult> (string agentId, AgentBrowserDirectory directory, IHttpClientFactory httpFactory, CancellationToken ct) =>
+            async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, IHttpClientFactory httpFactory, CancellationToken ct) =>
             {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
                 var (page, cdp, contextId, error) = await PickPageAsync(directory, agentId, null, ct);
                 if (page is null)
                 {
@@ -94,8 +104,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
         routeBuilder.MapGet(
             "agents/{agentId}/browser/pages",
-            async Task<IResult> (string agentId, AgentBrowserDirectory directory, CancellationToken ct) =>
+            async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, CancellationToken ct) =>
             {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
                 var info = await directory.GetAsync(agentId, ct);
                 if (info is null)
                 {
@@ -113,8 +128,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
         routeBuilder.MapGet(
             "agents/{agentId}/browser/screenshot",
-            async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, CancellationToken ct) =>
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, HttpContext http, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, CancellationToken ct) =>
             {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
                 var (page, cdp, _, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
                 {
@@ -136,6 +156,11 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             "agents/{agentId}/browser/image.jpg",
             async Task<IResult> (string agentId, [FromQuery] string? pageId, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
             {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
                 var (page, cdp, _, error) = await PickPageAsync(directory, agentId, pageId, ct);
                 if (page is null)
                 {
@@ -188,6 +213,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     return;
                 }
                 var ct = context.RequestAborted;
+                if (context.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, context, ct) is not null)
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    return;
+                }
                 var (page, cdp, _, error) = await PickPageAsync(directory, agentId, context.Request.Query["pageId"], ct);
                 if (page is null)
                 {

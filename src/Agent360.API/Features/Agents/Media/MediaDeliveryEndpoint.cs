@@ -97,11 +97,13 @@ public sealed class MediaDeliveryEndpoint : IEndpoint
         // 3. Dispatch media message into agent's chat session
         routeBuilder.MapPost(
             "agents/{agentId}/media/send",
-            (
+            async (
                 string agentId,
                 [FromBody] SendMediaMessageRequest request,
-                HttpContext httpContext) =>
+                HttpContext httpContext,
+                CancellationToken ct) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
                 var messageId = $"msg-{Guid.NewGuid():N}";
                 var baseUrl = $"{httpContext.Request.Scheme}://{httpContext.Request.Host}";
                 var mediaUrl = $"{baseUrl}/api/v1/media/files/{request.FileId}";

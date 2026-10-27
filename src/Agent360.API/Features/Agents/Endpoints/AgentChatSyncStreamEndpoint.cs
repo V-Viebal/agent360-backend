@@ -54,17 +54,15 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 httpContext.Response.Headers.Connection = "keep-alive";
                 httpContext.Response.Headers["X-Accel-Buffering"] = "no";
 
-                var secOpt = httpContext.RequestServices.GetService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360SecurityOptions>>()?.CurrentValue;
-                if (secOpt?.RequireAuthForSensitiveReads == true)
+                var (accessAllowed, accessReason) = await AgentOwnershipGuard.CheckAccessAsync(
+                    agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                    config, ct);
+                if (!accessAllowed)
                 {
-                    var (accessAllowed, accessReason) = await AgentOwnershipGuard.CheckAccessAsync(
-                        agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
-                        config, ct);
-                    if (!accessAllowed)
-                    {
-                        httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
-                        await httpContext.Response.WriteAsync($"data: {{\"error\": \"AGENT_ACCESS_DENIED\", \"message\": \"{accessReason}\"}}\n\n", ct);
-                    }
+                    httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    await httpContext.Response.WriteAsync($"data: {{\"error\": \"AGENT_ACCESS_DENIED\", \"message\": \"{accessReason}\"}}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                    return;
                 }
 
                 int lastKnownCount = -1;
@@ -472,9 +470,14 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
         // Query recent real-time recorded responses across sessions for a specific agent
         routeBuilder.MapGet(
             "agents/{agentId}/channels/responses/recent",
-            (string agentId, [FromQuery] string? channel, [FromQuery] int limit = 50) =>
+            async (string agentId, [FromQuery] string? channel, [FromQuery] int limit, HttpContext httpContext, CancellationToken ct) =>
             {
-                var events = ChannelResponseStore.GetRecent(agentId, channel, limit);
+                if (httpContext.User.Identity?.IsAuthenticated == true &&
+                    await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+                {
+                    return denied;
+                }
+                var events = ChannelResponseStore.GetRecent(agentId, channel, limit <= 0 ? 50 : limit);
                 return TypedResults.Ok(events);
             })
             .MapToApiVersion(ApiVersion.Default)
@@ -487,9 +490,14 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
         // Query recent real-time recorded responses across all agents
         routeBuilder.MapGet(
             "channels/responses/recent",
-            ([FromQuery] string? agentId, [FromQuery] string? channel, [FromQuery] int limit = 50) =>
+            async ([FromQuery] string? agentId, [FromQuery] string? channel, [FromQuery] int limit, HttpContext httpContext, CancellationToken ct) =>
             {
-                var events = ChannelResponseStore.GetRecent(agentId, channel, limit);
+                if (!string.IsNullOrWhiteSpace(agentId) && httpContext.User.Identity?.IsAuthenticated == true &&
+                    await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+                {
+                    return denied;
+                }
+                var events = ChannelResponseStore.GetRecent(agentId, channel, limit <= 0 ? 50 : limit);
                 return TypedResults.Ok(events);
             })
             .MapToApiVersion(ApiVersion.Default)

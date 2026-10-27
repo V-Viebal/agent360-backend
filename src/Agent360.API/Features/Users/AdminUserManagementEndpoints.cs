@@ -92,7 +92,7 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
         .WithSummary("List all users with roles (Admin only)");
 
         // Change user role (Admin = 2, Member = 1)
-        group.MapPut("{id:long}/role", async (long id, UpdateUserRoleRequest req, IConfiguration config, CancellationToken ct) =>
+        group.MapPut("{id:long}/role", async (long id, UpdateUserRoleRequest req, IConfiguration config, Microsoft.Extensions.Caching.Hybrid.HybridCache cache, CancellationToken ct) =>
         {
             var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
             if (string.IsNullOrWhiteSpace(connStr)) return Results.Problem("Database not configured");
@@ -121,6 +121,7 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
                 }
 
                 await tx.CommitAsync(ct);
+                await cache.RemoveAsync($"um:permissions:user:{id}", ct);
                 return Results.Ok(new { success = true, userId = id, roleId = req.RoleId });
             }
             catch (Exception ex)

@@ -16,9 +16,15 @@ public sealed class ScheduleEndpoint : IEndpoint
             "schedules",
             async Task<IResult> (
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (httpContext.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied)
+                {
+                    return denied;
+                }
                 var target = routing.ResolveTarget(agentId);
                 using var response = await routing.SendAsync(target.Instance!, HttpMethod.Get, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/cron/jobs", ct: cancellationToken);
                 response.EnsureSuccessStatusCode();
@@ -54,9 +60,11 @@ public sealed class ScheduleEndpoint : IEndpoint
             async Task<IResult> (
                 string jobId,
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
                 var target = routing.ResolveTarget(agentId);
                 using var response = await routing.SendAsync(target.Instance!, HttpMethod.Post, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/cron/jobs/{Uri.EscapeDataString(jobId)}/run", ct: cancellationToken);
                 if (response.IsSuccessStatusCode)
@@ -79,9 +87,11 @@ public sealed class ScheduleEndpoint : IEndpoint
                 string jobId,
                 [FromQuery] bool enable,
                 [FromQuery] string? agentId,
+                HttpContext httpContext,
                 IFleetInstanceRoutingService routing,
                 CancellationToken cancellationToken) =>
             {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
                 var target = routing.ResolveTarget(agentId);
                 var action = enable ? "resume" : "pause";
                 using var response = await routing.SendAsync(target.Instance!, HttpMethod.Post, $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/cron/jobs/{Uri.EscapeDataString(jobId)}/{action}", ct: cancellationToken);

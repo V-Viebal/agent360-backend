@@ -109,9 +109,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             [FromQuery] string? ext,
             [FromQuery] string? search,
             [FromQuery] bool? includeSystem,
+            HttpContext httpContext,
             IQwenPawClient client,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
             var tree = await client.GetWorkspaceTreeAsync(agentId, ct, category, ext, search, includeSystem ?? false);
             return TypedResults.Ok(tree);
         })
@@ -127,6 +129,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             IQwenPawClient client,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
             if (!WorkspacePathAcl.IsPathAllowed(path))
             {
                 return Results.Problem(
@@ -158,8 +161,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Stream or download a workspace file with ACL enforcement")
         .AllowAnonymous();
 
-        group.MapGet("workspace/file-content", async ([FromQuery] string path, [FromQuery] string? agentId, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("workspace/file-content", async ([FromQuery] string path, [FromQuery] string? agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
             if (!WorkspacePathAcl.IsPathAllowed(path))
             {
                 return Results.Problem(
@@ -178,6 +182,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // 1e. Global Chat History
         group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
             var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>() ?? new Agent360.API.Features.Agents.SubAgents.SessionRoomStore();
             try
             {
@@ -210,6 +215,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             ILogger<AgentFeaturesEndpoints> logger,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
             var currentUser = httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>();
             var userId = currentUser.ExternalUserId ?? "user";
@@ -275,10 +281,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
 
         // Summary of reactions for agent telemetry
-        group.MapGet("{agentId}/reactions/summary", (
+        group.MapGet("{agentId}/reactions/summary", async (
             string agentId,
-            HttpContext httpContext) =>
+            HttpContext httpContext,
+            CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
             var summary = roomStore.GetReactionSummary(agentId);
             return Results.Ok(summary);
@@ -587,8 +595,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("SSE stream chat to agent with queue and IAM guard")
         .AllowAnonymous();
 
-        group.MapPost("console/chat/stop", async ([FromBody] ConsoleChatStopRequestDto request, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
+        group.MapPost("console/chat/stop", async ([FromBody] ConsoleChatStopRequestDto request, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(request?.AgentId ?? "mons", httpContext, ct) is { } denied) return denied;
             if (string.IsNullOrWhiteSpace(request?.SessionId))
             {
                 return Results.Problem("session_id is required.", statusCode: StatusCodes.Status400BadRequest, title: "Bad Request");
@@ -655,6 +664,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 ?? httpContext.Request.Query["agentId"].FirstOrDefault()
                 ?? "default";
             targetAgent = FleetInstanceRoutingService.NormalizeAgentId(targetAgent);
+
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, httpContext, ct) is { } deniedUpload)
+            {
+                return deniedUpload;
+            }
 
             var target = routing.ResolveTarget(targetAgent);
             if (target.IsQwenPaw && target.Instance is not null)
@@ -772,6 +787,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     ?? "default");
             targetAgent = FleetInstanceRoutingService.NormalizeAgentId(targetAgent);
 
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(targetAgent, httpContext, ct) is { } deniedServe)
+            {
+                return deniedServe;
+            }
+
             var ext = WorkspacePathAcl.ExtractExtension(safeFileName);
             var fallbackContentType = WorkspacePathAcl.GetMimeType(ext);
             var isDownload = string.Equals(httpContext.Request.Query["download"].FirstOrDefault(), "1", StringComparison.OrdinalIgnoreCase)
@@ -880,6 +901,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         group.MapGet("{agentId}/chats", async (string agentId, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             try
             {
                 var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
@@ -949,6 +971,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>() ?? new Agent360.API.Features.Agents.SubAgents.SessionRoomStore();
             try
             {
@@ -969,8 +992,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Get chat session messages for specific agent")
         .AllowAnonymous();
 
-        group.MapGet("{agentId}/skills", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
-            await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetSkillsAsync(agentId, ct))))
+        group.MapGet("{agentId}/skills", async (string agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
+        {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            return await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetSkillsAsync(agentId, ct)));
+        })
         .WithName("ListAgentSkills")
         .WithSummary("List skills belonging to a specific agent")
         .AllowAnonymous();
@@ -981,9 +1007,13 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             [FromQuery] string? ext,
             [FromQuery] string? search,
             [FromQuery] bool? includeSystem,
+            HttpContext httpContext,
             IQwenPawClient client,
             CancellationToken ct) =>
-            await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetWorkspaceTreeAsync(agentId, ct, category, ext, search, includeSystem ?? false))))
+        {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            return await RuntimeResultAsync(async () => TypedResults.Ok(await client.GetWorkspaceTreeAsync(agentId, ct, category, ext, search, includeSystem ?? false)));
+        })
         .WithName("GetAgentWorkspaceTree")
         .WithSummary("Get workspace library artifacts and file tree for specific agent with category/format filters")
         .AllowAnonymous();
@@ -996,6 +1026,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             IQwenPawClient client,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             if (!WorkspacePathAcl.IsPathAllowed(path))
             {
                 return Results.Problem(
@@ -1030,8 +1061,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Download or preview a workspace artifact file for specific agent")
         .AllowAnonymous();
 
-        group.MapGet("{agentId}/workspace/file-content", async (string agentId, [FromQuery] string path, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("{agentId}/workspace/file-content", async (string agentId, [FromQuery] string path, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             if (!WorkspacePathAcl.IsPathAllowed(path))
             {
                 return Results.Problem(
@@ -1127,9 +1159,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // 2e. Native Context Management & Compaction (/workspace/checkpoints/gc and /compact trigger)
         group.MapPost("compact-context", async (
             [FromBody] CompactContextRequestDto request,
+            HttpContext httpContext,
             IQwenPawClient client,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(request.AgentId ?? "mons", httpContext, ct) is { } denied) return denied;
             var res = await client.CompactContextAsync(request, ct);
             return TypedResults.Ok(res);
         })
@@ -1140,9 +1174,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         group.MapPost("{agentId}/compact-context", async (
             string agentId,
             [FromBody] CompactContextRequestDto request,
+            HttpContext httpContext,
             IQwenPawClient client,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
             var enriched = request with { AgentId = agentId };
             var res = await client.CompactContextAsync(enriched, ct);
             return TypedResults.Ok(res);
@@ -1155,9 +1191,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         group.MapGet("sessions/{sessionId}/tool-receipts", async (
             string sessionId,
             [FromQuery] string? agentId,
+            HttpContext httpContext,
             IQwenPawClient client,
             CancellationToken ct) =>
         {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
             var receipts = await client.GetToolCallReceiptsAsync(sessionId, agentId, ct);
             return TypedResults.Ok(receipts);
         })
@@ -1166,12 +1204,13 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
 
         // 3. Root Agent Profile Detail Route (Non-shadowing with literal guard)
-        group.MapGet("{agentId}", async (string agentId, IQwenPawClient client, CancellationToken ct) =>
+        group.MapGet("{agentId}", async (string agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
             if (ReservedLiteralSegments.Contains(agentId))
             {
                 return Results.NotFound(new { message = $"Route '{agentId}' is not an agent profile." });
             }
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
 
             try
             {
