@@ -48,7 +48,7 @@ jobs:
           POSTGRES_DB: agent360_subagents_ci
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U agent360" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U agent360 -d agent360_subagents_ci" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       AGENT360_SUBAGENTS_TEST_PG: Host=localhost;Port=5432;Database=agent360_subagents_ci;Username=agent360;Password=agent360-ci
     steps:

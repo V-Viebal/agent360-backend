@@ -201,6 +201,65 @@ public sealed class AgentWebhookEndpoints : IEndpoint
         .WithSummary("List recent inbound/outbound webhook deliveries and QwenPaw dispatch logs for an agent")
         .AllowAnonymous();
 
+        // 4b. POST /api/v1/agents/{agentId}/webhooks/deliveries/{deliveryId}/replay
+        // Re-triggers delivery for a previous webhook event
+        routeBuilder.MapPost("agents/{agentId}/webhooks/deliveries/{deliveryId}/replay", async (
+            string agentId,
+            string deliveryId,
+            HttpContext httpContext,
+            AgentWebhookStore store,
+            HttpClient httpClient,
+            SessionMultiplexerHub multiplexerHub,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var cleanAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+            var delivery = store.GetDeliveryById(deliveryId);
+            if (delivery is null || !string.Equals(delivery.AgentId, cleanAgent, StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.NotFound(new { message = $"Không tìm thấy bản ghi webhook delivery '{deliveryId}' cho agent '{cleanAgent}'" });
+            }
+
+            if (delivery.Direction.Equals("outbound", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(delivery.TargetUrl) && !string.IsNullOrWhiteSpace(delivery.RawPayload))
+            {
+                var state = store.GetOrCreateState(cleanAgent);
+                var target = state.OutboundWebhooks.FirstOrDefault(w => string.Equals(w.Url, delivery.TargetUrl, StringComparison.OrdinalIgnoreCase));
+                var sec = target?.Secret;
+                var replayed = await ExecuteOutboundWithBackoffAsync(
+                    cleanAgent,
+                    delivery.Source,
+                    delivery.TargetUrl,
+                    sec,
+                    target?.Headers,
+                    delivery.EventType,
+                    delivery.SessionId,
+                    delivery.RawPayload,
+                    httpClient,
+                    store,
+                    multiplexerHub,
+                    maxAttempts: 3);
+
+                return Results.Ok(new
+                {
+                    success = replayed.HttpStatus is >= 200 and < 300,
+                    message = $"Đã phát lại (replay) Outbound Webhook '{delivery.EventType}' -> {delivery.TargetUrl} ({replayed.Status})",
+                    delivery = replayed
+                });
+            }
+
+            return Results.BadRequest(new { message = "Chỉ hỗ trợ phát lại (replay) cho các sự kiện Outbound Webhook có lưu payload" });
+        })
+        .MapToApiVersion(ApiVersion.Default)
+        .WithName("ReplayAgentWebhookDelivery")
+        .WithTags(EndpointTags.Agents)
+        .WithSummary("Replay a previous webhook delivery record with backoff retry")
+        .AllowAnonymous();
+
         // 5. POST /api/v1/agents/{agentId}/webhooks/probe-qwenpaw
         // Deep health & configuration check from Agent360 down to the target agent's QwenPaw API
         routeBuilder.MapPost("agents/{agentId}/webhooks/probe-qwenpaw", async (
@@ -864,7 +923,6 @@ public sealed class AgentWebhookEndpoints : IEndpoint
                 continue;
             }
 
-            var sw = Stopwatch.StartNew();
             var bodyJson = JsonSerializer.Serialize(new
             {
                 event_id = eventId,
@@ -876,13 +934,52 @@ public sealed class AgentWebhookEndpoints : IEndpoint
                 timestamp = DateTimeOffset.UtcNow.ToString("O")
             });
 
-            int code = 0;
-            string status = "delivered";
-            string respPreview = "OK";
+            _ = Task.Run(async () =>
+            {
+                await ExecuteOutboundWithBackoffAsync(
+                    agentId,
+                    target.Name,
+                    target.Url,
+                    target.Secret,
+                    target.Headers,
+                    eventType,
+                    sessionId,
+                    bodyJson,
+                    httpClient,
+                    store,
+                    multiplexerHub,
+                    maxAttempts: 3);
+            });
+        }
+    }
 
+    private static async Task<AgentWebhookDeliveryRecordDto> ExecuteOutboundWithBackoffAsync(
+        string agentId,
+        string targetName,
+        string targetUrl,
+        string? secret,
+        Dictionary<string, string>? headers,
+        string eventType,
+        string? sessionId,
+        string bodyJson,
+        HttpClient httpClient,
+        AgentWebhookStore store,
+        SessionMultiplexerHub multiplexerHub,
+        int maxAttempts = 3)
+    {
+        int attempt = 0;
+        int code = 0;
+        string status = "delivered";
+        string respPreview = "OK";
+        long totalElapsedMs = 0;
+
+        while (attempt < maxAttempts)
+        {
+            attempt++;
+            var sw = Stopwatch.StartNew();
             try
             {
-                using var req = new HttpRequestMessage(HttpMethod.Post, target.Url)
+                using var req = new HttpRequestMessage(HttpMethod.Post, targetUrl)
                 {
                     Content = new StringContent(bodyJson, Encoding.UTF8, "application/json")
                 };
@@ -890,16 +987,16 @@ public sealed class AgentWebhookEndpoints : IEndpoint
                 var ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
                 req.Headers.TryAddWithoutValidation(TimestampHeader, ts);
 
-                if (!string.IsNullOrWhiteSpace(target.Secret))
+                if (!string.IsNullOrWhiteSpace(secret))
                 {
-                    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(target.Secret));
+                    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
                     var sig = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes($"{ts}.{bodyJson}"))).ToLowerInvariant();
                     req.Headers.TryAddWithoutValidation(SignatureHeader, $"sha256={sig}");
                 }
 
-                if (target.Headers is not null)
+                if (headers is not null)
                 {
-                    foreach (var (hk, hv) in target.Headers)
+                    foreach (var (hk, hv) in headers)
                     {
                         req.Headers.TryAddWithoutValidation(hk, hv);
                     }
@@ -907,42 +1004,66 @@ public sealed class AgentWebhookEndpoints : IEndpoint
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 using var resp = await httpClient.SendAsync(req, cts.Token);
+                sw.Stop();
+                totalElapsedMs += sw.ElapsedMilliseconds;
                 code = (int)resp.StatusCode;
                 status = resp.IsSuccessStatusCode ? "delivered" : "failed";
                 var rText = await resp.Content.ReadAsStringAsync(cts.Token);
                 respPreview = string.IsNullOrWhiteSpace(rText) ? $"HTTP {code}" : (rText.Length > 160 ? rText[..160] + "..." : rText);
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    break;
+                }
             }
             catch (Exception ex)
             {
+                sw.Stop();
+                totalElapsedMs += sw.ElapsedMilliseconds;
                 code = 502;
                 status = "failed";
                 respPreview = ex.Message;
             }
 
-            sw.Stop();
-            var outRec = new AgentWebhookDeliveryRecordDto(
-                Id: $"whd_{Guid.NewGuid():N}"[..12],
-                AgentId: agentId,
-                Direction: "outbound",
-                EventType: eventType,
-                Source: target.Name,
-                SessionId: sessionId,
-                Status: status,
-                HttpStatus: code,
-                LatencyMs: sw.ElapsedMilliseconds,
-                PayloadPreview: $"POST {target.Url}",
-                ResponsePreview: respPreview,
-                SignatureVerified: !string.IsNullOrWhiteSpace(target.Secret),
-                Timestamp: DateTimeOffset.UtcNow.ToString("O"));
-
-            store.RecordDelivery(outRec);
-            _ = multiplexerHub.BroadcastAsync(JsonSerializer.Serialize(new
+            // Exponential backoff retry for transient network / 5xx failures: 1s, 2s
+            if (attempt < maxAttempts && (code >= 500 || code == 0 || code == 429))
             {
-                type = "agent_webhook_delivery",
-                agent_id = agentId,
-                delivery = outRec
-            }));
+                var delayMs = (int)(Math.Pow(2, attempt - 1) * 1000);
+                await Task.Delay(delayMs);
+            }
+            else
+            {
+                break;
+            }
         }
+
+        var outRec = new AgentWebhookDeliveryRecordDto(
+            Id: $"whd_{Guid.NewGuid():N}"[..12],
+            AgentId: agentId,
+            Direction: "outbound",
+            EventType: eventType,
+            Source: targetName,
+            SessionId: sessionId,
+            Status: status,
+            HttpStatus: code,
+            LatencyMs: totalElapsedMs,
+            PayloadPreview: $"POST {targetUrl}",
+            ResponsePreview: respPreview,
+            SignatureVerified: !string.IsNullOrWhiteSpace(secret),
+            Timestamp: DateTimeOffset.UtcNow.ToString("O"),
+            RetryCount: attempt - 1,
+            TargetUrl: targetUrl,
+            RawPayload: bodyJson);
+
+        store.RecordDelivery(outRec);
+        _ = multiplexerHub.BroadcastAsync(JsonSerializer.Serialize(new
+        {
+            type = "agent_webhook_delivery",
+            agent_id = agentId,
+            delivery = outRec
+        }));
+
+        return outRec;
     }
 
     private static string ExtractAssistantTextFromSse(string sseRaw)

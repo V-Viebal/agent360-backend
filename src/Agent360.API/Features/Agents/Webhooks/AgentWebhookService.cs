@@ -77,7 +77,10 @@ public sealed record AgentWebhookDeliveryRecordDto(
     [property: JsonPropertyName("payload_preview")] string PayloadPreview,
     [property: JsonPropertyName("response_preview")] string? ResponsePreview,
     [property: JsonPropertyName("signature_verified")] bool SignatureVerified,
-    [property: JsonPropertyName("timestamp")] string Timestamp);
+    [property: JsonPropertyName("timestamp")] string Timestamp,
+    [property: JsonPropertyName("retry_count")] int RetryCount = 0,
+    [property: JsonPropertyName("target_url")] string? TargetUrl = null,
+    [property: JsonPropertyName("raw_payload")] string? RawPayload = null);
 
 public sealed record AgentInboundWebhookPayload(
     [property: JsonPropertyName("event_id")] string? EventId = null,
@@ -265,5 +268,10 @@ public sealed class AgentWebhookStore
             q = q.Where(d => string.Equals(d.AgentId, key, StringComparison.OrdinalIgnoreCase));
         }
         return q.Take(Math.Clamp(limit, 1, 200)).ToList();
+    }
+
+    public AgentWebhookDeliveryRecordDto? GetDeliveryById(string deliveryId)
+    {
+        return _deliveries.FirstOrDefault(d => string.Equals(d.Id, deliveryId, StringComparison.OrdinalIgnoreCase));
     }
 }
