@@ -25,6 +25,10 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         "workspace/checkpoints",
         "workspace/running-config",
         "workspace/system-prompt-files",
+        "workspace/code-files",
+        "workspace/file-content",
+        "workspace/tree",
+        "active-model",
         "memory",
         "toggle",
     ];
@@ -89,7 +93,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     return Results.NotFound(new { message = $"Literal route '{agentId}' is handled by dedicated endpoints" });
                 }
                 // Dedicated endpoints like channels/responses or chats/{chatId}/stream handle their own traffic
-                if (clean.StartsWith("channels/responses", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("chats/", StringComparison.OrdinalIgnoreCase))
+                if (clean.StartsWith("channels/responses", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("chats/", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("webhooks", StringComparison.OrdinalIgnoreCase))
                 {
                     return Results.NotFound(new { message = $"Route '{clean}' is handled by dedicated endpoints" });
                 }

@@ -69,7 +69,8 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
         rel.StartsWith("agents/", StringComparison.OrdinalIgnoreCase) &&
         (rel.EndsWith("/active-model", StringComparison.OrdinalIgnoreCase) ||
          rel.EndsWith("/compact-context", StringComparison.OrdinalIgnoreCase) ||
-         rel.EndsWith("/toggle", StringComparison.OrdinalIgnoreCase));
+         rel.EndsWith("/toggle", StringComparison.OrdinalIgnoreCase) ||
+         rel.Contains("/webhooks/", StringComparison.OrdinalIgnoreCase));
 
     internal static bool IsProtected(string rel)
     {
