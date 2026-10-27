@@ -821,10 +821,22 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 }
             }
 
-            // 2. Fetch from QwenPaw workspace (try media/{normalizedRel} first, then direct workspace path {normalizedRel})
-            var candidates = normalizedRel.StartsWith("media/", StringComparison.OrdinalIgnoreCase)
-                ? new[] { normalizedRel, normalizedRel["media/".Length..] }
-                : new[] { $"media/{normalizedRel}", normalizedRel };
+            // 2. Fetch from QwenPaw workspace (try direct path, media/{normalizedRel}, and common relative paths)
+            var candidates = new List<string> { normalizedRel };
+            if (!normalizedRel.StartsWith("media/", StringComparison.OrdinalIgnoreCase))
+            {
+                candidates.Add($"media/{normalizedRel}");
+            }
+            else
+            {
+                candidates.Add(normalizedRel["media/".Length..]);
+            }
+            if (safeFileName != normalizedRel)
+            {
+                candidates.Add(safeFileName);
+                candidates.Add($"media/{safeFileName}");
+                candidates.Add($".tmp/{safeFileName}");
+            }
 
             foreach (var candidatePath in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
             {

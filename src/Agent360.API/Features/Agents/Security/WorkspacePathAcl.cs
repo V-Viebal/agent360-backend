@@ -22,7 +22,6 @@ public static class WorkspacePathAcl
     [
         "/.git/",
         "/.agent/mcps/",
-        "/.tmp/",
         "/working.secret/",
         "/ssh/",
         "/credentials/",

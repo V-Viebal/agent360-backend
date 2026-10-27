@@ -21,7 +21,10 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddMemoryCache();
             webAppBuilder.Services.AddSingleton<FleetRoutingState>();
 #pragma warning disable EXTEXP0001 // Fleet calls stream long chat turns; hidden retries would duplicate POSTs and a shared breaker would cut every agent.
-            webAppBuilder.Services.AddHttpClient<IFleetInstanceRoutingService, FleetInstanceRoutingService>()
+            webAppBuilder.Services.AddHttpClient<IFleetInstanceRoutingService, FleetInstanceRoutingService>(client =>
+                {
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 agent360-fleet/1.0");
+                })
                 .RemoveAllResilienceHandlers()
                 .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
                 {
