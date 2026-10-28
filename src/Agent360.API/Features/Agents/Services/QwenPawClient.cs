@@ -621,16 +621,18 @@ public sealed class QwenPawClient : IQwenPawClient
         {
             return fresh;
         }
+        return await RefreshAgentChatsRawAsync(agentId, cancellationToken);
+    }
+
+    public async Task<string> RefreshAgentChatsRawAsync(string agentId, CancellationToken cancellationToken = default)
+    {
+        var key = ChatListKey(agentId);
         var gate = ChatListGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
-            if (_cache.TryGetValue(key, out fresh) && fresh is not null)
-            {
-                return fresh;
-            }
-            var body = await GetStringAsync(agentId, "chats", timeout: SlowReadTimeout, ct: cancellationToken);
-            _cache.Set(key, body, TimeSpan.FromSeconds(10));
+            var body = await GetStringAsync(agentId, "chats", timeout: ReadTimeout, ct: cancellationToken);
+            _cache.Set(key, body, TimeSpan.FromSeconds(15));
             _cache.Set(key + ":last-good", body, TimeSpan.FromHours(6));
             return body;
         }

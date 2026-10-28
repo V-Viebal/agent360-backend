@@ -13,6 +13,7 @@ public sealed class SessionMultiplexerHub : IDisposable
     private readonly ILogger<SessionMultiplexerHub> _logger;
     private readonly ConcurrentDictionary<Guid, WebSocket> _sockets = new();
     private readonly ConcurrentDictionary<Guid, Channel<string>> _sseChannels = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _subscribedAgents = new(StringComparer.OrdinalIgnoreCase);
 
     public SessionMultiplexerHub(SessionQueueManager queueManager, ILogger<SessionMultiplexerHub> logger)
     {
@@ -26,6 +27,34 @@ public sealed class SessionMultiplexerHub : IDisposable
 
     public int ConnectedWebSocketsCount => _sockets.Count;
     public int ConnectedSseCount => _sseChannels.Count;
+
+    public void TouchSubscribedAgent(string? agentId)
+    {
+        if (string.IsNullOrWhiteSpace(agentId)) return;
+        var norm = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+        if (!string.IsNullOrWhiteSpace(norm))
+        {
+            _subscribedAgents[norm] = DateTimeOffset.UtcNow;
+        }
+    }
+
+    public IReadOnlyList<string> GetRecentlySubscribedAgents(TimeSpan window)
+    {
+        var cutoff = DateTimeOffset.UtcNow - window;
+        var result = new List<string>();
+        foreach (var (ag, ts) in _subscribedAgents)
+        {
+            if (ts >= cutoff)
+            {
+                result.Add(ag);
+            }
+            else
+            {
+                _subscribedAgents.TryRemove(ag, out _);
+            }
+        }
+        return result;
+    }
 
     private void HandleQueueTurnChanged(string sessionId, bool isRunning, string? agentId)
     {
@@ -183,6 +212,11 @@ public sealed class SessionMultiplexerHub : IDisposable
                         {
                             ChannelResponseStore.MarkRead(sid);
                         }
+                    }
+                    else if (action == "subscribe_agent")
+                    {
+                        var ag = doc.RootElement.TryGetProperty("agent_id", out var agProp) ? agProp.GetString() : null;
+                        TouchSubscribedAgent(ag);
                     }
                 }
                 catch (JsonException)

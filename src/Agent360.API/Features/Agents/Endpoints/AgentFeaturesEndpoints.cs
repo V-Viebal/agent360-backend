@@ -861,7 +861,44 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 }
             }
 
-            return Results.NotFound(new { message = $"Uploaded file '{safeFileName}' not found" });
+            // 3. Fallback: Fuzzy lookup via agent workspace tree (matches hashed prefix like media/<hash>_{safeFileName} or subfolders)
+            try
+            {
+                var tree = await client.GetWorkspaceTreeAsync(targetAgent, ct, search: safeFileName);
+                if (tree?.Entries is { Count: > 0 })
+                {
+                    var matchedEntry = tree.Entries.FirstOrDefault(e =>
+                    {
+                        var p = (e.Path ?? "").Replace('\\', '/');
+                        var fn = Path.GetFileName(p);
+                        return string.Equals(fn, safeFileName, StringComparison.OrdinalIgnoreCase)
+                            || fn.EndsWith($"_{safeFileName}", StringComparison.OrdinalIgnoreCase)
+                            || fn.Contains(safeFileName, StringComparison.OrdinalIgnoreCase);
+                    });
+
+                    if (matchedEntry is not null && !string.IsNullOrWhiteSpace(matchedEntry.Path))
+                    {
+                        using var fuzzyResp = await client.DownloadWorkspaceFileAsync(matchedEntry.Path, targetAgent, ct);
+                        if (fuzzyResp.IsSuccessStatusCode)
+                        {
+                            var bytes = await fuzzyResp.Content.ReadAsByteArrayAsync(ct);
+                            var contentType = fuzzyResp.Content.Headers.ContentType?.ToString();
+                            if (string.IsNullOrWhiteSpace(contentType) || contentType.Contains("octet-stream", StringComparison.OrdinalIgnoreCase))
+                            {
+                                contentType = fallbackContentType;
+                            }
+                            httpContext.Response.Headers.ContentDisposition = $"{(isDownload ? "attachment" : "inline")}; filename=\"{safeFileName.Replace("\"", "")}\"";
+                            return Results.Bytes(bytes, contentType);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback lookup failed
+            }
+
+            return Results.NotFound(new { message = $"Uploaded file '{safeFileName}' not found in workspace" });
         }
 
         routeBuilder.MapGet("console/files/{**fileName}", (
@@ -911,9 +948,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // 2. Dynamic Agent-Scoped Sub-routes
         // ==========================================
 
-        group.MapGet("{agentId}/chats", async (string agentId, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
+        group.MapGet("{agentId}/chats", async (string agentId, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, SessionMultiplexerHub multiplexerHub, CancellationToken ct) =>
         {
             if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            multiplexerHub.TouchSubscribedAgent(agentId);
             try
             {
                 var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
@@ -1055,24 +1093,48 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             return await RuntimeResultAsync(async () =>
             {
-                using var resp = await client.DownloadWorkspaceFileAsync(path, agentId, ct);
+                var targetPath = path;
+                var resp = await client.DownloadWorkspaceFileAsync(targetPath, agentId, ct);
+                
+                // Fallback: If not found and path is a simple file name, fuzzy lookup in workspace tree
+                if (!resp.IsSuccessStatusCode && !path.Contains('/'))
+                {
+                    resp.Dispose();
+                    var tree = await client.GetWorkspaceTreeAsync(agentId, ct, search: path);
+                    var matched = tree?.Entries?.FirstOrDefault(e =>
+                    {
+                        var fn = Path.GetFileName((e.Path ?? "").Replace('\\', '/'));
+                        return string.Equals(fn, path, StringComparison.OrdinalIgnoreCase)
+                            || fn.EndsWith($"_{path}", StringComparison.OrdinalIgnoreCase);
+                    });
+                    if (matched is not null && !string.IsNullOrWhiteSpace(matched.Path))
+                    {
+                        targetPath = matched.Path;
+                        resp = await client.DownloadWorkspaceFileAsync(targetPath, agentId, ct);
+                    }
+                }
+
                 if (!resp.IsSuccessStatusCode)
                 {
+                    resp.Dispose();
                     return Results.NotFound(new { message = $"File '{path}' not found" });
                 }
 
-                var ext = WorkspacePathAcl.ExtractExtension(path);
-                var contentType = resp.Content.Headers.ContentType?.ToString() ?? WorkspacePathAcl.GetMimeType(ext);
-                var fileName = Path.GetFileName(path.Replace('\\', '/'));
-                var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-
-                if (inline == true)
+                using (resp)
                 {
-                    httpContext.Response.Headers.ContentDisposition = $"inline; filename=\"{fileName.Replace("\"", "")}\"";
-                    return Results.Bytes(bytes, contentType);
-                }
+                    var ext = WorkspacePathAcl.ExtractExtension(targetPath);
+                    var contentType = resp.Content.Headers.ContentType?.ToString() ?? WorkspacePathAcl.GetMimeType(ext);
+                    var fileName = Path.GetFileName(path.Replace('\\', '/'));
+                    var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
 
-                return Results.File(bytes, contentType, fileName);
+                    if (inline == true)
+                    {
+                        httpContext.Response.Headers.ContentDisposition = $"inline; filename=\"{fileName.Replace("\"", "")}\"";
+                        return Results.Bytes(bytes, contentType);
+                    }
+
+                    return Results.File(bytes, contentType, fileName);
+                }
             });
         })
         .WithName("DownloadAgentWorkspaceFile")

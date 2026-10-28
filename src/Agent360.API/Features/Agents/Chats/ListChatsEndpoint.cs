@@ -52,9 +52,11 @@ public sealed class ListChatsEndpoint : IEndpoint
                 HttpContext httpContext,
                 IQwenPawClient client,
                 SessionQueueManager queueManager,
+                SessionMultiplexerHub multiplexerHub,
                 CancellationToken cancellationToken) =>
             {
                 if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
+                multiplexerHub.TouchSubscribedAgent(agentId ?? "mons");
                 IReadOnlyList<QwenPawChatDto>? chats;
                 try
                 {
@@ -279,6 +281,27 @@ public sealed class ListChatsEndpoint : IEndpoint
                 }
                 catch { }
 
+                var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+                if (multiplexerHub is not null)
+                {
+                    var normAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                    _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        type = "chat_session_upsert",
+                        agent_id = normAgent,
+                        is_new = false,
+                        session = new
+                        {
+                            id = targetChatId,
+                            session_id = chatId,
+                            title = cleanTitle,
+                            name = cleanTitle,
+                            updated_at = DateTimeOffset.UtcNow.ToString("O")
+                        },
+                        timestamp = DateTimeOffset.UtcNow.ToString("O")
+                    }));
+                }
+
                 return TypedResults.Ok(new
                 {
                     success = true,
@@ -371,6 +394,27 @@ public sealed class ListChatsEndpoint : IEndpoint
                     }
                 }
                 catch { }
+
+                var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+                if (multiplexerHub is not null)
+                {
+                    var normAgent = FleetInstanceRoutingService.NormalizeAgentId(effectiveAgent).ToLowerInvariant();
+                    _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        type = "chat_session_upsert",
+                        agent_id = normAgent,
+                        is_new = false,
+                        session = new
+                        {
+                            id = targetChatId,
+                            session_id = chatId,
+                            title = cleanTitle,
+                            name = cleanTitle,
+                            updated_at = DateTimeOffset.UtcNow.ToString("O")
+                        },
+                        timestamp = DateTimeOffset.UtcNow.ToString("O")
+                    }));
+                }
 
                 return TypedResults.Ok(new
                 {
