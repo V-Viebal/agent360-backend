@@ -10,7 +10,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=coolify"
-      - "traefik.http.routers.agent360-frontend.rule=Host(`agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-frontend.rule=Host(`skyer.vn`) || Host(`www.skyer.vn`) || Host(`agent360.antares.vn`) || Host(`skyer.hmz.one`)"
       - "traefik.http.routers.agent360-frontend.entrypoints=https"
       - "traefik.http.routers.agent360-frontend.tls=true"
       - "traefik.http.routers.agent360-frontend.tls.certresolver=letsencrypt"
@@ -32,11 +32,11 @@ services:
       QwenPaw__BaseUrl: https://ai.hmz.one
       Agent360__SubAgents__StoragePath: /data/subagents
       Agent360__Iam360__StoragePath: /data/iam360
-      Cors__AllowedOrigins: "https://agent360.antares.vn;https://community-agent360.antares.vn;http://localhost:5173"
+      Cors__AllowedOrigins: "https://skyer.vn;https://www.skyer.vn;https://agent360.antares.vn;https://community-agent360.antares.vn;https://skyer.hmz.one;http://localhost:5173"
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=coolify"
-      - "traefik.http.routers.agent360-backend.rule=Host(`api-agent360.antares.vn`)"
+      - "traefik.http.routers.agent360-backend.rule=Host(`api.skyer.vn`) || Host(`api-skyer.vn`) || Host(`api-agent360.antares.vn`) || Host(`api-skyer.hmz.one`)"
       - "traefik.http.routers.agent360-backend.entrypoints=https"
       - "traefik.http.routers.agent360-backend.tls=true"
       - "traefik.http.routers.agent360-backend.tls.certresolver=letsencrypt"
