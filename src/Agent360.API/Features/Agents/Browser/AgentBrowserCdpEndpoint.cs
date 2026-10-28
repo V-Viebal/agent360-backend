@@ -108,6 +108,52 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
+        // Forward touch/click, wheel scroll, or text input from Mobile Fast View directly into the agent's active CDP tab.
+        routeBuilder.MapPost(
+            "agents/{agentId}/browser/input",
+            async Task<IResult> (
+                string agentId,
+                [FromBody] BrowserInputRequest req,
+                HttpContext http,
+                AgentBrowserDirectory directory,
+                IMemoryCache cache,
+                CancellationToken ct) =>
+            {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
+                var (page, cdp, _, error) = await PickPageAsync(directory, agentId, null, ct);
+                if (page is null)
+                {
+                    return TypedResults.Conflict(new { message = error });
+                }
+                var ok = await DispatchCdpInputAsync(cdp!, page.TargetId, req, ct);
+                // Invalidate 1s screenshot cache so the immediate follow-up frame poll reflects the tap/scroll
+                cache.Remove($"agent360:browser:shot:{cdp}:{page.TargetId}");
+                return ok
+                    ? TypedResults.Ok(new { agentId, targetId = page.TargetId, action = req.Action })
+                    : TypedResults.Problem("Failed to dispatch input to agent browser tab", statusCode: StatusCodes.Status502BadGateway);
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .AddEndpointFilter(async (ctx, next) =>
+            {
+                var http = ctx.HttpContext;
+                var origin = http.Request.Headers.Origin.FirstOrDefault();
+                var cors = http.RequestServices.GetRequiredService<IOptions<CorsOptions>>().Value;
+                if (!string.IsNullOrEmpty(origin) && !IsAllowedOrigin(http, cors.AllowedOrigins))
+                {
+                    return Results.Problem("Origin not allowed", statusCode: StatusCodes.Status403Forbidden);
+                }
+                return await next(ctx);
+            })
+            .WithName("DispatchAgentBrowserInput")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Dispatch touch click, scroll, or key input directly to the agent's active browser tab via CDP")
+            .RequireRateLimiting(RateLimitPolicy)
+            .AllowAnonymous();
+
         routeBuilder.MapGet(
             "agents/{agentId}/browser/pages",
             async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, CancellationToken ct) =>
@@ -502,6 +548,90 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         catch
         {
             // Best-effort DPI & H.264 encoder normalization
+        }
+    }
+
+    private static async Task<bool> DispatchCdpInputAsync(string cdpUrl, string targetId, BrowserInputRequest req, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(4));
+            using var ws = new ClientWebSocket();
+            await ws.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
+
+            int id = 200;
+            // Read live viewport dimensions of the page so normalized ratios map 1:1 to CSS pixels
+            double vw = 1440, vh = 813;
+            var layoutId = ++id;
+            await SendAsync(ws, new { id = layoutId, method = "Page.getLayoutMetrics" }, cts.Token);
+            var layoutBytes = await ReceiveByIdAsync(ws, layoutId, cts.Token);
+            if (layoutBytes is not null)
+            {
+                using var doc = JsonDocument.Parse(layoutBytes);
+                if (doc.RootElement.TryGetProperty("result", out var res) &&
+                    res.TryGetProperty("cssVisualViewport", out var vp))
+                {
+                    if (vp.TryGetProperty("clientWidth", out var cw) && cw.GetDouble() > 0) vw = cw.GetDouble();
+                    if (vp.TryGetProperty("clientHeight", out var ch) && ch.GetDouble() > 0) vh = ch.GetDouble();
+                }
+            }
+
+            var x = Math.Round(Math.Clamp(req.XRatio ?? 0.5, 0.0, 1.0) * vw);
+            var y = Math.Round(Math.Clamp(req.YRatio ?? 0.5, 0.0, 1.0) * vh);
+            var action = (req.Action ?? "click").Trim().ToLowerInvariant();
+
+            if (action == "click")
+            {
+                var moveId = ++id;
+                await SendAsync(ws, new { id = moveId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none" } }, cts.Token);
+                await ReceiveByIdAsync(ws, moveId, cts.Token);
+
+                var downId = ++id;
+                await SendAsync(ws, new { id = downId, method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, cts.Token);
+                await ReceiveByIdAsync(ws, downId, cts.Token);
+
+                var upId = ++id;
+                await SendAsync(ws, new { id = upId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 } }, cts.Token);
+                await ReceiveByIdAsync(ws, upId, cts.Token);
+            }
+            else if (action == "scroll")
+            {
+                var wheelId = ++id;
+                var dx = Math.Clamp(req.DeltaX ?? 0, -2400, 2400);
+                var dy = Math.Clamp(req.DeltaY ?? 0, -2400, 2400);
+                await SendAsync(ws, new { id = wheelId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseWheel", x, y, deltaX = dx, deltaY = dy } }, cts.Token);
+                await ReceiveByIdAsync(ws, wheelId, cts.Token);
+            }
+            else if (action == "type" && !string.IsNullOrEmpty(req.Text))
+            {
+                var txtId = ++id;
+                await SendAsync(ws, new { id = txtId, method = "Input.insertText", @params = new { text = req.Text } }, cts.Token);
+                await ReceiveByIdAsync(ws, txtId, cts.Token);
+            }
+            else if (action == "key" && !string.IsNullOrEmpty(req.Key))
+            {
+                var k = req.Key;
+                int keyCode = k.Equals("Enter", StringComparison.OrdinalIgnoreCase) ? 13
+                    : k.Equals("Backspace", StringComparison.OrdinalIgnoreCase) ? 8
+                    : k.Equals("Escape", StringComparison.OrdinalIgnoreCase) ? 27
+                    : k.Equals("Tab", StringComparison.OrdinalIgnoreCase) ? 9 : 0;
+
+                var kdId = ++id;
+                await SendAsync(ws, new { id = kdId, method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
+                await ReceiveByIdAsync(ws, kdId, cts.Token);
+
+                var kuId = ++id;
+                await SendAsync(ws, new { id = kuId, method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
+                await ReceiveByIdAsync(ws, kuId, cts.Token);
+            }
+
+            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

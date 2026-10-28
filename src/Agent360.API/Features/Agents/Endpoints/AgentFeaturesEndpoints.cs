@@ -1,3 +1,7 @@
+using System.Security.Cryptography;
+using Agent360.API.Identity;
+using Agent360.API.Features.Agents.SubAgents;
+using Microsoft.Extensions.Options;
 using Agent360.API.Features.Billing;
 using System.Text;
 using Asp.Versioning;
@@ -1149,6 +1153,53 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithName("DownloadAgentWorkspaceFile")
         .WithSummary("Download or preview a workspace artifact file for specific agent")
         .AllowAnonymous();
+
+        group.MapGet("{agentId}/workspace/signed-file-url", async (
+            string agentId,
+            [FromQuery] string path,
+            [FromQuery] bool? inline,
+            HttpContext httpContext,
+            CurrentUser currentUser,
+            IConfiguration config,
+            IOptionsMonitor<Agent360SecurityOptions> security,
+            CancellationToken ct) =>
+        {
+            var (accessAllowed, accessReason) = await AgentOwnershipGuard.CheckAccessAsync(
+                agentId, httpContext, currentUser, config, ct);
+            if (!accessAllowed)
+            {
+                return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+            }
+            if (!WorkspacePathAcl.IsPathAllowed(path))
+            {
+                return Results.Problem("Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden Path");
+            }
+
+            var opt = security.CurrentValue;
+            var secret = string.IsNullOrWhiteSpace(opt.OperatorToken) ? "skyer-file-download-token" : opt.OperatorToken;
+            var expUnix = DateTimeOffset.UtcNow.AddHours(8).ToUnixTimeSeconds();
+            var cleanPath = path.Trim().Replace('\\', '/');
+            var payload = $"{cleanPath}:{expUnix}";
+
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+            var hex = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+            var sig = hex[..Math.Min(16, hex.Length)];
+
+            var query = $"?path={Uri.EscapeDataString(cleanPath)}&exp={expUnix}&sig={sig}";
+            if (inline == true) query += "&inline=true";
+
+            var signedUrl = $"/api/agents/{Uri.EscapeDataString(agentId)}/workspace/file-download{query}";
+            return TypedResults.Ok(new
+            {
+                url = signedUrl,
+                expiresAt = expUnix,
+                expiresInSeconds = 8 * 3600
+            });
+        })
+        .WithName("GetSignedAgentWorkspaceFileUrl")
+        .WithSummary("Generate a signed, expiring URL for anonymous artifact viewing or download")
+        .AllowAnonymous();
+
 
         group.MapGet("{agentId}/workspace/file-content", async (string agentId, [FromQuery] string path, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {

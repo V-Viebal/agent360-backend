@@ -13,3 +13,12 @@ public sealed record BrowserScreenshotResponse(
     string Format,
     string Base64Data,
     DateTimeOffset CapturedAt);
+
+public sealed record BrowserInputRequest(
+    string Action,
+    double? XRatio = null,
+    double? YRatio = null,
+    double? DeltaX = null,
+    double? DeltaY = null,
+    string? Text = null,
+    string? Key = null);
