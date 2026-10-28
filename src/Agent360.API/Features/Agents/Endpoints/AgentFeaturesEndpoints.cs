@@ -299,6 +299,164 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Get positive/negative/neutral reaction evaluation summary for agent")
         .AllowAnonymous();
 
+        // 1e-pin. Pin or unpin a message within an agent chat session (persisted to SessionRoomStore & QwenPaw workspace)
+        group.MapMethods("{agentId}/chats/{chatId}/messages/{messageId}/pin", ["POST", "PUT", "PATCH"], async (
+            string agentId,
+            string chatId,
+            string messageId,
+            [FromBody] Agent360.API.Features.Agents.SubAgents.PinMessageRequestDto? request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var currentUser = httpContext.RequestServices.GetService<Agent360.API.Identity.CurrentUser>();
+            var userId = currentUser?.ExternalUserId ?? "user";
+
+            var (room, isPinned, pinnedMessageIds) = await roomStore.RecordPinnedMessageAsync(
+                agentId,
+                chatId,
+                messageId,
+                request?.Pinned,
+                request?.Action,
+                request?.Role,
+                request?.Snippet,
+                userId,
+                ct);
+
+            // Sync agent's full pinned messages ledger down to QwenPaw workspace file (.agent360_pinned_messages.json)
+            var allAgentPinned = roomStore.GetPinnedMessagesForAgent(agentId);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var ledgerJson = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        agent_id = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant(),
+                        updated_at = DateTimeOffset.UtcNow.ToString("O"),
+                        pinned_messages = allAgentPinned
+                    }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                    await client.SaveFileContentAsync(".agent360_pinned_messages.json", ledgerJson, agentId, CancellationToken.None);
+                }
+                catch { }
+            });
+
+            var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+            if (multiplexerHub is not null)
+            {
+                var normAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "chat_message_pin_updated",
+                    agent_id = normAgent,
+                    chat_id = chatId,
+                    message_id = messageId,
+                    pinned = isPinned,
+                    pinned_message_ids = pinnedMessageIds,
+                    pinned_messages = room.PinnedMessages,
+                    timestamp = DateTimeOffset.UtcNow.ToString("O")
+                }));
+            }
+
+            return Results.Ok(new
+            {
+                success = true,
+                agent_id = agentId,
+                chat_id = chatId,
+                message_id = messageId,
+                pinned = isPinned,
+                pinned_message_ids = pinnedMessageIds,
+                pinned_messages = room.PinnedMessages
+            });
+        })
+        .WithName("PinChatMessage")
+        .WithSummary("Pin or unpin a message in an agent chat session and synchronize to QwenPaw workspace")
+        .AllowAnonymous();
+
+        // Get pinned messages for a specific chat session
+        group.MapGet("{agentId}/chats/{chatId}/pinned-messages", async (
+            string agentId,
+            string chatId,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var list = roomStore.GetPinnedMessagesForAgent(agentId, chatId);
+            return Results.Ok(new
+            {
+                agent_id = agentId,
+                chat_id = chatId,
+                pinned_message_ids = list.Select(x => x.MessageId).ToArray(),
+                pinned_messages = list
+            });
+        })
+        .WithName("GetChatPinnedMessages")
+        .WithSummary("Get pinned messages for a specific agent chat session")
+        .AllowAnonymous();
+
+        // Get all pinned messages across all sessions for an agent (hydrates from QwenPaw workspace if empty)
+        group.MapGet("{agentId}/pinned-messages", async (
+            string agentId,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var list = roomStore.GetPinnedMessagesForAgent(agentId);
+            if (list.Count == 0)
+            {
+                try
+                {
+                    var raw = await client.GetFileContentAsync(".agent360_pinned_messages.json", agentId, ct);
+                    if (!string.IsNullOrWhiteSpace(raw))
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(raw);
+                        if (doc.RootElement.TryGetProperty("pinned_messages", out var pmArr) && pmArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            var hydrated = System.Text.Json.JsonSerializer.Deserialize<List<Agent360.API.Features.Agents.SubAgents.PinnedMessageRecord>>(pmArr.GetRawText());
+                            if (hydrated is { Count: > 0 })
+                            {
+                                foreach (var item in hydrated)
+                                {
+                                    await roomStore.RecordPinnedMessageAsync(agentId, item.ChatId, item.MessageId, true, "add", item.Role, item.Snippet, item.PinnedBy, ct);
+                                }
+                                list = roomStore.GetPinnedMessagesForAgent(agentId);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return Results.Ok(new
+            {
+                agent_id = agentId,
+                pinned_message_ids = list.Select(x => x.MessageId).ToArray(),
+                pinned_messages = list
+            });
+        })
+        .WithName("GetAgentPinnedMessages")
+        .WithSummary("Get all pinned messages across all chat sessions for an agent")
+        .AllowAnonymous();
+
         // 1f. Console Chat Stream & Stop (mapped to both /agents/console/chat and root /console/chat for resilience)
         routeBuilder.MapPost("console/chat", async (
             [FromBody] ConsoleChatSendRequestDto request,
