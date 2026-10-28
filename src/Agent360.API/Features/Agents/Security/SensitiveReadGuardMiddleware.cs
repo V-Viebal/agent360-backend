@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Agent360.API.Features.Agents.SubAgents;
 using Microsoft.Extensions.Options;
 
@@ -18,6 +20,12 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
         var rel = OperatorWriteGuardMiddleware.Relative(http.Request.Path.Value);
         if (rel is null || !IsSensitive(rel)) return next(http);
         if (http.User.Identity?.IsAuthenticated == true || OperatorAuthFilter.IsAuthorized(http, opt, env)) return next(http);
+
+        // Allow signed file-download tokens for mobile / external viewing without cookies: ?sig=...&exp=...
+        if (rel.EndsWith("/workspace/file-download", StringComparison.OrdinalIgnoreCase) && IsValidSignedFileToken(http, opt))
+        {
+            return next(http);
+        }
         http.Response.StatusCode = StatusCodes.Status401Unauthorized;
         http.Response.Headers.WWWAuthenticate = "Bearer";
         return http.Response.WriteAsJsonAsync(new
@@ -29,6 +37,31 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
         });
     }
 
+    internal static bool IsValidSignedFileToken(HttpContext http, Agent360SecurityOptions opt)
+    {
+        var query = http.Request.Query;
+        if (!query.TryGetValue("sig", out var qSig) || !query.TryGetValue("exp", out var qExp) || !query.TryGetValue("path", out var qPath))
+        {
+            return false;
+        }
+
+        if (!long.TryParse(qExp.ToString(), out var expUnix) || DateTimeOffset.UtcNow.ToUnixTimeSeconds() > expUnix)
+        {
+            return false;
+        }
+
+        var secret = string.IsNullOrWhiteSpace(opt.OperatorToken) ? "skyer-file-download-token" : opt.OperatorToken;
+        var cleanPath = qPath.ToString().Trim().Replace('\\', '/');
+        var payload = $"{cleanPath}:{expUnix}";
+
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var expectedHex = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+        var expectedShort = expectedHex[..Math.Min(16, expectedHex.Length)];
+
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(qSig.ToString().ToLowerInvariant()),
+            Encoding.UTF8.GetBytes(expectedShort));
+    }
     internal static bool IsSensitive(string rel)
     {
         var p = rel.ToLowerInvariant();
