@@ -82,6 +82,22 @@ public sealed record AgentWebhookDeliveryRecordDto(
     [property: JsonPropertyName("target_url")] string? TargetUrl = null,
     [property: JsonPropertyName("raw_payload")] string? RawPayload = null);
 
+public sealed record WebhookDeadLetterRecordDto(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("delivery_id")] string DeliveryId,
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("target_name")] string TargetName,
+    [property: JsonPropertyName("target_url")] string TargetUrl,
+    [property: JsonPropertyName("event_type")] string EventType,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("total_attempts")] int TotalAttempts,
+    [property: JsonPropertyName("last_http_status")] int LastHttpStatus,
+    [property: JsonPropertyName("last_error")] string LastError,
+    [property: JsonPropertyName("raw_payload")] string? RawPayload,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("resolved")] bool Resolved = false);
+
+
 public sealed record AgentInboundWebhookPayload(
     [property: JsonPropertyName("event_id")] string? EventId = null,
     [property: JsonPropertyName("event_type")] string? EventType = null,
@@ -137,6 +153,8 @@ public sealed class AgentWebhookStore
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly ConcurrentDictionary<string, StoredAgentWebhookState> _configs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<AgentWebhookDeliveryRecordDto> _deliveries = new();
+    private readonly ConcurrentQueue<WebhookDeadLetterRecordDto> _dlq = new();
+    private readonly string _dlqPath;
 
     public AgentWebhookStore(IOptions<SubAgentOptions> options, IHostEnvironment env)
     {
@@ -146,6 +164,7 @@ public sealed class AgentWebhookStore
         Directory.CreateDirectory(dir);
         _configsPath = Path.Combine(dir, "agent_webhook_configs.json");
         _deliveriesPath = Path.Combine(dir, "agent_webhook_deliveries.json");
+        _dlqPath = Path.Combine(dir, "agent_webhook_dlq.json");
 
         if (File.Exists(_configsPath))
         {
@@ -168,6 +187,19 @@ public sealed class AgentWebhookStore
                 if (loaded is not null)
                 {
                     foreach (var d in loaded.TakeLast(300)) _deliveries.Enqueue(d);
+                }
+            }
+            catch { }
+        }
+
+        if (File.Exists(_dlqPath))
+        {
+            try
+            {
+                var loadedDlq = JsonSerializer.Deserialize<List<WebhookDeadLetterRecordDto>>(File.ReadAllText(_dlqPath));
+                if (loadedDlq is not null)
+                {
+                    foreach (var d in loadedDlq.TakeLast(200)) _dlq.Enqueue(d);
                 }
             }
             catch { }
@@ -273,5 +305,83 @@ public sealed class AgentWebhookStore
     public AgentWebhookDeliveryRecordDto? GetDeliveryById(string deliveryId)
     {
         return _deliveries.FirstOrDefault(d => string.Equals(d.Id, deliveryId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public void RecordDeadLetter(WebhookDeadLetterRecordDto record)
+    {
+        _dlq.Enqueue(record);
+        while (_dlq.Count > 300)
+        {
+            _dlq.TryDequeue(out _);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            if (!await _lock.WaitAsync(TimeSpan.FromSeconds(2))) return;
+            try
+            {
+                var snapshot = _dlq.ToArray();
+                var tmp = _dlqPath + ".tmp";
+                await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(snapshot));
+                File.Move(tmp, _dlqPath, true);
+            }
+            catch { }
+            finally
+            {
+                _lock.Release();
+            }
+        });
+    }
+
+    public IReadOnlyList<WebhookDeadLetterRecordDto> GetDeadLetters(string? agentId = null, bool? unresolvedOnly = null, int limit = 50)
+    {
+        var q = _dlq.Reverse().AsEnumerable();
+        if (!string.IsNullOrWhiteSpace(agentId))
+        {
+            var key = NormalizeKey(agentId);
+            q = q.Where(d => string.Equals(d.AgentId, key, StringComparison.OrdinalIgnoreCase));
+        }
+        if (unresolvedOnly == true)
+        {
+            q = q.Where(d => !d.Resolved);
+        }
+        return q.Take(Math.Clamp(limit, 1, 200)).ToList();
+    }
+
+    public async Task<bool> ResolveDeadLetterAsync(string dlqId)
+    {
+        var item = _dlq.FirstOrDefault(d => string.Equals(d.Id, dlqId, StringComparison.OrdinalIgnoreCase));
+        if (item is null) return false;
+
+        // Replace with resolved record in queue
+        var updated = item with { Resolved = true };
+        var arr = _dlq.ToArray();
+        for (int i = 0; i < arr.Length; i++)
+        {
+            if (string.Equals(arr[i].Id, dlqId, StringComparison.OrdinalIgnoreCase))
+            {
+                arr[i] = updated;
+                break;
+            }
+        }
+
+        await _lock.WaitAsync();
+        try
+        {
+            _dlq.Clear();
+            foreach (var d in arr) _dlq.Enqueue(d);
+            var tmp = _dlqPath + ".tmp";
+            await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(arr));
+            File.Move(tmp, _dlqPath, true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            _lock.Release();
+        }
     }
 }

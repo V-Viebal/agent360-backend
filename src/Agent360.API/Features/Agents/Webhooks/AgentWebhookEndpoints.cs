@@ -260,6 +260,62 @@ public sealed class AgentWebhookEndpoints : IEndpoint
         .WithSummary("Replay a previous webhook delivery record with backoff retry")
         .AllowAnonymous();
 
+        // 4c. GET /api/v1/agents/{agentId}/webhooks/dlq
+        // Lists dead-letter queue records for an agent
+        routeBuilder.MapGet("agents/{agentId}/webhooks/dlq", async (
+            string agentId,
+            [FromQuery] bool? unresolvedOnly,
+            [FromQuery] int limit,
+            HttpContext httpContext,
+            AgentWebhookStore store,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var cleanAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+            var dlq = store.GetDeadLetters(cleanAgent, unresolvedOnly, limit <= 0 ? 50 : limit);
+            return Results.Ok(dlq);
+        })
+        .MapToApiVersion(ApiVersion.Default)
+        .WithName("GetAgentWebhookDeadLetters")
+        .WithTags(EndpointTags.Agents)
+        .WithSummary("Get dead-letter queue (DLQ) records for an agent's failed outbound webhooks")
+        .AllowAnonymous();
+
+        // 4d. POST /api/v1/agents/{agentId}/webhooks/dlq/{dlqId}/resolve
+        // Marks a dead-letter item as resolved / dismissed
+        routeBuilder.MapPost("agents/{agentId}/webhooks/dlq/{dlqId}/resolve", async (
+            string agentId,
+            string dlqId,
+            HttpContext httpContext,
+            AgentWebhookStore store,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var cleanAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+            var ok = await store.ResolveDeadLetterAsync(dlqId);
+            if (!ok)
+            {
+                return Results.NotFound(new { message = $"Không tìm thấy bản ghi DLQ '{dlqId}' cho agent '{cleanAgent}'" });
+            }
+
+            return Results.Ok(new { success = true, message = $"Đã đánh dấu xử lý xong sự cố DLQ '{dlqId}'" });
+        })
+        .MapToApiVersion(ApiVersion.Default)
+        .WithName("ResolveAgentWebhookDeadLetter")
+        .WithTags(EndpointTags.Agents)
+        .WithSummary("Mark a dead-letter record as resolved")
+        .AllowAnonymous();
+
         // 5. POST /api/v1/agents/{agentId}/webhooks/probe-qwenpaw
         // Deep health & configuration check from Agent360 down to the target agent's QwenPaw API
         routeBuilder.MapPost("agents/{agentId}/webhooks/probe-qwenpaw", async (
@@ -1062,6 +1118,35 @@ public sealed class AgentWebhookEndpoints : IEndpoint
             agent_id = agentId,
             delivery = outRec
         }));
+
+        // Dead-Letter Queue (DLQ): If all retry attempts failed, record DLQ and broadcast persistent alert
+        if (status != "delivered")
+        {
+            var dlqRecord = new WebhookDeadLetterRecordDto(
+                Id: $"dlq_{Guid.NewGuid():N}"[..12],
+                DeliveryId: outRec.Id,
+                AgentId: agentId,
+                TargetName: targetName,
+                TargetUrl: targetUrl,
+                EventType: eventType,
+                SessionId: sessionId,
+                TotalAttempts: attempt,
+                LastHttpStatus: code,
+                LastError: respPreview,
+                RawPayload: bodyJson,
+                CreatedAt: DateTimeOffset.UtcNow.ToString("O"),
+                Resolved: false);
+
+            store.RecordDeadLetter(dlqRecord);
+
+            _ = multiplexerHub.BroadcastAsync(JsonSerializer.Serialize(new
+            {
+                type = "agent_webhook_dlq_alert",
+                agent_id = agentId,
+                dlq_item = dlqRecord,
+                message = $"Cảnh báo Outbound Webhook: Đích '{targetName}' ({targetUrl}) đã thất bại sau {attempt} lần thử lại. Mã lỗi: HTTP {code} ({respPreview})."
+            }));
+        }
 
         return outRec;
     }
