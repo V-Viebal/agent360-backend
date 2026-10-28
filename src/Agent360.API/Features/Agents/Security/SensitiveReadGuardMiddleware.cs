@@ -76,7 +76,7 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
         {
             var sub = parts[2];
             if (sub == "chats") return true;
-            if (sub == "workspace" && parts.Length >= 4 && parts[3] is "tree" or "file-content" or "file-download" or "code-files" or "system-prompt-files") return true;
+            if (sub == "workspace" && parts.Length >= 4 && parts[3] is "tree" or "file-content" or "file-download" or "file-preview" or "code-files" or "system-prompt-files") return true;
             if (sub == "memory") return true;
             // The agent's browser: tab titles/URLs, screenshots and the live screencast. Only the value-free
             // health probe (cdpReachable/profileWindowOpen) stays public for monitoring.

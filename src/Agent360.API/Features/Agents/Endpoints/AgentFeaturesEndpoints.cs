@@ -1332,6 +1332,136 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Download or preview a workspace artifact file for specific agent")
         .AllowAnonymous();
 
+        // Universal Structured File Preview (XLSX, CSV, TSV, DOCX, PPTX, RTF, ZIP, HTML, Markdown, Code, Text)
+        async Task<IResult> HandleWorkspaceFilePreviewAsync(
+            string agentId,
+            string path,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct)
+        {
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            var normalizedRel = Uri.UnescapeDataString((path ?? "").Replace('\\', '/')).Trim('/');
+            if (string.IsNullOrWhiteSpace(normalizedRel) || normalizedRel.Contains("..") || !WorkspacePathAcl.IsPathAllowed(normalizedRel))
+            {
+                return Results.Problem(
+                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
+                    statusCode: StatusCodes.Status403Forbidden,
+                    title: "Forbidden Path");
+            }
+
+            var safeFileName = Path.GetFileName(normalizedRel);
+            var targetAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+            var inlineUrl = $"/api/agents/{Uri.EscapeDataString(targetAgent)}/console/files/{string.Join("/", normalizedRel.Split('/').Select(Uri.EscapeDataString))}";
+
+            // 1. Check local uploads (.tmp/agent360-uploads)
+            if (!normalizedRel.Contains('/'))
+            {
+                try
+                {
+                    var localUploadsDir = Path.Combine(env.ContentRootPath, ".tmp", "agent360-uploads");
+                    if (Directory.Exists(localUploadsDir))
+                    {
+                        var exactLocal = Path.Combine(localUploadsDir, safeFileName);
+                        if (File.Exists(exactLocal))
+                        {
+                            var localBytes = await File.ReadAllBytesAsync(exactLocal, ct);
+                            return TypedResults.Ok(Agent360.API.Features.Agents.Workspaces.UniversalFilePreviewService.BuildPreview(localBytes, normalizedRel, inlineUrl));
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fall through to workspace lookup
+                }
+            }
+
+            // 2. Candidate paths in QwenPaw workspace
+            var candidates = new List<string> { normalizedRel };
+            if (!normalizedRel.StartsWith("media/", StringComparison.OrdinalIgnoreCase))
+            {
+                candidates.Add($"media/{normalizedRel}");
+            }
+            else
+            {
+                candidates.Add(normalizedRel["media/".Length..]);
+            }
+            if (safeFileName != normalizedRel)
+            {
+                candidates.Add(safeFileName);
+                candidates.Add($"media/{safeFileName}");
+                candidates.Add($".tmp/{safeFileName}");
+            }
+
+            foreach (var candidatePath in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using var resp = await client.DownloadWorkspaceFileAsync(candidatePath, targetAgent, ct);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                        return TypedResults.Ok(Agent360.API.Features.Agents.Workspaces.UniversalFilePreviewService.BuildPreview(bytes, candidatePath, inlineUrl));
+                    }
+                }
+                catch
+                {
+                    // Try next candidate
+                }
+            }
+
+            // 3. Fuzzy lookup via workspace tree
+            try
+            {
+                var tree = await client.GetWorkspaceTreeAsync(targetAgent, ct, search: safeFileName);
+                var matched = tree?.Entries?.FirstOrDefault(e =>
+                {
+                    var fn = Path.GetFileName((e.Path ?? "").Replace('\\', '/'));
+                    return string.Equals(fn, safeFileName, StringComparison.OrdinalIgnoreCase)
+                        || fn.EndsWith($"_{safeFileName}", StringComparison.OrdinalIgnoreCase)
+                        || fn.Contains(safeFileName, StringComparison.OrdinalIgnoreCase);
+                });
+                if (matched is not null && !string.IsNullOrWhiteSpace(matched.Path))
+                {
+                    using var fuzzyResp = await client.DownloadWorkspaceFileAsync(matched.Path, targetAgent, ct);
+                    if (fuzzyResp.IsSuccessStatusCode)
+                    {
+                        var bytes = await fuzzyResp.Content.ReadAsByteArrayAsync(ct);
+                        return TypedResults.Ok(Agent360.API.Features.Agents.Workspaces.UniversalFilePreviewService.BuildPreview(bytes, matched.Path, inlineUrl));
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore
+            }
+
+            return Results.NotFound(new { message = $"File '{path}' not found" });
+        }
+
+        group.MapGet("workspace/file-preview", (
+            [FromQuery] string path,
+            [FromQuery] string? agentId,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct) => HandleWorkspaceFilePreviewAsync(agentId ?? "mons", path, httpContext, env, client, ct))
+            .WithName("GetWorkspaceFilePreview")
+            .WithSummary("Generate rich structured preview for any workspace artifact (XLSX, CSV, DOCX, PPTX, ZIP, HTML, Markdown, Code)")
+            .AllowAnonymous();
+
+        group.MapGet("{agentId}/workspace/file-preview", (
+            string agentId,
+            [FromQuery] string path,
+            HttpContext httpContext,
+            IWebHostEnvironment env,
+            IQwenPawClient client,
+            CancellationToken ct) => HandleWorkspaceFilePreviewAsync(agentId, path, httpContext, env, client, ct))
+            .WithName("GetAgentWorkspaceFilePreview")
+            .WithSummary("Generate rich structured preview for any agent workspace artifact (XLSX, CSV, DOCX, PPTX, ZIP, HTML, Markdown, Code)")
+            .AllowAnonymous();
+
         group.MapGet("{agentId}/workspace/signed-file-url", async (
             string agentId,
             [FromQuery] string path,
