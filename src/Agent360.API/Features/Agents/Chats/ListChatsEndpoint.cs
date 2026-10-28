@@ -22,6 +22,10 @@ public sealed record QwenPawChatDto(
     [property: JsonPropertyName("pinned")] bool Pinned,
     [property: JsonPropertyName("archived")] bool Archived);
 
+public sealed record UpdateChatTitleRequest(
+    [property: JsonPropertyName("title")] string? Title,
+    [property: JsonPropertyName("name")] string? Name);
+
 public sealed record AgentSessionResponse(
     string Id,
     string Title,
@@ -180,5 +184,208 @@ public sealed class ListChatsEndpoint : IEndpoint
             .WithTags(EndpointTags.Agents)
             .WithSummary("Mark specific agent chat session as read")
             .AllowAnonymous();
+
+        // Update chat title / name (Synchronizes to QwenPaw runtime and Matrix Session Room)
+        routeBuilder.MapMethods(
+            "agents/{agentId}/chats/{chatId}",
+            ["PUT", "PATCH"],
+            async (
+                string agentId,
+                string chatId,
+                [FromBody] UpdateChatTitleRequest? body,
+                HttpContext httpContext,
+                IFleetInstanceRoutingService routing,
+                IQwenPawClient client,
+                CancellationToken ct) =>
+            {
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+                var rawTitle = body?.Title ?? body?.Name;
+                if (string.IsNullOrWhiteSpace(rawTitle))
+                {
+                    return Results.Problem(detail: "title is required", statusCode: 400, title: "Invalid request");
+                }
+                var cleanTitle = rawTitle.Trim();
+
+                var target = routing.ResolveTarget(agentId);
+                if (target.Instance is null)
+                {
+                    return Results.NotFound(new { message = $"Agent instance '{agentId}' not found" });
+                }
+
+                // 1. Resolve UUID if chatId is session_id
+                string targetChatId = chatId;
+                try
+                {
+                    using var listResp = await routing.SendAsync(
+                        target.Instance,
+                        HttpMethod.Get,
+                        $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats",
+                        agentProfileHeader: target.TargetAgentProfile,
+                        ct: ct);
+
+                    if (listResp.IsSuccessStatusCode)
+                    {
+                        var chats = await listResp.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(ct);
+                        var matched = chats?.FirstOrDefault(c =>
+                            string.Equals(c.Id, chatId, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(c.SessionId, chatId, StringComparison.OrdinalIgnoreCase));
+
+                        if (matched is not null && !string.IsNullOrWhiteSpace(matched.Id))
+                        {
+                            targetChatId = matched.Id;
+                        }
+                    }
+                }
+                catch { }
+
+                // 2. Push update directly to QwenPaw runtime via PUT /api/agents/{profile}/chats/{targetChatId}
+                HttpResponseMessage? qpResp = null;
+                try
+                {
+                    qpResp = await routing.SendAsync(
+                        target.Instance,
+                        HttpMethod.Put,
+                        $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats/{Uri.EscapeDataString(targetChatId)}",
+                        () => JsonContent.Create(new { name = cleanTitle }),
+                        agentProfileHeader: target.TargetAgentProfile,
+                        timeout: TimeSpan.FromSeconds(10),
+                        ct: ct);
+                }
+                catch (Exception ex)
+                {
+                    return Results.Problem(detail: $"QwenPaw runtime update failed: {ex.Message}", statusCode: 502);
+                }
+
+                using (qpResp)
+                {
+                    if (qpResp is not null && !qpResp.IsSuccessStatusCode && qpResp.StatusCode != System.Net.HttpStatusCode.NotFound)
+                    {
+                        var errText = await qpResp.Content.ReadAsStringAsync(ct);
+                        return Results.Problem(detail: errText, statusCode: (int)qpResp.StatusCode);
+                    }
+                }
+
+                // Invalidate Agent360 cached chat list so next GET /chats returns the updated name
+                client.InvalidateChatList(agentId);
+
+                // 3. Also sync Matrix session collaboration room title if present
+                try
+                {
+                    var orchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
+                    if (orchestrator is not null)
+                    {
+                        await orchestrator.SyncRoomTitleAsync(agentId, chatId, cleanTitle, ct);
+                    }
+                }
+                catch { }
+
+                return TypedResults.Ok(new
+                {
+                    success = true,
+                    agent_id = agentId,
+                    chat_id = chatId,
+                    resolved_chat_id = targetChatId,
+                    title = cleanTitle
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("UpdateAgentChatTitle")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Update chat title / name across QwenPaw runtime and session room")
+            .AllowAnonymous();
+
+        // Convenience route: PUT/PATCH /api/v1/chats/{chatId}
+        routeBuilder.MapMethods(
+            "chats/{chatId}",
+            ["PUT", "PATCH"],
+            async (
+                string chatId,
+                [FromQuery] string? agentId,
+                [FromBody] UpdateChatTitleRequest? body,
+                HttpContext httpContext,
+                IFleetInstanceRoutingService routing,
+                IQwenPawClient client,
+                CancellationToken ct) =>
+            {
+                var effectiveAgent = string.IsNullOrWhiteSpace(agentId) ? "mons" : agentId;
+                if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(effectiveAgent, httpContext, ct) is { } denied) return denied;
+                var rawTitle = body?.Title ?? body?.Name;
+                if (string.IsNullOrWhiteSpace(rawTitle))
+                {
+                    return Results.Problem(detail: "title is required", statusCode: 400, title: "Invalid request");
+                }
+                var cleanTitle = rawTitle.Trim();
+
+                var target = routing.ResolveTarget(effectiveAgent);
+                if (target.Instance is null)
+                {
+                    return Results.NotFound(new { message = $"Agent instance '{effectiveAgent}' not found" });
+                }
+
+                string targetChatId = chatId;
+                try
+                {
+                    using var listResp = await routing.SendAsync(
+                        target.Instance,
+                        HttpMethod.Get,
+                        $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats",
+                        agentProfileHeader: target.TargetAgentProfile,
+                        ct: ct);
+
+                    if (listResp.IsSuccessStatusCode)
+                    {
+                        var chats = await listResp.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(ct);
+                        var matched = chats?.FirstOrDefault(c =>
+                            string.Equals(c.Id, chatId, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(c.SessionId, chatId, StringComparison.OrdinalIgnoreCase));
+
+                        if (matched is not null && !string.IsNullOrWhiteSpace(matched.Id))
+                        {
+                            targetChatId = matched.Id;
+                        }
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    using var qpResp = await routing.SendAsync(
+                        target.Instance,
+                        HttpMethod.Put,
+                        $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats/{Uri.EscapeDataString(targetChatId)}",
+                        () => JsonContent.Create(new { name = cleanTitle }),
+                        agentProfileHeader: target.TargetAgentProfile,
+                        timeout: TimeSpan.FromSeconds(10),
+                        ct: ct);
+                }
+                catch { }
+
+                client.InvalidateChatList(effectiveAgent);
+
+                try
+                {
+                    var orchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
+                    if (orchestrator is not null)
+                    {
+                        await orchestrator.SyncRoomTitleAsync(effectiveAgent, chatId, cleanTitle, ct);
+                    }
+                }
+                catch { }
+
+                return TypedResults.Ok(new
+                {
+                    success = true,
+                    agent_id = effectiveAgent,
+                    chat_id = chatId,
+                    resolved_chat_id = targetChatId,
+                    title = cleanTitle
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("UpdateChatTitle")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Update chat title by chatId and optional agentId")
+            .AllowAnonymous();
     }
 }
+
