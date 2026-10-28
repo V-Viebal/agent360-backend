@@ -1159,11 +1159,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             [FromQuery] string path,
             [FromQuery] bool? inline,
             HttpContext httpContext,
-            CurrentUser currentUser,
             IConfiguration config,
             IOptionsMonitor<Agent360SecurityOptions> security,
             CancellationToken ct) =>
         {
+            var currentUser = httpContext.RequestServices.GetService<CurrentUser>()
+                ?? new CurrentUser(new HttpContextAccessor { HttpContext = httpContext });
             var (accessAllowed, accessReason) = await AgentOwnershipGuard.CheckAccessAsync(
                 agentId, httpContext, currentUser, config, ct);
             if (!accessAllowed)
@@ -1220,6 +1221,38 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         })
         .WithName("GetAgentFileContent")
         .WithSummary("Read workspace file content for specific agent")
+        .AllowAnonymous();
+
+        group.MapPut("{agentId}/workspace/file-content", async (
+            string agentId,
+            [FromQuery] string path,
+            [FromBody] SetWorkspaceFileContentRequestDto request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
+                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
+            if (!accessAllowed)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+            }
+
+            if (!WorkspacePathAcl.IsPathAllowed(path))
+            {
+                return Results.Problem(
+                    detail: "Access denied by Agent360 Workspace Path ACL: requested path contains private or sensitive tokens.",
+                    statusCode: StatusCodes.Status403Forbidden,
+                    title: "Forbidden Path");
+            }
+
+            var ok = await client.SaveFileContentAsync(path, request.Content ?? "", agentId, ct);
+            return ok ? TypedResults.Ok(new { path, saved = true }) : Results.Problem("Failed to save file content");
+        })
+        .WithName("SetAgentFileContent")
+        .WithSummary("Update workspace file content for specific agent")
         .AllowAnonymous();
 
         group.MapGet("{agentId}/active-model", async (

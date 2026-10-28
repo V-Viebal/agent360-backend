@@ -44,6 +44,7 @@ public interface IQwenPawClient
         string? search = null,
         bool includeSystem = false);
     Task<string?> GetFileContentAsync(string path, string? agentId = null, CancellationToken cancellationToken = default);
+    Task<bool> SaveFileContentAsync(string path, string content, string? agentId = null, CancellationToken cancellationToken = default);
     Task<HttpResponseMessage> DownloadWorkspaceFileAsync(string path, string? agentId = null, CancellationToken cancellationToken = default);
 
     // Context Management & Compaction (Native QwenPaw Checkpoint GC & /compact)

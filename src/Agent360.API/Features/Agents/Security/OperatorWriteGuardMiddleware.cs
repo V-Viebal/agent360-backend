@@ -70,6 +70,7 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
         (rel.EndsWith("/active-model", StringComparison.OrdinalIgnoreCase) ||
          rel.EndsWith("/compact-context", StringComparison.OrdinalIgnoreCase) ||
          rel.EndsWith("/toggle", StringComparison.OrdinalIgnoreCase) ||
+         rel.Contains("/workspace/file-content", StringComparison.OrdinalIgnoreCase) ||
          rel.Contains("/webhooks/", StringComparison.OrdinalIgnoreCase) ||
          rel.Contains("/chats/", StringComparison.OrdinalIgnoreCase));
 

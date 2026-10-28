@@ -92,6 +92,9 @@ public sealed record WorkspaceFileContentDto(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("content")] string? Content);
 
+public sealed record SetWorkspaceFileContentRequestDto(
+    [property: JsonPropertyName("content")] string? Content);
+
 // --- Active Model Override ---
 public sealed record SetActiveModelRequestDto(
     [property: JsonPropertyName("scope")] string Scope,

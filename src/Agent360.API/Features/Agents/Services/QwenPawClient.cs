@@ -1122,6 +1122,26 @@ public sealed class QwenPawClient : IQwenPawClient
         return result?.Content;
     }
 
+    public async Task<bool> SaveFileContentAsync(string path, string content, string? agentId = null, CancellationToken cancellationToken = default)
+    {
+        var target = Resolve(agentId);
+        var payload = new { content };
+        using var response = await SendAsync(
+            target,
+            HttpMethod.Put,
+            $"workspace/file-content?path={Uri.EscapeDataString(path)}",
+            () => JsonContent.Create(payload),
+            ct: cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Failed to save workspace file {Path} for agent {AgentId}. StatusCode: {StatusCode}", path, agentId, response.StatusCode);
+            return false;
+        }
+
+        return true;
+    }
+
     // ------------------------------------------------------------------
     // Context compaction (native checkpoint GC + /compact)
     // ------------------------------------------------------------------
