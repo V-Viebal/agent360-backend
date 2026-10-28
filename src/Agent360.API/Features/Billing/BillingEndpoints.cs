@@ -268,7 +268,7 @@ public sealed class BillingEndpoints : IEndpoint
 
             var clientBase = isLocal
                 ? (!string.IsNullOrWhiteSpace(origin) ? origin.TrimEnd('/') : !string.IsNullOrWhiteSpace(referer) ? referer.Split('?')[0].TrimEnd('/') : "http://localhost:5173/admin/billings")
-                : "https://agent360.antares.vn/admin/billings";
+                : "https://skyer.vn/admin/billings";
 
             if (!clientBase.Contains("/admin/billings"))
             {

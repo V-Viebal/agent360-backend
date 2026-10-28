@@ -62,6 +62,14 @@ public static class AuthenticationConfiguration
                     {
                         validAudiences.Add("https://api-skyer.hmz.one");
                     }
+                    if (!validAudiences.Contains("https://api.skyer.vn"))
+                    {
+                        validAudiences.Add("https://api.skyer.vn");
+                    }
+                    if (!validAudiences.Contains("https://api-skyer.vn"))
+                    {
+                        validAudiences.Add("https://api-skyer.vn");
+                    }
 
                     opts.TokenValidationParameters = new TokenValidationParameters
                     {

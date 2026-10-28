@@ -235,7 +235,7 @@ Xin chào Admin,
 Ví token của tài khoản '{tenantId}' trên nền tảng Agent360 hiện chỉ còn: {balance:#,##0} Tokens (dự báo Runway dưới 3 ngày).
 
 Để tránh tình trạng các Agent tự động bị gián đoạn khi thực thi tác vụ, vui lòng thực hiện nạp thêm token tại:
-https://agent360.antares.vn/admin/billings
+https://skyer.vn/admin/billings
 
 Trân trọng,
 Agent360 Autonomous Fleet Management

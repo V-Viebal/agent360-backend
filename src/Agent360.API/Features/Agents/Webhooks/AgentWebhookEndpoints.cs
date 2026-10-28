@@ -1219,7 +1219,7 @@ public sealed class AgentWebhookEndpoints : IEndpoint
         if (req.Host.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
             req.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
         {
-            origin = "https://api-agent360.antares.vn";
+            origin = "https://api.skyer.vn";
         }
 
         var inboundUrl = $"{origin}/api/v1/webhooks/agents/{cleanAgent}";
