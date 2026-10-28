@@ -1149,7 +1149,9 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         if (!string.IsNullOrEmpty(rawChatName))
                         {
                             var ctxMarkerIdx = rawChatName.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
-                            if (ctxMarkerIdx >= 0) node["name"] = rawChatName[..ctxMarkerIdx].TrimEnd();
+                            if (ctxMarkerIdx >= 0) rawChatName = rawChatName[..ctxMarkerIdx].TrimEnd();
+                            rawChatName = System.Text.RegularExpressions.Regex.Replace(rawChatName, @"^\[Replying to [^:\]]+:\s*""[^""]*""\]\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+                            node["name"] = rawChatName;
                         }
                         httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>()?.BindSessionAlias(agentId, id, sid);
                         var rawStatus = node["status"]?.ToString() ?? "idle";
@@ -1528,11 +1530,19 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             if (multiplexerHub is not null)
             {
                 var normAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                var currentUser = httpContext.RequestServices.GetService<Agent360.API.Identity.CurrentUser>();
+                var externalSub = currentUser?.ExternalUserId;
+                if (string.IsNullOrWhiteSpace(externalSub))
+                {
+                    externalSub = httpContext.User?.FindFirst("sub")?.Value;
+                }
                 _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
                 {
                     type = "agent_pin_updated",
                     agent_id = normAgent,
                     pinned = request.Pinned,
+                    user_id = currentUser?.UserId,
+                    user_sub = externalSub,
                     timestamp = DateTimeOffset.UtcNow.ToString("O")
                 }));
             }

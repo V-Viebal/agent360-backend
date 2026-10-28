@@ -104,7 +104,7 @@ public static class WorkspacePathAcl
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif", "heic", "heif"
     };
 
     private static readonly HashSet<string> MediaExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -284,6 +284,9 @@ public static class WorkspacePathAcl
         "svg" => "image/svg+xml",
         "ico" => "image/x-icon",
         "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
         "pdf" => "application/pdf",
         "csv" => "text/csv",
         "tsv" => "text/tab-separated-values",

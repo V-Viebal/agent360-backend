@@ -1,3 +1,5 @@
+using Npgsql;
+using Agent360.API.Identity;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -24,23 +26,279 @@ public sealed class QwenPawClient : IQwenPawClient
     private static readonly TimeSpan SlowReadTimeout = TimeSpan.FromSeconds(30);
     private static readonly SemaphoreSlim AgentsRefreshGate = new(1, 1);
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, bool>> _userPinOverrides = LoadUserPinOverridesFromDisk();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _hydratedUserScopes = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object _pinOverridesLock = new();
+    private static volatile bool _pinTableEnsured;
+
     private readonly HttpClient _httpClient;
     private readonly IFleetInstanceRoutingService _routingService;
     private readonly IMemoryCache _cache;
     private readonly ILogger<QwenPawClient> _logger;
+    private readonly IHttpContextAccessor? _httpContextAccessor;
+    private readonly IConfiguration? _configuration;
+
+    private static string GetPinOverridesFilePath()
+    {
+        var dir = Path.Combine(AppContext.BaseDirectory, "_storage");
+        try { Directory.CreateDirectory(dir); } catch { dir = Path.GetTempPath(); }
+        return Path.Combine(dir, "agent_pin_overrides.json");
+    }
+
+    private static System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, bool>> LoadUserPinOverridesFromDisk()
+    {
+        var outer = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, bool>>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var file = GetPinOverridesFilePath();
+            if (File.Exists(file))
+            {
+                var json = File.ReadAllText(file);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Object)
+                        {
+                            var inner = outer.GetOrAdd(prop.Name, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+                            foreach (var agentProp in prop.Value.EnumerateObject())
+                            {
+                                if (agentProp.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                                {
+                                    inner[agentProp.Name] = agentProp.Value.GetBoolean();
+                                }
+                            }
+                        }
+                        else if (prop.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                        {
+                            // Legacy flat schema fallback -> store under "global" scope
+                            var inner = outer.GetOrAdd("global", _ => new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+                            inner[prop.Name] = prop.Value.GetBoolean();
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return outer;
+    }
+
+    private static void PersistUserPinOverridesToDisk()
+    {
+        lock (_pinOverridesLock)
+        {
+            try
+            {
+                var snapshot = _userPinOverrides.ToDictionary(
+                    k => k.Key,
+                    v => v.Value.ToDictionary(ik => ik.Key, iv => iv.Value, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
+                File.WriteAllText(GetPinOverridesFilePath(), JsonSerializer.Serialize(snapshot));
+            }
+            catch { }
+        }
+    }
+
+    public string ResolveCallerUserScopeKey(out long? resolvedUserId, out string? externalSub)
+    {
+        resolvedUserId = null;
+        externalSub = null;
+        try
+        {
+            var ctx = _httpContextAccessor?.HttpContext;
+            if (ctx is not null)
+            {
+                var currentUser = ctx.RequestServices?.GetService<CurrentUser>();
+                if (currentUser?.UserId is > 0)
+                {
+                    resolvedUserId = currentUser.UserId;
+                }
+                externalSub = currentUser?.ExternalUserId;
+                if (string.IsNullOrWhiteSpace(externalSub))
+                {
+                    externalSub = ctx.User?.FindFirst("sub")?.Value;
+                }
+                if (resolvedUserId is > 0)
+                {
+                    return $"uid:{resolvedUserId.Value}";
+                }
+                if (!string.IsNullOrWhiteSpace(externalSub))
+                {
+                    return $"sub:{externalSub.Trim()}";
+                }
+            }
+        }
+        catch { }
+        return "global";
+    }
+
+    private string? GetPostgresConnectionString()
+    {
+        try
+        {
+            var cfg = _configuration ?? _httpContextAccessor?.HttpContext?.RequestServices?.GetService<IConfiguration>();
+            return cfg?.GetConnectionString("DefaultConnection") ?? cfg?.GetConnectionString("Postgres");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task EnsureUserAgentPinsTableAsync(NpgsqlConnection conn, CancellationToken ct)
+    {
+        if (_pinTableEnsured) return;
+        await using var cmd = new NpgsqlCommand(@"
+            CREATE SCHEMA IF NOT EXISTS user_management;
+            CREATE TABLE IF NOT EXISTS user_management.""UserAgentPins"" (
+                ""UserScope"" varchar(128) NOT NULL,
+                ""UserId"" bigint NULL,
+                ""ExternalUserId"" varchar(128) NULL,
+                ""AgentSlug"" varchar(128) NOT NULL,
+                ""Pinned"" boolean NOT NULL,
+                ""UpdatedAt"" timestamptz NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (""UserScope"", ""AgentSlug"")
+            );
+            CREATE INDEX IF NOT EXISTS ""IX_UserAgentPins_UserId"" ON user_management.""UserAgentPins"" (""UserId"");
+        ", conn);
+        await cmd.ExecuteNonQueryAsync(ct);
+        _pinTableEnsured = true;
+    }
+
+    private async Task HydrateUserPinOverridesFromPostgresAsync(string userScope, long? userId, CancellationToken ct)
+    {
+        if (_hydratedUserScopes.ContainsKey(userScope)) return;
+        var connStr = GetPostgresConnectionString();
+        if (string.IsNullOrWhiteSpace(connStr))
+        {
+            _hydratedUserScopes[userScope] = 1;
+            return;
+        }
+
+        try
+        {
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+            await EnsureUserAgentPinsTableAsync(conn, ct);
+
+            await using var cmd = new NpgsqlCommand(@"
+                SELECT ""AgentSlug"", ""Pinned""
+                FROM user_management.""UserAgentPins""
+                WHERE ""UserScope"" = $1 OR ($2 IS NOT NULL AND ""UserId"" = $2)
+                ORDER BY ""UpdatedAt"" ASC;
+            ", conn);
+            cmd.Parameters.AddWithValue(userScope);
+            cmd.Parameters.AddWithValue(userId.HasValue ? userId.Value : DBNull.Value);
+
+            var inner = _userPinOverrides.GetOrAdd(userScope, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var slug = FleetInstanceRoutingService.NormalizeAgentId(reader.GetString(0)).ToLowerInvariant();
+                var isPinned = reader.GetBoolean(1);
+                inner[slug] = isPinned;
+            }
+            _hydratedUserScopes[userScope] = 1;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "PostgreSQL UserAgentPins hydration skipped for scope {UserScope}; using local fallback.", userScope);
+        }
+    }
+
+    private async Task SaveUserAgentPinOverrideAsync(string userScope, long? userId, string? externalSub, string slug, bool pinned, CancellationToken ct)
+    {
+        var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
+        var inner = _userPinOverrides.GetOrAdd(userScope, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+        inner[norm] = pinned;
+
+        if (!string.Equals(userScope, "global", StringComparison.OrdinalIgnoreCase))
+        {
+            // Also keep global fallback updated for unauthenticated/operator calls on the same node
+            var globalInner = _userPinOverrides.GetOrAdd("global", _ => new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase));
+            globalInner[norm] = pinned;
+        }
+
+        PersistUserPinOverridesToDisk();
+
+        var connStr = GetPostgresConnectionString();
+        if (string.IsNullOrWhiteSpace(connStr)) return;
+
+        try
+        {
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+            await EnsureUserAgentPinsTableAsync(conn, ct);
+
+            await using var cmd = new NpgsqlCommand(@"
+                INSERT INTO user_management.""UserAgentPins"" (""UserScope"", ""UserId"", ""ExternalUserId"", ""AgentSlug"", ""Pinned"", ""UpdatedAt"")
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT (""UserScope"", ""AgentSlug"") DO UPDATE
+                SET ""Pinned"" = EXCLUDED.""Pinned"",
+                    ""UserId"" = COALESCE(EXCLUDED.""UserId"", user_management.""UserAgentPins"".""UserId""),
+                    ""ExternalUserId"" = COALESCE(EXCLUDED.""ExternalUserId"", user_management.""UserAgentPins"".""ExternalUserId""),
+                    ""UpdatedAt"" = NOW();
+            ", conn);
+            cmd.Parameters.AddWithValue(userScope);
+            cmd.Parameters.AddWithValue(userId.HasValue ? userId.Value : DBNull.Value);
+            cmd.Parameters.AddWithValue(!string.IsNullOrWhiteSpace(externalSub) ? externalSub : DBNull.Value);
+            cmd.Parameters.AddWithValue(norm);
+            cmd.Parameters.AddWithValue(pinned);
+            await cmd.ExecuteNonQueryAsync(ct);
+            _hydratedUserScopes[userScope] = 1;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "PostgreSQL UserAgentPins upsert skipped for scope {UserScope} agent {AgentSlug}; persisted to local fallback.", userScope, norm);
+        }
+    }
+
+    private static bool ResolveEffectivePinned(string slug, bool runtimeOrDefaultPinned, string userScope = "global")
+    {
+        var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
+        if (_userPinOverrides.TryGetValue(userScope, out var userDict) && userDict.TryGetValue(norm, out var userPin))
+        {
+            return userPin;
+        }
+        if (!string.Equals(userScope, "global", StringComparison.OrdinalIgnoreCase) &&
+            _userPinOverrides.TryGetValue("global", out var globalDict) &&
+            globalDict.TryGetValue(norm, out var globalPin))
+        {
+            return globalPin;
+        }
+        return runtimeOrDefaultPinned;
+    }
+
+    private async Task<IReadOnlyList<AgentSummaryResponse>> ApplyCallerPinOverridesAsync(IReadOnlyList<AgentSummaryResponse> baseAgents, CancellationToken ct)
+    {
+        if (baseAgents.Count == 0) return baseAgents;
+        var userScope = ResolveCallerUserScopeKey(out var userId, out _);
+        await HydrateUserPinOverridesFromPostgresAsync(userScope, userId, ct);
+
+        return baseAgents
+            .Select(a => a with { Pinned = ResolveEffectivePinned(a.Slug, a.Pinned, userScope) })
+            .OrderByDescending(a => a.Pinned)
+            .ThenBy(a => a.Slug, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 
     public QwenPawClient(
         HttpClient httpClient,
         IFleetInstanceRoutingService routingService,
         IOptions<QwenPawOptions> options,
         ILogger<QwenPawClient> logger,
-        IMemoryCache? cache = null)
+        IMemoryCache? cache = null,
+        IHttpContextAccessor? httpContextAccessor = null,
+        IConfiguration? configuration = null)
     {
         _httpClient = httpClient;
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
         _routingService = routingService;
         _logger = logger;
         _cache = cache ?? new MemoryCache(new MemoryCacheOptions());
+        _httpContextAccessor = httpContextAccessor;
+        _configuration = configuration;
     }
 
     // ------------------------------------------------------------------
@@ -107,7 +365,7 @@ public sealed class QwenPawClient : IQwenPawClient
     {
         if (_cache.TryGetValue(AgentsCacheKey, out IReadOnlyList<AgentSummaryResponse>? fresh) && fresh is { Count: > 0 })
         {
-            return fresh;
+            return await ApplyCallerPinOverridesAsync(fresh, cancellationToken);
         }
 
         await AgentsRefreshGate.WaitAsync(cancellationToken);
@@ -115,7 +373,7 @@ public sealed class QwenPawClient : IQwenPawClient
         {
             if (_cache.TryGetValue(AgentsCacheKey, out fresh) && fresh is { Count: > 0 })
             {
-                return fresh;
+                return await ApplyCallerPinOverridesAsync(fresh, cancellationToken);
             }
 
             var agents = await LoadFleetAgentsAsync(cancellationToken);
@@ -123,7 +381,7 @@ public sealed class QwenPawClient : IQwenPawClient
             {
                 _cache.Set(AgentsCacheKey, agents, TimeSpan.FromSeconds(20));
                 _cache.Set(AgentsCacheKey + ":last-good", agents, TimeSpan.FromHours(6));
-                return agents;
+                return await ApplyCallerPinOverridesAsync(agents, cancellationToken);
             }
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -138,7 +396,7 @@ public sealed class QwenPawClient : IQwenPawClient
         // Serve the last good snapshot rather than an empty fleet when discovery is temporarily down.
         if (_cache.TryGetValue(AgentsCacheKey + ":last-good", out IReadOnlyList<AgentSummaryResponse>? stale) && stale is not null)
         {
-            return stale;
+            return await ApplyCallerPinOverridesAsync(stale, cancellationToken);
         }
         return Array.Empty<AgentSummaryResponse>();
     }
@@ -280,7 +538,7 @@ public sealed class QwenPawClient : IQwenPawClient
     {
         Model = RuntimeModel(live, guardian.Model),
         Enabled = live.Enabled,
-        Pinned = live.Pinned,
+        Pinned = ResolveEffectivePinned(guardian.Slug, live.Pinned),
         Status = !live.Enabled ? "disabled" : guardian.Status,
         Description = string.IsNullOrWhiteSpace(guardian.Description) ? live.Description : guardian.Description,
         AvailableInChat = live.Enabled && live.AvailableInChat
@@ -309,7 +567,7 @@ public sealed class QwenPawClient : IQwenPawClient
             Uptime: "Online (Runtime)",
             Description: a.Description,
             Enabled: a.Enabled,
-            Pinned: a.Pinned,
+            Pinned: ResolveEffectivePinned(slug, a.Pinned),
             AvailableInChat: a.AvailableInChat,
             Tools: DefaultTools,
             CanToggle: !IsRootDefaultAgent(slug),
@@ -388,7 +646,7 @@ public sealed class QwenPawClient : IQwenPawClient
                     Uptime: "Online (Fleet)",
                     Description: g.Description,
                     Enabled: isConfigured,
-                    Pinned: g.AgentId is "mons" or "ken" or "zen" or "gm-boc" or "default-core",
+                    Pinned: ResolveEffectivePinned(g.AgentId, g.AgentId is "mons" or "ken" or "zen" or "gm-boc" or "default-core"),
                     AvailableInChat: true,
                     Tools: ExtractTools(g),
                     CanToggle: !IsRootDefaultAgent(g.AgentId),
@@ -549,34 +807,47 @@ public sealed class QwenPawClient : IQwenPawClient
 
     public async Task<PinAgentResponse?> PinAgentAsync(string agentId, bool pinned, CancellationToken cancellationToken = default)
     {
+        var normalizedSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        var userScope = ResolveCallerUserScopeKey(out var userId, out var externalSub);
+        await SaveUserAgentPinOverrideAsync(userScope, userId, externalSub, normalizedSlug, pinned, cancellationToken);
+
         var target = Resolve(agentId);
         if (!target.IsQwenPaw || target.Instance is null)
         {
-            return new PinAgentResponse(true, agentId, pinned);
+            InvalidateAgent(agentId);
+            return new PinAgentResponse(true, normalizedSlug, pinned);
         }
 
-        var payload = new PinAgentRequest(pinned);
-        using var response = await SendAsync(
-            target,
-            HttpMethod.Patch,
-            "pin",
-            () => JsonContent.Create(payload),
-            global: false,
-            timeout: ReadTimeout,
-            ct: cancellationToken);
-
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            _logger.LogWarning("Failed to pin agent {AgentId} to pinned={Pinned}. StatusCode: {StatusCode}", agentId, pinned, response.StatusCode);
-            return null;
+            var payload = new PinAgentRequest(pinned);
+            using var response = await SendAsync(
+                target,
+                HttpMethod.Patch,
+                "pin",
+                () => JsonContent.Create(payload),
+                global: false,
+                timeout: ReadTimeout,
+                ct: cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                // Note: QwenPaw returns HTTP 400 when unpinning 'default' profile (e.g. gm-boc, climax-default, its-default).
+                // We still honor the pin/unpin state in Agent360 via _agentPinOverrides so any agent in the fleet can be pinned/unpinned.
+                _logger.LogInformation("Runtime pin endpoint returned {StatusCode} for {AgentId} (profile={Profile}, pinned={Pinned}); using Agent360 pin override ledger.", response.StatusCode, normalizedSlug, target.TargetAgentProfile, pinned);
+            }
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Runtime pin sync skipped for {AgentId}; persisted in Agent360 pin override ledger.", normalizedSlug);
         }
 
         InvalidateAgent(agentId);
         _cache.Remove(AgentsCacheKey);
+        _cache.Remove(GuardianLastGoodKey);
         _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
 
-        var dto = await response.Content.ReadFromJsonAsync<PinAgentResponse>(cancellationToken: cancellationToken);
-        return dto is not null ? dto with { AgentId = FleetInstanceRoutingService.NormalizeAgentId(agentId) } : new PinAgentResponse(true, agentId, pinned);
+        return new PinAgentResponse(true, normalizedSlug, pinned);
     }
 
     private void InvalidateAgent(string agentId)

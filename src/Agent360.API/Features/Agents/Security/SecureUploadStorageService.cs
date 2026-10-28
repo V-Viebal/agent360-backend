@@ -12,7 +12,7 @@ public class SecureUploadStorageService(
 {
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".avif", ".heic", ".heif",
         ".pdf", ".txt", ".md", ".mdx", ".json", ".csv", ".tsv", ".yaml", ".yml", ".xml", ".toml", ".ini", ".log",
         ".docx", ".doc", ".xlsx", ".xls", ".xlsm", ".pptx", ".ppt",
         ".zip", ".tar", ".gz", ".7z", ".rar",
@@ -38,6 +38,22 @@ public class SecureUploadStorageService(
         }
 
         var ext = Path.GetExtension(file.FileName);
+        if (string.IsNullOrWhiteSpace(ext) && !string.IsNullOrWhiteSpace(file.ContentType))
+        {
+            ext = file.ContentType.ToLowerInvariant().Trim() switch
+            {
+                "image/jpeg" or "image/jpg" => ".jpg",
+                "image/png" => ".png",
+                "image/webp" => ".webp",
+                "image/gif" => ".gif",
+                "image/heic" => ".heic",
+                "image/heif" => ".heif",
+                "image/avif" => ".avif",
+                "image/svg+xml" => ".svg",
+                "application/pdf" => ".pdf",
+                _ => ""
+            };
+        }
         if (string.IsNullOrWhiteSpace(ext) || !AllowedExtensions.Contains(ext))
         {
             return (false, $"File extension '{ext}' is not permitted by upload security policy.", null);

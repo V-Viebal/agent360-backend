@@ -102,6 +102,7 @@ public sealed class ListChatsEndpoint : IEndpoint
                     {
                         var ctxIdx = cleanName.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
                         if (ctxIdx >= 0) cleanName = cleanName[..ctxIdx].TrimEnd();
+                        cleanName = System.Text.RegularExpressions.Regex.Replace(cleanName, @"^\[Replying to [^:\]]+:\s*""[^""]*""\]\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
                     }
 
                     return new AgentSessionResponse(
