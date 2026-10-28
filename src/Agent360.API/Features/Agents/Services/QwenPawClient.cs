@@ -280,6 +280,7 @@ public sealed class QwenPawClient : IQwenPawClient
     {
         Model = RuntimeModel(live, guardian.Model),
         Enabled = live.Enabled,
+        Pinned = live.Pinned,
         Status = !live.Enabled ? "disabled" : guardian.Status,
         Description = string.IsNullOrWhiteSpace(guardian.Description) ? live.Description : guardian.Description,
         AvailableInChat = live.Enabled && live.AvailableInChat
@@ -544,6 +545,38 @@ public sealed class QwenPawClient : IQwenPawClient
         }
 
         return await response.Content.ReadFromJsonAsync<ToggleAgentResponse>(cancellationToken: cancellationToken);
+    }
+
+    public async Task<PinAgentResponse?> PinAgentAsync(string agentId, bool pinned, CancellationToken cancellationToken = default)
+    {
+        var target = Resolve(agentId);
+        if (!target.IsQwenPaw || target.Instance is null)
+        {
+            return new PinAgentResponse(true, agentId, pinned);
+        }
+
+        var payload = new PinAgentRequest(pinned);
+        using var response = await SendAsync(
+            target,
+            HttpMethod.Patch,
+            "pin",
+            () => JsonContent.Create(payload),
+            global: false,
+            timeout: ReadTimeout,
+            ct: cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("Failed to pin agent {AgentId} to pinned={Pinned}. StatusCode: {StatusCode}", agentId, pinned, response.StatusCode);
+            return null;
+        }
+
+        InvalidateAgent(agentId);
+        _cache.Remove(AgentsCacheKey);
+        _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
+
+        var dto = await response.Content.ReadFromJsonAsync<PinAgentResponse>(cancellationToken: cancellationToken);
+        return dto is not null ? dto with { AgentId = FleetInstanceRoutingService.NormalizeAgentId(agentId) } : new PinAgentResponse(true, agentId, pinned);
     }
 
     private void InvalidateAgent(string agentId)

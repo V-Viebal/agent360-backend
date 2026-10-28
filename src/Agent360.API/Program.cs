@@ -23,7 +23,15 @@ Log.Logger = new LoggerConfiguration()
 
 try
 {
-    var builder = WebApplication.CreateSlimBuilder(args);
+    var webAppOptions = new WebApplicationOptions
+    {
+        Args = args,
+        ContentRootPath = !File.Exists(Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json"))
+                          && File.Exists(Path.Combine(AppContext.BaseDirectory, "appsettings.json"))
+            ? AppContext.BaseDirectory
+            : null,
+    };
+    var builder = WebApplication.CreateSlimBuilder(webAppOptions);
 
     builder.WebHost.UseKestrelHttpsConfiguration();
     builder.WebHost.ConfigureKestrel(opts =>
@@ -37,11 +45,19 @@ try
         opts.ValidateOnBuild = true;
     });
 
-    // Already configured by default, you can customize it if needed.
-    //builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    //                     .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true)
-    //                     .AddEnvironmentVariables()
-    //                     .AddUserSecrets<Program>();
+    // When launched via `dotnet /path/to/shadow-bin/Agent360.API.dll` from an external working directory,
+    // ContentRootPath points to the caller's cwd and misses appsettings*.json next to the compiled assembly.
+    var baseDir = AppContext.BaseDirectory;
+    if (!string.Equals(
+            Path.GetFullPath(builder.Environment.ContentRootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(baseDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase))
+    {
+        builder.Configuration
+            .AddJsonFile(Path.Combine(baseDir, "appsettings.json"), optional: true, reloadOnChange: false)
+            .AddJsonFile(Path.Combine(baseDir, $"appsettings.{builder.Environment.EnvironmentName}.json"), optional: true, reloadOnChange: false)
+            .AddEnvironmentVariables();
+    }
 
     // Configure JSON options for minimal APIs, not for controller endpoints.
     builder.Services.Configure<JsonOptions>(opts =>

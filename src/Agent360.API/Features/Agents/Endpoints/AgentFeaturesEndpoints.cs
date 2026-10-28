@@ -1109,21 +1109,39 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 var targetPath = path;
                 var resp = await client.DownloadWorkspaceFileAsync(targetPath, agentId, ct);
                 
-                // Fallback: If not found and path is a simple file name, fuzzy lookup in workspace tree
-                if (!resp.IsSuccessStatusCode && !path.Contains('/'))
+                // Fallback: If not found directly (even if prefixed with media/ or subfolder), fuzzy lookup by bare file name in workspace tree
+                if (!resp.IsSuccessStatusCode)
                 {
-                    resp.Dispose();
-                    var tree = await client.GetWorkspaceTreeAsync(agentId, ct, search: path);
-                    var matched = tree?.Entries?.FirstOrDefault(e =>
+                    var bareName = Path.GetFileName(path.Replace('\\', '/'));
+                    if (!string.IsNullOrWhiteSpace(bareName))
                     {
-                        var fn = Path.GetFileName((e.Path ?? "").Replace('\\', '/'));
-                        return string.Equals(fn, path, StringComparison.OrdinalIgnoreCase)
-                            || fn.EndsWith($"_{path}", StringComparison.OrdinalIgnoreCase);
-                    });
-                    if (matched is not null && !string.IsNullOrWhiteSpace(matched.Path))
-                    {
-                        targetPath = matched.Path;
-                        resp = await client.DownloadWorkspaceFileAsync(targetPath, agentId, ct);
+                        resp.Dispose();
+                        // Try bareName at root first if original had media/ prefix
+                        if (path.Contains('/'))
+                        {
+                            resp = await client.DownloadWorkspaceFileAsync(bareName, agentId, ct);
+                            if (resp.IsSuccessStatusCode)
+                            {
+                                targetPath = bareName;
+                            }
+                        }
+
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            var tree = await client.GetWorkspaceTreeAsync(agentId, ct, search: bareName);
+                            var matched = tree?.Entries?.FirstOrDefault(e =>
+                            {
+                                var fn = Path.GetFileName((e.Path ?? "").Replace('\\', '/'));
+                                return string.Equals(fn, bareName, StringComparison.OrdinalIgnoreCase)
+                                    || fn.EndsWith($"_{bareName}", StringComparison.OrdinalIgnoreCase);
+                            });
+                            if (matched is not null && !string.IsNullOrWhiteSpace(matched.Path))
+                            {
+                                resp.Dispose();
+                                targetPath = matched.Path;
+                                resp = await client.DownloadWorkspaceFileAsync(targetPath, agentId, ct);
+                            }
+                        }
                     }
                 }
 
@@ -1327,6 +1345,44 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         })
         .WithName("ToggleAgentEnabled")
         .WithSummary("Enable or disable agent profile on runtime")
+        .AllowAnonymous();
+
+        group.MapMethods("{agentId}/pin", ["PATCH", "POST", "PUT"], async (
+            string agentId,
+            [FromBody] PinAgentRequest request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var res = await client.PinAgentAsync(agentId, request.Pinned, ct);
+            if (res is null)
+            {
+                return Results.Problem("Failed to update agent pin state on QwenPaw runtime", statusCode: 502);
+            }
+
+            var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+            if (multiplexerHub is not null)
+            {
+                var normAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "agent_pin_updated",
+                    agent_id = normAgent,
+                    pinned = request.Pinned,
+                    timestamp = DateTimeOffset.UtcNow.ToString("O")
+                }));
+            }
+
+            return TypedResults.Ok(res);
+        })
+        .WithName("PinAgent")
+        .WithSummary("Pin or unpin an agent profile on QwenPaw runtime")
         .AllowAnonymous();
 
         // 2e. Native Context Management & Compaction (/workspace/checkpoints/gc and /compact trigger)

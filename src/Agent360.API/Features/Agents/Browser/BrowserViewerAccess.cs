@@ -18,22 +18,36 @@ namespace Agent360.API.Features.Agents.Browser;
 /// strips the prefix. No cookies are involved, so it also works in iOS Safari iframes (third-party cookies blocked).
 /// Tokens are HMAC-SHA256 over the operator secret, so no extra secret store is needed.
 /// </summary>
-public sealed class BrowserViewerAccess(IOptionsMonitor<Agent360SecurityOptions> security)
+public sealed class BrowserViewerAccess(IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment? env = null)
 {
     public const string PathPrefix = "/a360/";
+    private const string DevFallbackOperatorToken = "fd90fead6f7381094c0f891bf3268a5a041d22ea1ca4a0be";
     internal static readonly TimeSpan SessionTtl = TimeSpan.FromHours(8);
+
+    private string EffectiveOperatorToken()
+    {
+        var secret = security.CurrentValue.OperatorToken;
+        if (!string.IsNullOrWhiteSpace(secret)) return secret.Trim();
+        if (env?.IsDevelopment() == true)
+        {
+            var fromEnv = Environment.GetEnvironmentVariable("Agent360__Security__OperatorToken")
+                ?? Environment.GetEnvironmentVariable("A2A_OPERATOR_TOKEN");
+            return !string.IsNullOrWhiteSpace(fromEnv) ? fromEnv.Trim() : DevFallbackOperatorToken;
+        }
+        return "";
+    }
 
     private byte[] Key()
     {
-        var secret = security.CurrentValue.OperatorToken;
+        var secret = EffectiveOperatorToken();
         if (string.IsNullOrWhiteSpace(secret))
         {
             throw new InvalidOperationException("Agent360:Security:OperatorToken is required to sign browser viewer tokens");
         }
-        return SHA256.HashData(Encoding.UTF8.GetBytes("agent360-browser-viewer:" + secret.Trim()));
+        return SHA256.HashData(Encoding.UTF8.GetBytes("agent360-browser-viewer:" + secret));
     }
 
-    public bool CanSign => !string.IsNullOrWhiteSpace(security.CurrentValue.OperatorToken);
+    public bool CanSign => !string.IsNullOrWhiteSpace(EffectiveOperatorToken());
 
     public string Sign(string kind, string host, string mode, DateTimeOffset expires)
     {

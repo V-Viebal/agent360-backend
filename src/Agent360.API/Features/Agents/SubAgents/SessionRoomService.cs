@@ -124,7 +124,25 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("host_execution_policy")] string? HostExecutionPolicy = "auto", // "auto" | "co_execute" | "synthesize_only"
     [property: JsonPropertyName("active_run_id")] string? ActiveRunId = null,
     [property: JsonPropertyName("active_round")] int ActiveRound = 1,
-    [property: JsonPropertyName("run_state")] string? RunState = null);
+    [property: JsonPropertyName("run_state")] string? RunState = null,
+    [property: JsonPropertyName("pinned_message_ids")] IReadOnlyList<string>? PinnedMessageIds = null,
+    [property: JsonPropertyName("pinned_messages")] IReadOnlyList<PinnedMessageRecord>? PinnedMessages = null);
+
+public sealed record PinnedMessageRecord(
+    [property: JsonPropertyName("message_id")] string MessageId,
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("chat_id")] string ChatId,
+    [property: JsonPropertyName("role")] string? Role = null,
+    [property: JsonPropertyName("snippet")] string? Snippet = null,
+    [property: JsonPropertyName("pinned_by")] string? PinnedBy = null,
+    [property: JsonPropertyName("pinned_at")] DateTimeOffset PinnedAt = default);
+
+public sealed record PinMessageRequestDto(
+    [property: JsonPropertyName("pinned")] bool? Pinned = null,
+    [property: JsonPropertyName("action")] string? Action = null,
+    [property: JsonPropertyName("role")] string? Role = null,
+    [property: JsonPropertyName("snippet")] string? Snippet = null,
+    [property: JsonPropertyName("session_id")] string? SessionId = null);
 
 public sealed record UpdateRoomTriagePolicyRequest(
     [property: JsonPropertyName("triage_policy")] string? TriagePolicy = null,
@@ -569,6 +587,134 @@ public sealed class SessionRoomStore
         return await SaveAsync(updatedRoom);
     }
 
+    public async Task<(SessionCollaborationRoom Room, bool IsPinned, IReadOnlyList<string> PinnedMessageIds)> RecordPinnedMessageAsync(
+        string hostAgentId,
+        string hostChatId,
+        string messageId,
+        bool? requestedPinState,
+        string? action,
+        string? role,
+        string? snippet,
+        string? userId,
+        CancellationToken ct = default)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
+        var roomSlug = $"room_{host}_{shortHash}";
+        var room = GetByChat(host, hostChatId)
+            ?? new SessionCollaborationRoom(
+                roomSlug,
+                $"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}",
+                $"{SessionRoomOrchestrator.ElementBaseUrl}{Uri.EscapeDataString($"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}")}",
+                host,
+                hostChatId,
+                hostChatId,
+                [],
+                "idle",
+                null,
+                10,
+                0,
+                [],
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow);
+
+        var ids = room.PinnedMessageIds is not null
+            ? new List<string>(room.PinnedMessageIds)
+            : new List<string>();
+
+        var records = room.PinnedMessages is not null
+            ? new List<PinnedMessageRecord>(room.PinnedMessages)
+            : new List<PinnedMessageRecord>();
+
+        bool currentlyPinned = ids.Contains(messageId, StringComparer.OrdinalIgnoreCase);
+        bool targetPin;
+        if (requestedPinState.HasValue)
+        {
+            targetPin = requestedPinState.Value;
+        }
+        else if (!string.IsNullOrWhiteSpace(action))
+        {
+            targetPin = !string.Equals(action, "remove", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(action, "unpin", StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            targetPin = !currentlyPinned;
+        }
+
+        if (targetPin)
+        {
+            if (!currentlyPinned)
+            {
+                ids.Add(messageId);
+            }
+            records.RemoveAll(r => string.Equals(r.MessageId, messageId, StringComparison.OrdinalIgnoreCase));
+            records.Add(new PinnedMessageRecord(
+                MessageId: messageId,
+                AgentId: host,
+                ChatId: hostChatId,
+                Role: role ?? "assistant",
+                Snippet: !string.IsNullOrWhiteSpace(snippet) && snippet.Length > 280 ? snippet[..280] : snippet,
+                PinnedBy: userId ?? "user",
+                PinnedAt: DateTimeOffset.UtcNow));
+        }
+        else
+        {
+            ids.RemoveAll(id => string.Equals(id, messageId, StringComparison.OrdinalIgnoreCase));
+            records.RemoveAll(r => string.Equals(r.MessageId, messageId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var updatedRoom = room with
+        {
+            PinnedMessageIds = ids,
+            PinnedMessages = records,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var saved = await SaveAsync(updatedRoom);
+        return (saved, targetPin, ids);
+    }
+
+    public IReadOnlyList<PinnedMessageRecord> GetPinnedMessagesForAgent(string agentId, string? chatId = null)
+    {
+        var norm = SubAgentService.NormalizeAgentId(agentId);
+        var result = new List<PinnedMessageRecord>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var r in _roomsByChatKey.Values.DistinctBy(x => x.RoomId))
+        {
+            if (!string.Equals(r.HostAgentId, norm, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!string.IsNullOrWhiteSpace(chatId) &&
+                !string.Equals(r.HostChatId, chatId, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(r.HostSessionId, chatId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (r.PinnedMessages is { Count: > 0 })
+            {
+                foreach (var pm in r.PinnedMessages)
+                {
+                    if (seen.Add($"{r.HostChatId}:{pm.MessageId}"))
+                    {
+                        result.Add(pm);
+                    }
+                }
+            }
+            else if (r.PinnedMessageIds is { Count: > 0 })
+            {
+                foreach (var mid in r.PinnedMessageIds)
+                {
+                    if (seen.Add($"{r.HostChatId}:{mid}"))
+                    {
+                        result.Add(new PinnedMessageRecord(mid, norm, r.HostChatId, "assistant", null, "user", r.UpdatedAt));
+                    }
+                }
+            }
+        }
+
+        return result.OrderByDescending(x => x.PinnedAt).ToList();
+    }
+
     public MessageReactionSummaryDto GetReactionSummary(string agentId)
     {
         var norm = SubAgentService.NormalizeAgentId(agentId);
@@ -1005,9 +1151,9 @@ public sealed class SessionRoomStore
                             }
                         }
                     }
+                    var mid = msgObj["id"]?.ToString();
                     if (room?.Reactions is { Count: > 0 })
                     {
-                        var mid = msgObj["id"]?.ToString();
                         if (!string.IsNullOrEmpty(mid) && room.Reactions.TryGetValue(mid, out var recs) && recs.Count > 0)
                         {
                             var reactArr = new System.Text.Json.Nodes.JsonArray();
@@ -1015,6 +1161,11 @@ public sealed class SessionRoomStore
                                 reactArr.Add(e);
                             msgObj["reactions"] = reactArr;
                         }
+                    }
+                    if (!string.IsNullOrEmpty(mid) && room?.PinnedMessageIds is { Count: > 0 } &&
+                        room.PinnedMessageIds.Contains(mid, StringComparer.OrdinalIgnoreCase))
+                    {
+                        msgObj["pinned"] = true;
                     }
                     soloFiltered.Add(msgObj);
                 }
@@ -1024,6 +1175,14 @@ public sealed class SessionRoomStore
                 if (room?.Reactions is { Count: > 0 })
                 {
                     node["reaction_records"] = JsonSerializer.SerializeToNode(room.Reactions);
+                }
+                if (room?.PinnedMessageIds is { Count: > 0 })
+                {
+                    node["pinned_message_ids"] = JsonSerializer.SerializeToNode(room.PinnedMessageIds);
+                }
+                if (room?.PinnedMessages is { Count: > 0 })
+                {
+                    node["pinned_messages"] = JsonSerializer.SerializeToNode(room.PinnedMessages);
                 }
                 return node.ToJsonString();
             }
@@ -1498,6 +1657,23 @@ public sealed class SessionRoomStore
                         workList.Insert(insertPos, CreateRoomTurnMessageNode(room, synthTurn with { RunId = waveRunId, Visibility = "main" }));
                     }
                 }
+            }
+
+            if (room.PinnedMessageIds is { Count: > 0 })
+            {
+                foreach (var m in workList)
+                {
+                    var mid = m["id"]?.ToString();
+                    if (!string.IsNullOrEmpty(mid) && room.PinnedMessageIds.Contains(mid, StringComparer.OrdinalIgnoreCase))
+                    {
+                        m["pinned"] = true;
+                    }
+                }
+                node["pinned_message_ids"] = JsonSerializer.SerializeToNode(room.PinnedMessageIds);
+            }
+            if (room.PinnedMessages is { Count: > 0 })
+            {
+                node["pinned_messages"] = JsonSerializer.SerializeToNode(room.PinnedMessages);
             }
 
             node["messages"] = new System.Text.Json.Nodes.JsonArray(

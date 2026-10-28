@@ -55,3 +55,11 @@ public sealed record ToggleAgentResponse(
     [property: JsonPropertyName("success")] bool Success,
     [property: JsonPropertyName("agent_id")] string AgentId,
     [property: JsonPropertyName("enabled")] bool Enabled);
+
+public sealed record PinAgentRequest(
+    [property: JsonPropertyName("pinned")] bool Pinned);
+
+public sealed record PinAgentResponse(
+    [property: JsonPropertyName("success")] bool Success,
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("pinned")] bool Pinned);
