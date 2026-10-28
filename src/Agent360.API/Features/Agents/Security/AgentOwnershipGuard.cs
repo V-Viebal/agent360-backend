@@ -187,6 +187,15 @@ public static class AgentOwnershipGuard
             return (true, null);
         }
 
+        // 1b. Allow signed file-download tokens (?sig=...&exp=...) for public artifact viewing
+        var secOptForSig = context.RequestServices.GetService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()?.CurrentValue;
+        if (secOptForSig is not null &&
+            context.Request.Path.Value?.EndsWith("/workspace/file-download", StringComparison.OrdinalIgnoreCase) == true &&
+            SensitiveReadGuardMiddleware.IsValidSignedFileToken(context, secOptForSig))
+        {
+            return (true, null);
+        }
+
         // 2. Member user: must have assigned ownership in user_management."AgentAssignments"
         var userId = currentUser.UserId;
         if (userId is null || userId <= 0)
