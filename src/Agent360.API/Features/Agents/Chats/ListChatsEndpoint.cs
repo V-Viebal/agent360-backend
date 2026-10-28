@@ -52,11 +52,10 @@ public sealed class ListChatsEndpoint : IEndpoint
                 HttpContext httpContext,
                 IQwenPawClient client,
                 SessionQueueManager queueManager,
-                SessionMultiplexerHub multiplexerHub,
                 CancellationToken cancellationToken) =>
             {
                 if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, cancellationToken) is { } denied) return denied;
-                multiplexerHub.TouchSubscribedAgent(agentId ?? "mons");
+                httpContext.RequestServices.GetService<SessionMultiplexerHub>()?.TouchSubscribedAgent(agentId ?? "mons");
                 IReadOnlyList<QwenPawChatDto>? chats;
                 try
                 {

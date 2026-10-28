@@ -948,10 +948,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         // 2. Dynamic Agent-Scoped Sub-routes
         // ==========================================
 
-        group.MapGet("{agentId}/chats", async (string agentId, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, SessionMultiplexerHub multiplexerHub, CancellationToken ct) =>
+        group.MapGet("{agentId}/chats", async (string agentId, HttpContext httpContext, IQwenPawClient client, SessionQueueManager queueManager, CancellationToken ct) =>
         {
             if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
-            multiplexerHub.TouchSubscribedAgent(agentId);
+            httpContext.RequestServices.GetService<SessionMultiplexerHub>()?.TouchSubscribedAgent(agentId);
             try
             {
                 var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
