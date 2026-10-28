@@ -643,13 +643,23 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .AllowAnonymous();
 
         static async Task<IResult> HandleConsoleUploadAsync(
-            IFormFile file,
             HttpContext httpContext,
             IWebHostEnvironment env,
             Agent360.API.Features.Agents.Security.SecureUploadStorageService storageService,
             IFleetInstanceRoutingService routing,
             CancellationToken ct)
         {
+            if (!httpContext.Request.HasFormContentType)
+            {
+                return Results.BadRequest(new { message = "Request must be multipart/form-data" });
+            }
+
+            var form = await httpContext.Request.ReadFormAsync(ct);
+            var file = form.Files.FirstOrDefault();
+            if (file is null || file.Length == 0)
+            {
+                return Results.BadRequest(new { message = "No valid file uploaded." });
+            }
             var (success, error, uploadResponse) = await storageService.StoreFileAsync(
                 file,
                 env.ContentRootPath,
@@ -750,7 +760,6 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
         group.MapPost("{agentId}/console/upload", (
             string agentId,
-            IFormFile file,
             HttpContext httpContext,
             IWebHostEnvironment env,
             Agent360.API.Features.Agents.Security.SecureUploadStorageService storageService,
@@ -758,7 +767,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             CancellationToken ct) =>
         {
             httpContext.Request.Headers["X-Agent-Id"] = agentId;
-            return HandleConsoleUploadAsync(file, httpContext, env, storageService, routing, ct);
+            return HandleConsoleUploadAsync(httpContext, env, storageService, routing, ct);
         })
         .WithName("SecureAgentConsoleUpload")
         .WithSummary("Upload file attachment scoped to a specific agent console workspace")
