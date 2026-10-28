@@ -936,6 +936,12 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     {
                         var id = node["id"]?.ToString() ?? "";
                         var sid = node["session_id"]?.ToString() ?? "";
+                        var rawChatName = node["name"]?.ToString();
+                        if (!string.IsNullOrEmpty(rawChatName))
+                        {
+                            var ctxMarkerIdx = rawChatName.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                            if (ctxMarkerIdx >= 0) node["name"] = rawChatName[..ctxMarkerIdx].TrimEnd();
+                        }
                         httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>()?.BindSessionAlias(agentId, id, sid);
                         var rawStatus = node["status"]?.ToString() ?? "idle";
                         var isRunning = string.Equals(rawStatus, "running", StringComparison.OrdinalIgnoreCase)
@@ -1276,13 +1282,30 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         bool hasActiveMultiAgentRoom = Agent360.API.Features.Agents.SubAgents.SessionRoomStore.IsMultiAgentRoom(existingSessionRoom);
 
         Task? soloRoomInitTask = null;
-        if (mentionedCollaborators.Count == 0 && roomOrchestrator is not null && hasActiveMultiAgentRoom)
+        if (mentionedCollaborators.Count == 0 && !string.IsNullOrWhiteSpace(rawUserText))
         {
-            var soloSmartContext = roomOrchestrator.BuildSoloSmartContextInjection(
-                agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision);
-            if (!string.IsNullOrWhiteSpace(soloSmartContext) && !string.IsNullOrWhiteSpace(rawUserText))
+            const string soloLeadInDirective =
+                "[Conversational Lead-In Rule: 1) Before calling any tool, you may include a single line `[LEAD_IN]: <1 short natural sentence addressed directly to the user in the exact language and pronouns of this conversation>` so the user immediately sees what you are checking. 2) In your final answer message, begin with 1 short, natural conversational lead-in sentence (using the exact language, persona, and pronouns of this conversation) stating what you checked or did for the user (and if you executed multiple distinct tool steps, you may include a 2nd short 1-sentence progress transition paragraph separated by \n\n), followed by a blank line (\n\n), and then your complete answer body.]";
+
+            var soloSmartContext = (roomOrchestrator is not null && hasActiveMultiAgentRoom)
+                ? roomOrchestrator.BuildSoloSmartContextInjection(
+                    agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision)
+                : null;
+
+            string? appendedSoloContext = null;
+            if (!string.IsNullOrWhiteSpace(soloSmartContext))
             {
-                var enrichedSoloInput = $"{rawUserText}\n\n{soloSmartContext}";
+                appendedSoloContext = $"{soloSmartContext}\n{soloLeadInDirective}";
+            }
+            else if (!rawUserText.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase) &&
+                     !rawUserText.Contains("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase))
+            {
+                appendedSoloContext = $"[SHARED SESSION ROOM CONTEXT]\n{soloLeadInDirective}";
+            }
+
+            if (!string.IsNullOrWhiteSpace(appendedSoloContext))
+            {
+                var enrichedSoloInput = $"{rawUserText}\n\n{appendedSoloContext}";
                 var mergedSoloContent = new List<ConsoleChatContentItem> { new("text", enrichedSoloInput) };
                 mergedSoloContent.AddRange(existingMediaContentItems);
                 effectiveRequest = effectiveRequest with
@@ -1298,15 +1321,18 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 };
             }
 
-            // Only record Manager intake turn when this session ALREADY has an active multi-agent Room
-            soloRoomInitTask = Task.Run(async () =>
+            if (roomOrchestrator is not null && hasActiveMultiAgentRoom)
             {
-                try
+                // Only record Manager intake turn when this session ALREADY has an active multi-agent Room
+                soloRoomInitTask = Task.Run(async () =>
                 {
-                    await roomOrchestrator.RecordManagerTriageTurnAsync(agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision, CancellationToken.None);
-                }
-                catch {}
-            });
+                    try
+                    {
+                        await roomOrchestrator.RecordManagerTriageTurnAsync(agentTarget, effectiveSessionId, qwenPawSessionId, rawUserText, triageDecision, CancellationToken.None);
+                    }
+                    catch {}
+                });
+            }
         }
         else if (mentionedCollaborators.Count > 0 && roomOrchestrator is not null)
         {

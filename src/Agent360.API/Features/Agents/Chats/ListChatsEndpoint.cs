@@ -89,12 +89,19 @@ public sealed class ListChatsEndpoint : IEndpoint
                     var isUnread = ChannelResponseStore.IsUnread(id)
                         || (!string.IsNullOrWhiteSpace(c.SessionId) && ChannelResponseStore.IsUnread(c.SessionId));
 
+                    var cleanName = c.Name;
+                    if (!string.IsNullOrEmpty(cleanName))
+                    {
+                        var ctxIdx = cleanName.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                        if (ctxIdx >= 0) cleanName = cleanName[..ctxIdx].TrimEnd();
+                    }
+
                     return new AgentSessionResponse(
                         Id: id,
-                        Title: string.IsNullOrWhiteSpace(c.Name) ? "Session" : c.Name,
+                        Title: string.IsNullOrWhiteSpace(cleanName) ? "Session" : cleanName,
                         UpdatedAt: c.UpdatedAt,
                         MessageCount: 1,
-                        LastMessageSnippet: c.Name,
+                        LastMessageSnippet: cleanName,
                         Unread: isUnread,
                         SessionId: c.SessionId,
                         Channel: c.Channel,
