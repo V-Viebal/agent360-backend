@@ -114,37 +114,15 @@ public sealed class BrowserViewerAccessEndpoint : IEndpoint
                 IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment env,
                 Microsoft.AspNetCore.Authorization.IAuthorizationService authorization, CancellationToken ct) =>
             {
-                // Operator key, signed-in admin (Logto admin role/scope, AdminSubjects), or an authenticated member
-                // assigned to this agent in AgentAssignments (so mobile/desktop users without an operator key in localStorage can view their agent browser).
-                var allowed = OperatorAuthFilter.IsAuthorized(http, security.CurrentValue, env)
+                // Operator key, signed-in admin (PostgreSQL RoleId=2 ADMIN, Logto admin role/scope, AdminSubjects),
+                // or an authenticated member assigned to this agent in AgentAssignments (so mobile/desktop users without an operator key in localStorage can view their agent browser).
+                var (ownershipAllowed, _) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
+                    agentId, http, currentUser, config, ct);
+                var allowed = ownershipAllowed
+                    || OperatorAuthFilter.IsAuthorized(http, security.CurrentValue, env)
                     || OperatorAuthFilter.IsSignedInAdmin(http, security.CurrentValue)
                     || (http.User.Identity?.IsAuthenticated == true
                         && (await authorization.AuthorizeAsync(http.User, http, "Admin")).Succeeded);
-
-                if (!allowed && http.User.Identity?.IsAuthenticated == true && currentUser.UserId is > 0)
-                {
-                    var bareSlug = agentId.Replace("bot:agent360:", "", StringComparison.OrdinalIgnoreCase).Trim();
-                    var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
-                    if (!string.IsNullOrWhiteSpace(connStr))
-                    {
-                        try
-                        {
-                            await using var conn = new NpgsqlConnection(connStr);
-                            await conn.OpenAsync(ct);
-                            await using var cmd = new NpgsqlCommand(
-                                @"SELECT 1 FROM user_management.""AgentAssignments"" WHERE ""UserId"" = $1 AND (LOWER(""AgentSlug"") = LOWER($2) OR LOWER(""AgentSlug"") = LOWER($3)) LIMIT 1",
-                                conn);
-                            cmd.Parameters.AddWithValue(currentUser.UserId.Value);
-                            cmd.Parameters.AddWithValue(bareSlug);
-                            cmd.Parameters.AddWithValue("bot:agent360:" + bareSlug);
-                            allowed = await cmd.ExecuteScalarAsync(ct) is not null;
-                        }
-                        catch
-                        {
-                            // Fail-safe
-                        }
-                    }
-                }
 
                 if (!allowed)
                 {

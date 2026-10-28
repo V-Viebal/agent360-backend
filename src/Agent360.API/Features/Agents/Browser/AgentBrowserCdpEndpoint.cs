@@ -78,7 +78,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 {
                     return TypedResults.Conflict(new { message = error });
                 }
-                var ok = await ActivateAsync(httpFactory, cdp!, page.TargetId, contextId, ct);
+                string? viewerUrl = null;
+                if (directory.TryResolve(agentId, out _, out _, out var resolvedViewer, out _, out _))
+                {
+                    viewerUrl = resolvedViewer;
+                }
+                var access = http.RequestServices.GetService<BrowserViewerAccess>();
+                var ok = await ActivateAsync(httpFactory, cdp!, page.TargetId, contextId, viewerUrl, access, ct);
                 return ok
                     ? TypedResults.Ok(new { agentId, targetId = page.TargetId, url = page.Url })
                     : TypedResults.Problem("Failed to focus the agent's browser window", statusCode: StatusCodes.Status502BadGateway);
@@ -347,11 +353,18 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         return page is null ? (null, null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, info.BrowserContextId, null);
     }
 
-    private static async Task<bool> ActivateAsync(IHttpClientFactory httpFactory, string cdpUrl, string targetId, string? targetContextId, CancellationToken ct)
+    private static async Task<bool> ActivateAsync(IHttpClientFactory httpFactory, string cdpUrl, string targetId, string? targetContextId, string? viewerUrl, BrowserViewerAccess? access, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(8));
         var http = httpFactory.CreateClient(AgentBrowserDirectory.HttpClientName);
+
+        // Ensure the Wayland output is normalized to 96 DPI (1440x900 logical) in case a macOS Retina client
+        // previously pushed scaling_dpi=192 and shrank the desktop to 720x450.
+        if (!string.IsNullOrEmpty(viewerUrl) && access is { CanSign: true })
+        {
+            await NormalizeSelkiesDpiAsync(viewerUrl, access);
+        }
 
         // Under Wayland / labwc compositor, pure /json/activate only switches the active tab internally
         // but labwc denies unseeded window activation ("Denying focus request, seat wasn't supplied").
@@ -440,7 +453,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         foreach (var wid in targetWids)
                         {
                             var normId = ++reqId;
-                            await SendAsync(ws, new { id = normId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { left = 0, top = 0, width = 1920, height = 1080, windowState = "normal" } } }, cts.Token);
+                            await SendAsync(ws, new { id = normId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, cts.Token);
                             await ReceiveByIdAsync(ws, normId, cts.Token);
 
                             var maxId = ++reqId;
@@ -464,6 +477,32 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
         using var res = await http.GetAsync($"{cdpUrl.TrimEnd('/')}/json/activate/{Uri.EscapeDataString(targetId)}", cts.Token);
         return res.IsSuccessStatusCode;
+    }
+
+    private static async Task NormalizeSelkiesDpiAsync(string viewerUrl, BrowserViewerAccess access)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            var uri = new Uri(viewerUrl);
+            var token = access.Sign("session", uri.Host, "control", DateTimeOffset.UtcNow.AddMinutes(5));
+            var scheme = uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws";
+            var wsUri = new Uri($"{scheme}://{uri.Authority}{BrowserViewerAccess.PathPrefix}{token}/websockets");
+            using var ws = new ClientWebSocket();
+            await ws.ConnectAsync(wsUri, cts.Token);
+            // Force encoder="x264enc" + scaling_dpi="96" so iOS Safari (which lacks WebCodecs ImageDecoder for JPEG stripes)
+            // and macOS Retina (which otherwise pushes 192 DPI) both receive a clean 1440x900 H.264 stream with an immediate keyframe.
+            const string msg = "SETTINGS,{\"framerate\":30,\"encoder\":\"x264enc\",\"is_manual_resolution_mode\":true,\"manual_width\":1440,\"manual_height\":900,\"scaling_dpi\":\"96\",\"useCssScaling\":true,\"displayId\":\"primary\"}";
+            await ws.SendAsync(Encoding.UTF8.GetBytes(msg), WebSocketMessageType.Text, true, cts.Token);
+            await ws.SendAsync(Encoding.UTF8.GetBytes("STOP_VIDEO"), WebSocketMessageType.Text, true, cts.Token);
+            await Task.Delay(80, cts.Token);
+            await ws.SendAsync(Encoding.UTF8.GetBytes("START_VIDEO"), WebSocketMessageType.Text, true, cts.Token);
+            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        }
+        catch
+        {
+            // Best-effort DPI & H.264 encoder normalization
+        }
     }
 
     private static Uri PageSocket(string cdpUrl, string targetId)
