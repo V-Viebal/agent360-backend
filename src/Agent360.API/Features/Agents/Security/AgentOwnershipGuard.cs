@@ -22,6 +22,31 @@ public static class AgentOwnershipGuard
         return raw;
     }
 
+    public static IReadOnlyList<string> ExpandEquivalentAgentSlugs(string? agentSlug)
+    {
+        var bare = NormalizeAgentSlug(agentSlug);
+        if (string.IsNullOrWhiteSpace(bare)) return [];
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { bare };
+        switch (bare)
+        {
+            case "qwenpaw-test-ba":
+            case "default-test":
+            case "qwenpaw-test":
+            case "qwenpaw-base-test":
+                set.Add("qwenpaw-test-ba");
+                set.Add("default-test");
+                set.Add("qwenpaw-test");
+                set.Add("qwenpaw-base-test");
+                break;
+            case "qwenpaw-test-qa":
+            case "qwenpaw-base-test-qwenpaw_qa_agent_0.2":
+                set.Add("qwenpaw-test-qa");
+                set.Add("qwenpaw-base-test-qwenpaw_qa_agent_0.2");
+                break;
+        }
+        return set.ToList();
+    }
+
     /// <summary>
     /// Verifies whether the current HTTP caller has full platform Admin clearance.
     /// IMPORTANT: If the caller is an authenticated user resolved in local PostgreSQL (currentUser.UserId &gt; 0),
@@ -159,12 +184,10 @@ public static class AgentOwnershipGuard
             while (await reader.ReadAsync(ct))
             {
                 var slug = reader.GetString(0);
-                assignedSlugs.Add(slug);
-                var bare = NormalizeAgentSlug(slug);
-                if (!string.IsNullOrWhiteSpace(bare))
+                foreach (var expanded in ExpandEquivalentAgentSlugs(slug))
                 {
-                    assignedSlugs.Add(bare);
-                    assignedSlugs.Add($"bot:agent360:{bare}");
+                    assignedSlugs.Add(expanded);
+                    assignedSlugs.Add($"bot:agent360:{expanded}");
                 }
             }
         }
@@ -237,14 +260,18 @@ public static class AgentOwnershipGuard
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
             await Agent360.API.Features.Agents.Assignments.AgentAssignmentEndpoints.EnsureTableExistsAsync(conn, ct);
+            var candidateSlugs = ExpandEquivalentAgentSlugs(cleanSlug)
+                .SelectMany(s => new[] { s.ToLowerInvariant(), $"bot:agent360:{s.ToLowerInvariant()}" })
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
             await using var cmd = new NpgsqlCommand(
                 @"SELECT 1 FROM user_management.""AgentAssignments""
-                  WHERE (""UserId"" = $1 OR ""UserId"" = -1) AND (LOWER(""AgentSlug"") = $2 OR LOWER(""AgentSlug"") = $3)
+                  WHERE (""UserId"" = $1 OR ""UserId"" = -1) AND LOWER(""AgentSlug"") = ANY($2)
                   LIMIT 1;", conn);
 
             cmd.Parameters.AddWithValue(userId is > 0 ? userId.Value : -1L);
-            cmd.Parameters.AddWithValue(cleanSlug);
-            cmd.Parameters.AddWithValue($"bot:agent360:{cleanSlug}");
+            cmd.Parameters.AddWithValue(candidateSlugs);
 
             var result = await cmd.ExecuteScalarAsync(ct);
             if (result != null)

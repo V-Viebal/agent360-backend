@@ -22,14 +22,7 @@ public sealed record LedgerTransactionDto(
 
 public sealed class BillingEndpoints : IEndpoint
 {
-    public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
-    {
-        var group = routeBuilder.MapGroup("billing")
-            .MapToApiVersion(ApiVersion.Default)
-            .WithTags("Billing");
-
-        // Ensure database tables exist helper
-        async Task EnsureTablesAsync(NpgsqlConnection conn, CancellationToken ct)
+    public static async Task EnsureTablesAsync(NpgsqlConnection conn, CancellationToken ct)
         {
             var ddlStatements = new[]
             {
@@ -89,6 +82,12 @@ public sealed class BillingEndpoints : IEndpoint
                 await cmd.ExecuteNonQueryAsync(ct);
             }
         }
+
+    public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
+    {
+        var group = routeBuilder.MapGroup("billing")
+            .MapToApiVersion(ApiVersion.Default)
+            .WithTags("Billing");
 
         // 1. Get Wallet status & Topup Packages (App360 pattern)
         group.MapGet("wallet", async (CurrentUser currentUser, IConfiguration config, CancellationToken ct) =>
@@ -515,6 +514,7 @@ public static class AdminBillingExtensions
 
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
+            await BillingEndpoints.EnsureTablesAsync(conn, ct);
 
             var list = new List<object>();
             await using (var cmd = new NpgsqlCommand(@"
@@ -584,6 +584,7 @@ public static class AdminBillingExtensions
 
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
+            await BillingEndpoints.EnsureTablesAsync(conn, ct);
 
             var list = new List<object>();
             await using (var cmd = new NpgsqlCommand(@"
@@ -642,6 +643,7 @@ public static class AdminBillingExtensions
 
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
+            await BillingEndpoints.EnsureTablesAsync(conn, ct);
 
             // Fetch payment transaction
             string? tenantId = null;
