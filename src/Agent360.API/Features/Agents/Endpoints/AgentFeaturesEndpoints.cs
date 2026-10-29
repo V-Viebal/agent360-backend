@@ -221,6 +221,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 {
                     return Results.Content(EnrichChatHistoryWithRoom("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId, roomStore), "application/json");
                 }
+                if (chatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.Content("{\"messages\":[],\"status\":\"idle\"}", "application/json");
+                }
                 return Results.NotFound(new { message = $"Chat {chatId} not found on infra" });
             }
         })
@@ -1247,6 +1251,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 if (room is not null)
                 {
                     return Results.Content(EnrichChatHistoryWithRoom("{\"messages\":[],\"status\":\"idle\"}", agentId, chatId, roomStore), "application/json");
+                }
+                if (chatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.Content("{\"messages\":[],\"status\":\"idle\"}", "application/json");
                 }
                 return Results.NotFound(new { message = $"Chat {chatId} for agent {agentId} not found on infra" });
             }

@@ -25,7 +25,8 @@ public sealed record QwenPawChatDto(
 public sealed record UpdateChatTitleRequest(
     [property: JsonPropertyName("title")] string? Title = null,
     [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("pinned")] bool? Pinned = null);
+    [property: JsonPropertyName("pinned")] bool? Pinned = null,
+    [property: JsonPropertyName("archived")] bool? Archived = null);
 
 public sealed record AgentSessionResponse(
     string Id,
@@ -206,9 +207,10 @@ public sealed class ListChatsEndpoint : IEndpoint
             var rawTitle = body?.Title ?? body?.Name;
             var hasTitle = !string.IsNullOrWhiteSpace(rawTitle);
             var hasPinned = body?.Pinned.HasValue == true;
-            if (!hasTitle && !hasPinned)
+            var hasArchived = body?.Archived.HasValue == true;
+            if (!hasTitle && !hasPinned && !hasArchived)
             {
-                return Results.Problem(detail: "Either title or pinned is required", statusCode: 400, title: "Invalid request");
+                return Results.Problem(detail: "Either title, pinned, or archived is required", statusCode: 400, title: "Invalid request");
             }
             var cleanTitle = hasTitle ? rawTitle!.Trim() : null;
 
@@ -252,6 +254,7 @@ public sealed class ListChatsEndpoint : IEndpoint
             var qpPayload = new Dictionary<string, object?>();
             if (hasTitle) qpPayload["name"] = cleanTitle;
             if (hasPinned) qpPayload["pinned"] = body!.Pinned!.Value;
+            if (hasArchived) qpPayload["archived"] = body!.Archived!.Value;
 
             HttpResponseMessage? qpResp = null;
             try
@@ -382,6 +385,93 @@ public sealed class ListChatsEndpoint : IEndpoint
             .WithName("UpdateChatTitle")
             .WithTags(EndpointTags.Agents)
             .WithSummary("Update chat title or pinned state by chatId and optional agentId")
+            .AllowAnonymous();
+
+        // Delete chat session on QwenPaw runtime
+        static async Task<IResult> ExecuteChatDeleteAsync(
+            string agentId,
+            string chatId,
+            HttpContext httpContext,
+            IFleetInstanceRoutingService routing,
+            IQwenPawClient client,
+            CancellationToken ct)
+        {
+            if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            var target = routing.ResolveTarget(agentId);
+            if (target.Instance is null)
+            {
+                return Results.NotFound(new { message = $"Agent instance {agentId} not found" });
+            }
+
+            string targetChatId = chatId;
+            try
+            {
+                using var listResp = await routing.SendAsync(
+                    target.Instance,
+                    HttpMethod.Get,
+                    $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats",
+                    agentProfileHeader: target.TargetAgentProfile,
+                    ct: ct);
+
+                if (listResp.IsSuccessStatusCode)
+                {
+                    var chats = await listResp.Content.ReadFromJsonAsync<IReadOnlyList<QwenPawChatDto>>(ct);
+                    var matched = chats?.FirstOrDefault(c =>
+                        string.Equals(c.Id, chatId, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(c.SessionId, chatId, StringComparison.OrdinalIgnoreCase));
+
+                    if (matched is not null && !string.IsNullOrWhiteSpace(matched.Id))
+                    {
+                        targetChatId = matched.Id;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                using var delResp = await routing.SendAsync(
+                    target.Instance,
+                    HttpMethod.Delete,
+                    $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/chats/{Uri.EscapeDataString(targetChatId)}",
+                    agentProfileHeader: target.TargetAgentProfile,
+                    timeout: TimeSpan.FromSeconds(10),
+                    ct: ct);
+            }
+            catch { }
+
+            client.InvalidateChatList(agentId);
+            return TypedResults.Ok(new { success = true, agent_id = agentId, chat_id = chatId, deleted_chat_id = targetChatId });
+        }
+
+        routeBuilder.MapDelete(
+            "agents/{agentId}/chats/{chatId}",
+            (
+                string agentId,
+                string chatId,
+                HttpContext httpContext,
+                IFleetInstanceRoutingService routing,
+                IQwenPawClient client,
+                CancellationToken ct) => ExecuteChatDeleteAsync(agentId, chatId, httpContext, routing, client, ct))
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("DeleteAgentChat")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Delete a chat session from QwenPaw runtime")
+            .AllowAnonymous();
+
+        routeBuilder.MapDelete(
+            "chats/{chatId}",
+            (
+                string chatId,
+                [FromQuery] string? agentId,
+                HttpContext httpContext,
+                IFleetInstanceRoutingService routing,
+                IQwenPawClient client,
+                CancellationToken ct) => ExecuteChatDeleteAsync(string.IsNullOrWhiteSpace(agentId) ? "mons" : agentId, chatId, httpContext, routing, client, ct))
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("DeleteChat")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Delete a chat session by chatId and optional agentId")
             .AllowAnonymous();
     }
 }
