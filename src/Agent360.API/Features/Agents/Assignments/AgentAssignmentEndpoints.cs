@@ -8,7 +8,15 @@ namespace Agent360.API.Features.Agents.Assignments;
 
 public sealed record AssignAgentRequest(long UserId, string AgentSlug, string Role = "Owner");
 public sealed record SetAnyoneAccessRequest(string AgentSlug, bool Enabled, string Role = "Operator");
-public sealed record AgentAssignmentDto(long Id, long UserId, string AgentSlug, string Role, DateTimeOffset AssignedAt);
+public sealed record AgentAssignmentDto(
+    long Id,
+    long UserId,
+    string AgentSlug,
+    string Role,
+    DateTimeOffset AssignedAt,
+    string? UserEmail = null,
+    string? UserDisplayName = null,
+    string? LogtoUserId = null);
 
 public sealed class AgentAssignmentEndpoints : IEndpoint
 {
@@ -27,6 +35,7 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
                 ""AssignedBy"" varchar(128) NULL,
                 UNIQUE (""UserId"", ""AgentSlug"")
             );
+            ALTER TABLE user_management.""AgentAssignments"" DROP CONSTRAINT IF EXISTS ""AgentAssignments_UserId_fkey"";
             CREATE INDEX IF NOT EXISTS ""IX_AgentAssignments_UserId"" ON user_management.""AgentAssignments"" (""UserId"");
             CREATE INDEX IF NOT EXISTS ""IX_AgentAssignments_AgentSlug"" ON user_management.""AgentAssignments"" (LOWER(""AgentSlug""));
         ", conn);
@@ -40,7 +49,7 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
             .WithTags("Admin.Agents")
             .RequireAuthorization("Admin");
 
-        // List assignments
+        // List assignments with joined user profile details
         group.MapGet("assignments", async (IConfiguration config, CancellationToken ct) =>
         {
             var list = new List<AgentAssignmentDto>();
@@ -50,9 +59,20 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
             await EnsureTableExistsAsync(conn, ct);
-            await using var cmd = new NpgsqlCommand(
-                "SELECT \"Id\", \"UserId\", \"AgentSlug\", \"Role\", \"AssignedAt\" FROM user_management.\"AgentAssignments\" ORDER BY \"AssignedAt\" DESC",
-                conn);
+            await using var cmd = new NpgsqlCommand(@"
+                SELECT
+                    a.""Id"",
+                    a.""UserId"",
+                    a.""AgentSlug"",
+                    a.""Role"",
+                    a.""AssignedAt"",
+                    u.""Email"",
+                    u.""DisplayName"",
+                    u.""LogtoUserId""
+                FROM user_management.""AgentAssignments"" a
+                LEFT JOIN user_management.""Users"" u ON a.""UserId"" = u.""Id""
+                ORDER BY a.""AssignedAt"" DESC;
+            ", conn);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -61,7 +81,10 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
                     reader.GetInt64(1),
                     reader.GetString(2),
                     reader.GetString(3),
-                    reader.GetFieldValue<DateTimeOffset>(4)));
+                    reader.GetFieldValue<DateTimeOffset>(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
+                    reader.IsDBNull(7) ? null : reader.GetString(7)));
             }
 
             return Results.Ok(list);
@@ -206,44 +229,5 @@ public sealed class AgentAssignmentEndpoints : IEndpoint
         })
         .WithName("RemoveAgentAssignment")
         .WithSummary("Remove an agent assignment (Admin only)");
-
-        // Clear all assignments (or all assignments for a specific agent) so default state has no assignments
-        group.MapDelete("assignments", async ([Microsoft.AspNetCore.Mvc.FromQuery] string? agentSlug, CurrentUser currentUser, IConfiguration config, CancellationToken ct) =>
-        {
-            var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
-            if (string.IsNullOrWhiteSpace(connStr)) return Results.Problem("Database connection not configured");
-
-            await using var conn = new NpgsqlConnection(connStr);
-            await conn.OpenAsync(ct);
-            await EnsureTableExistsAsync(conn, ct);
-
-            int rows;
-            if (!string.IsNullOrWhiteSpace(agentSlug))
-            {
-                var cleanSlug = Agent360.API.Features.Agents.Security.AgentOwnershipGuard.NormalizeAgentSlug(agentSlug);
-                if (string.IsNullOrWhiteSpace(cleanSlug)) cleanSlug = agentSlug.Trim();
-                var fullSlug = $"bot:agent360:{cleanSlug}";
-                await using var cmd = new NpgsqlCommand(@"
-                    DELETE FROM user_management.""AgentAssignments""
-                    WHERE LOWER(""AgentSlug"") = $1 OR LOWER(""AgentSlug"") = $2;
-                ", conn);
-                cmd.Parameters.AddWithValue(cleanSlug.ToLowerInvariant());
-                cmd.Parameters.AddWithValue(fullSlug.ToLowerInvariant());
-                rows = await cmd.ExecuteNonQueryAsync(ct);
-            }
-            else
-            {
-                await using var cmd = new NpgsqlCommand(@"DELETE FROM user_management.""AgentAssignments"";", conn);
-                rows = await cmd.ExecuteNonQueryAsync(ct);
-            }
-
-            await Agent360.API.Features.Agents.Security.AuditLogger.LogAsync(
-                config, currentUser.UserId, currentUser.ExternalUserId, "CLEAR_AGENT_ASSIGNMENTS", agentSlug ?? "*",
-                new { cleared_count = rows }, ct: ct);
-
-            return Results.Ok(new { success = true, clearedCount = rows });
-        })
-        .WithName("ClearAgentAssignments")
-        .WithSummary("Clear all agent assignments globally or for a specific agent (Admin only)");
     }
 }

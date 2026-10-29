@@ -171,9 +171,9 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
                 // Insert new user
                 await using var insCmd = new NpgsqlCommand(@"
                     INSERT INTO user_management.""Users"" (
-                        ""LogtoUserId"", ""Email"", ""FirstName"", ""LastName"", ""DisplayName"", ""Status"", ""IsDeleted"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy""
+                        ""LogtoUserId"", ""Email"", ""FirstName"", ""LastName"", ""DisplayName"", ""Status"", ""PermissionStamp"", ""IsDeleted"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy"", ""DeletedBy""
                     ) VALUES (
-                        $1, $2, $3, $4, $5, 1, false, NOW(), 1, NOW(), 1
+                        $1, $2, $3, $4, $5, 1, NOW(), false, NOW(), 1, NOW(), 1, 0
                     ) RETURNING ""Id"";
                 ", conn);
                 insCmd.Parameters.AddWithValue(req.LogtoUserId);
@@ -319,9 +319,9 @@ public sealed class AdminUserManagementEndpoints : IEndpoint
                 {
                     await using var insCmd = new NpgsqlCommand(@"
                         INSERT INTO user_management.""Users"" (
-                            ""LogtoUserId"", ""Email"", ""FirstName"", ""LastName"", ""DisplayName"", ""Status"", ""IsDeleted"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy""
+                            ""LogtoUserId"", ""Email"", ""FirstName"", ""LastName"", ""DisplayName"", ""Status"", ""PermissionStamp"", ""IsDeleted"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy"", ""DeletedBy""
                         ) VALUES (
-                            $1, $2, $3, $4, $5, 1, false, NOW(), 1, NOW(), 1
+                            $1, $2, $3, $4, $5, 1, NOW(), false, NOW(), 1, NOW(), 1, 0
                         ) RETURNING ""Id"";
                     ", conn);
                     insCmd.Parameters.AddWithValue(sub);
