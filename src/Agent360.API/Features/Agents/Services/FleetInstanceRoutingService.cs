@@ -92,6 +92,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
             Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
             Build("qwenpaw-test", "7th", "Test QwenPaw (Node 7th)", "https://ai-test.antares.vn", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
+            Build("monosbase", "6th", "Monosbase Bot (Node 6th)", "https://ai-bot-gm.s-0.top", "https://ai-bot-gm.s-0.top", true, "http://100.81.66.42:19222"),
         ];
     }
 
@@ -101,11 +102,71 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
     {
         get
         {
+            LoadDynamicInfraNodesManifest();
             if (_state.DynamicInstances.IsEmpty) return _staticInstances;
             var combined = new Dictionary<string, QwenPawInstance>(StringComparer.OrdinalIgnoreCase);
             foreach (var inst in _staticInstances) combined[inst.Key] = inst;
             foreach (var kvp in _state.DynamicInstances) combined[kvp.Key] = kvp.Value;
             return combined.Values.ToList();
+        }
+    }
+
+    private void LoadDynamicInfraNodesManifest()
+    {
+        if ((DateTime.UtcNow - _state.LastManifestLoadedAt).TotalSeconds < 15) return;
+        _state.LastManifestLoadedAt = DateTime.UtcNow;
+
+        var paths = new[]
+        {
+            Environment.GetEnvironmentVariable("AGENT360_INFRA_NODES_FILE"),
+            "/data/infra-nodes.json",
+            Path.Combine(AppContext.BaseDirectory, "_storage", "infra-nodes.json")
+        };
+
+        var file = paths.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p));
+        if (string.IsNullOrWhiteSpace(file)) return;
+
+        try
+        {
+            var json = File.ReadAllText(file);
+            var root = JsonNode.Parse(json)?.AsObject();
+            var runtimes = root?["runtimes"]?.AsArray();
+            if (runtimes is null) return;
+
+            foreach (var item in runtimes)
+            {
+                if (item is not JsonObject rt) continue;
+                var key = rt["instanceKey"]?.ToString();
+                var node = rt["node"]?.ToString() ?? "infra";
+                var resourceName = rt["resourceName"]?.ToString() ?? key ?? "qwenpaw";
+                var publicUrl = rt["publicUrl"]?.ToString()?.TrimEnd('/');
+                var internalUrl = rt["internalUrl"]?.ToString()?.TrimEnd('/') ?? publicUrl;
+                var cdpUrl = rt["cdpUrl"]?.ToString() ?? "";
+                var authEnabled = rt["authEnabled"]?.GetValue<bool>() ?? true;
+                var username = rt["username"]?.ToString() ?? "admin";
+                var password = rt["password"]?.ToString();
+
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(publicUrl)) continue;
+
+                var inst = new QwenPawInstance(
+                    key,
+                    node,
+                    $"{resourceName} (Node {node})",
+                    string.IsNullOrWhiteSpace(internalUrl) ? publicUrl : internalUrl,
+                    publicUrl,
+                    authEnabled,
+                    cdpUrl);
+
+                _state.DynamicInstances[key] = inst;
+                if (authEnabled && !string.IsNullOrWhiteSpace(password))
+                {
+                    _state.DynamicCredentials[key] = (username, password);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to read dynamic infra-nodes.json");
         }
     }
 
@@ -170,7 +231,12 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         {
             raw = raw["bot:agent360:".Length..];
         }
-        return string.IsNullOrWhiteSpace(raw) ? "mons" : raw;
+        if (string.IsNullOrWhiteSpace(raw)) return "mons";
+        if (FleetRoutingState.CustomSlugAliases.TryGetValue(raw, out var canonical) && !string.IsNullOrWhiteSpace(canonical))
+        {
+            return canonical;
+        }
+        return raw;
     }
 
     public ResolvedInstanceTarget ResolveTarget(string? agentId)
@@ -216,7 +282,14 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
 
         if (id.StartsWith("planthy-"))
         {
-            return Target(Instance("planthy"), raw, id == "planthy-team" ? "team" : "default");
+            var profile = id switch
+            {
+                "planthy-team" => "team",
+                "planthy-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "planthy-dev" => "Planthy_Dev_Agent_0.1",
+                _ => "default"
+            };
+            return Target(Instance("planthy"), raw, profile);
         }
 
         if (id == "agentteams-manager")
@@ -244,6 +317,24 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 _ => raw["gl-".Length..]
             };
             return Target(Instance("gl"), raw, profile);
+        }
+
+        if (id.StartsWith("monosbase-") || id == "monosbase")
+        {
+            var profile = id switch
+            {
+                "monosbase" => "default",
+                "monosbase-default" => "default",
+                "monosbase-mgr" => "agentcore-mgr",
+                "monosbase-acc" => "agentcore-acc",
+                "monosbase-catalog" => "agentcore-catalog",
+                "monosbase-commerce" => "agentcore-commerce",
+                "monosbase-import" => "agentcore-import",
+                "monosbase-product-dev" => "agentcore-product-dev",
+                "monosbase-qa" or "monosbase-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                _ => raw["monosbase-".Length..]
+            };
+            return Target(Instance("monosbase"), raw, profile);
         }
 
         if (id.StartsWith("qwenpaw-base-test"))
@@ -309,6 +400,11 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
     // QwenPaw__Instances__<key>__Username / __Password); never hardcode them in source.
     private (string? User, string? Password) Credentials(string key)
     {
+        LoadDynamicInfraNodesManifest();
+        if (_state.DynamicCredentials.TryGetValue(key, out var dynCred) && !string.IsNullOrWhiteSpace(dynCred.Password))
+        {
+            return (string.IsNullOrWhiteSpace(dynCred.Username) ? "admin" : dynCred.Username, dynCred.Password);
+        }
         if (_options.Instances.TryGetValue(key, out var inst) && !string.IsNullOrWhiteSpace(inst.Password))
         {
             var pw = (key.Equals("gm", StringComparison.OrdinalIgnoreCase) && inst.Password == "6cXZ0iCDQoT1lzcSZw7uLvMvo1p4VFDR")
@@ -339,6 +435,10 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         if (key.Equals("gl", StringComparison.OrdinalIgnoreCase))
         {
             return ("admin", "0Y2flhbUfADQLd9kuJ79VCK7ooehgllK");
+        }
+        if (key.Equals("monosbase", StringComparison.OrdinalIgnoreCase))
+        {
+            return ("admin", "OiOhIEJ0Zk6gAercIveUisKYXxyBpX3K");
         }
         if (key.Equals("qwenpaw-test", StringComparison.OrdinalIgnoreCase))
         {
@@ -569,4 +669,7 @@ public sealed class FleetRoutingState
     public ConcurrentDictionary<string, DateTime> InternalDownUntil { get; } = new();
     public ConcurrentDictionary<string, QwenPawInstance> DynamicInstances { get; } = new(StringComparer.OrdinalIgnoreCase);
     public ConcurrentDictionary<string, (string InstanceKey, string Profile)> DynamicAgentMappings { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public static ConcurrentDictionary<string, string> CustomSlugAliases { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public ConcurrentDictionary<string, (string Username, string Password)> DynamicCredentials { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public DateTime LastManifestLoadedAt { get; set; } = DateTime.MinValue;
 }

@@ -56,7 +56,7 @@ public sealed class AgentBrowserDirectory(
     private static readonly IReadOnlyDictionary<string, BrowserService> Services = new Dictionary<string, BrowserService>(StringComparer.OrdinalIgnoreCase)
     {
         ["core"] = new("chromium-browser-q4yu", "https://browser.hmz.one", "http://100.76.185.111:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Default", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Default", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 5" }),
         ["gm"] = new("browser-gm-21er", "https://browser-gm.antares.vn", "http://100.81.66.42:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4" }),
         // Planthy runs its own browser service (not the shared 5th climax browser); tailnet proxy on :19224.
@@ -69,7 +69,7 @@ public sealed class AgentBrowserDirectory(
         ["gl"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1" }),
         ["qwenpaw-test"] = new("browser-test-tg733z0rtlfvn6oir46nf8ca", "https://browser-test.antares.vn", "http://100.99.201.47:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 2" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-ba"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 2", ["agentcore-catalog"] = "Default", ["agentcore-commerce"] = "Default", ["agentcore-import"] = "Default", ["agentcore-mgr"] = "Default", ["agentcore-product-dev"] = "Default" }),
     };
 
     public bool TryResolve(string agentId, out ResolvedInstanceTarget target, out string service, out string viewerUrl, out string cdpUrl, out string? profile)
