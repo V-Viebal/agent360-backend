@@ -96,6 +96,7 @@ public static class EndpointConfiguration
             webAppBuilder.Services.AddSingleton<SubAgentStore>();
             webAppBuilder.Services.AddSingleton<SessionRoomStore>();
             webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Endpoints.AgentLoopModeStore>();
+            webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Endpoints.AgentProfileStore>();
             webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Webhooks.AgentWebhookStore>();
             webAppBuilder.Services.AddScoped<SubAgentService>();
             webAppBuilder.Services.AddSingleton<Agent360.API.Features.Agents.Security.Iam360CellsPersistence>();
