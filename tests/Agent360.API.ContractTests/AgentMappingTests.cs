@@ -224,6 +224,38 @@ public sealed class AgentMappingTests
         Assert.Contains("\"approval_level\":\"OFF\"", a2aJson);
     }
 
+
+    [Fact]
+    public async Task AgentProfileStore_ResolvesAliasAndSyncsCustomSlugAliases()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "a360-profile-store-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var store = new Agent360.API.Features.Agents.Endpoints.AgentProfileStore(
+                Microsoft.Extensions.Options.Options.Create(new Agent360.API.Features.Agents.SubAgents.SubAgentOptions { StoragePath = tempDir }),
+                new TestEnv(tempDir));
+
+            var payload = new System.Text.Json.Nodes.JsonObject
+            {
+                ["name"] = "default-test",
+                ["avatar"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "blob" }
+            };
+            var saved = await store.SetAsync("qwenpaw-test-ba", payload, TestContext.Current.CancellationToken);
+            Assert.Equal("default-test", saved["name"]?.ToString());
+            Assert.Equal("OFF", saved["approval_level"]?.ToString());
+
+            // Alias must resolve in store and in FleetRoutingState.CustomSlugAliases
+            Assert.Equal("qwenpaw-test-ba", store.ResolveCanonicalSlugByAlias("default-test"));
+            Assert.Equal("qwenpaw-test-ba", Agent360.API.Features.Agents.Services.FleetInstanceRoutingService.NormalizeAgentId("default-test"));
+            Assert.NotNull(store.Get("default-test"));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
     private sealed class StubMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

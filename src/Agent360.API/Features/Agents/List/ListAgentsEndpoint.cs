@@ -32,6 +32,7 @@ public sealed class ListAgentsEndpoint : IEndpoint
                 var isEffectiveAdmin = await AgentOwnershipGuard.IsEffectiveAdminAsync(context, currentUser, config, cancellationToken);
                 var hasTokenHeader = context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true;
 
+                await profileStore.EnsureSyncedWithDatabaseAsync(cancellationToken);
                 var rawAgents = await client.GetAgentsAsync(cancellationToken);
                 var allAgents = rawAgents.Select(a =>
                 {
