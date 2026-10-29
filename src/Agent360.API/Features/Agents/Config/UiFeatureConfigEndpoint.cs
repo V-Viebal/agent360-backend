@@ -28,7 +28,7 @@ public sealed class UiFeatureConfigEndpoint : IEndpoint
                     DesktopWidgetBrowserCdpEnabled: true,
                     ComposioHubEnabled: true,
                     MediaUploadsEnabled: true,
-                    AdvancedApprovalsEnabled: true);
+                    AdvancedApprovalsEnabled: false);
 
                 return TypedResults.Ok(features);
             })
