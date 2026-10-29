@@ -108,22 +108,33 @@ public sealed class AgentProfileStore
     public async Task<JsonObject> SetAsync(string agentId, JsonObject data)
     {
         var key = Key(agentId);
-        var value = (JsonObject)data.DeepClone();
-        value["updated_at"] = DateTimeOffset.UtcNow.ToString("O");
-
         await _lock.WaitAsync();
         try
         {
-            _profiles[key] = value;
+            var merged = _profiles.TryGetValue(key, out var existing)
+                ? (JsonObject)existing.DeepClone()
+                : new JsonObject();
+
+            if (data.ContainsKey("avatar"))
+            {
+                merged["avatar"] = data["avatar"]?.DeepClone();
+            }
+            if (data.ContainsKey("name"))
+            {
+                merged["name"] = data["name"]?.DeepClone();
+            }
+            merged["updated_at"] = DateTimeOffset.UtcNow.ToString("O");
+
+            _profiles[key] = merged;
             var tmp = _path + ".tmp";
             await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(_profiles.ToDictionary(k => k.Key, k => k.Value)));
             File.Move(tmp, _path, true);
+            return (JsonObject)merged.DeepClone();
         }
         finally
         {
             _lock.Release();
         }
-        return (JsonObject)value.DeepClone();
     }
 
     public async Task ResetAsync(string agentId)

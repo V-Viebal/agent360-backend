@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Agent360.API.Features.Agents.Models;
@@ -41,7 +42,8 @@ public sealed record AgentSummaryResponse(
     bool AvailableInChat,
     IReadOnlyList<AgentToolSummary> Tools,
     bool CanToggle = true,
-    bool IsRootAgent = false);
+    bool IsRootAgent = false,
+    [property: JsonPropertyName("avatar_config")] JsonNode? AvatarConfig = null);
 
 public sealed record AgentToolSummary(
     string Name,

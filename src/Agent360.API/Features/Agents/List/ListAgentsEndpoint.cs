@@ -1,6 +1,7 @@
 using Asp.Versioning;
 using Agent360.API.Abstractions;
 using Agent360.API.Constants;
+using Agent360.API.Features.Agents.Endpoints;
 using Agent360.API.Features.Agents.Models;
 using Agent360.API.Features.Agents.Security;
 using Agent360.API.Features.Agents.Services;
@@ -22,6 +23,7 @@ public sealed class ListAgentsEndpoint : IEndpoint
                 HttpContext context,
                 CurrentUser currentUser,
                 IQwenPawClient client,
+                AgentProfileStore profileStore,
                 IConfiguration config,
                 IOptionsMonitor<Agent360SecurityOptions> secOptions,
                 Microsoft.AspNetCore.Authorization.IAuthorizationService authorization,
@@ -34,12 +36,24 @@ public sealed class ListAgentsEndpoint : IEndpoint
                     return TypedResults.Unauthorized();
                 }
 
-                var allAgents = await client.GetAgentsAsync(cancellationToken);
+                var rawAgents = await client.GetAgentsAsync(cancellationToken);
+                var allAgents = rawAgents.Select(a =>
+                {
+                    var custom = profileStore.Get(a.Slug) ?? profileStore.Get(a.Id);
+                    if (custom is null) return a;
+                    var customName = custom["name"]?.GetValue<string>();
+                    var customAvatar = custom["avatar"];
+                    return a with
+                    {
+                        Name = !string.IsNullOrWhiteSpace(customName) ? customName : a.Name,
+                        AvatarConfig = customAvatar is not null ? customAvatar.DeepClone() : a.AvatarConfig
+                    };
+                }).ToList();
 
                 // 1. If caller has verified Admin clearance, return all agents across all infra nodes
                 if (isEffectiveAdmin)
                 {
-                    return TypedResults.Ok(allAgents);
+                    return TypedResults.Ok((IReadOnlyList<AgentSummaryResponse>)allAgents);
                 }
 
                 // 2. Member caller: Strictly restrict to assigned agents only (Owner or Operator in AgentAssignments)
@@ -61,7 +75,7 @@ public sealed class ListAgentsEndpoint : IEndpoint
                     .Where(a => assignedSlugs.Contains(a.Slug) || assignedSlugs.Contains(a.Id))
                     .ToList();
 
-                return TypedResults.Ok(filtered);
+                return TypedResults.Ok((IReadOnlyList<AgentSummaryResponse>)filtered);
             })
             .MapToApiVersion(ApiVersion.Default)
             .WithName(RouteName)
