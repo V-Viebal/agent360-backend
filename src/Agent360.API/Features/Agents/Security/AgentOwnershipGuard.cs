@@ -230,9 +230,15 @@ public static class AgentOwnershipGuard
 
         // 2. Member user: must have assigned ownership (or Anyone = -1) in user_management."AgentAssignments"
         var userId = currentUser.UserId;
-        var hasBearer = context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true;
+        var hasBearer = context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
+            || !string.IsNullOrWhiteSpace(context.Request.Query["access_token"].FirstOrDefault());
         var isAuthenticated = context.User.Identity?.IsAuthenticated == true || (userId is > 0) || hasBearer;
-        if (!isAuthenticated)
+        var isReadOnlyFileOrPreview =
+            (HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method)) &&
+            (context.Request.Path.Value?.Contains("/workspace/file-", StringComparison.OrdinalIgnoreCase) == true ||
+             context.Request.Path.Value?.Contains("/workspace/signed-file-url", StringComparison.OrdinalIgnoreCase) == true ||
+             context.Request.Path.Value?.Contains("/console/files/", StringComparison.OrdinalIgnoreCase) == true);
+        if (!isAuthenticated && !isReadOnlyFileOrPreview)
         {
             // In Development mode without an authenticated user session AND without DB configured, allow local dev test harness
             var env = context.RequestServices.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>();

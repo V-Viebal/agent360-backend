@@ -236,7 +236,11 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         {
             return canonical;
         }
-        return raw;
+        return raw.ToLowerInvariant() switch
+        {
+            "default-test" or "qwenpaw-test" => "qwenpaw-test-ba",
+            _ => raw
+        };
     }
 
     public ResolvedInstanceTarget ResolveTarget(string? agentId)
