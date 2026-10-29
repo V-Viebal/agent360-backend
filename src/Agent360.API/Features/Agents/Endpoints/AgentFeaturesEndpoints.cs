@@ -142,7 +142,28 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     title: "Forbidden Path");
             }
 
-            using var resp = await client.DownloadWorkspaceFileAsync(path, agentId, ct);
+            var targetAgentId = agentId ?? "mons";
+            var resp = await client.DownloadWorkspaceFileAsync(path, targetAgentId, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var bareName = Path.GetFileName(path.Replace('\\', '/'));
+                if (!string.IsNullOrWhiteSpace(bareName))
+                {
+                    foreach (var fallbackCandidate in new[] { $"generated-images/{bareName}", $"media/{bareName}", bareName })
+                    {
+                        if (string.Equals(fallbackCandidate, path, StringComparison.OrdinalIgnoreCase)) continue;
+                        var nextResp = await client.DownloadWorkspaceFileAsync(fallbackCandidate, targetAgentId, ct);
+                        if (nextResp.IsSuccessStatusCode)
+                        {
+                            resp.Dispose();
+                            resp = nextResp;
+                            break;
+                        }
+                        nextResp.Dispose();
+                    }
+                }
+            }
+            using (resp)
             if (!resp.IsSuccessStatusCode)
             {
                 return Results.NotFound(new { message = $"File '{path}' not found" });
@@ -1002,11 +1023,24 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             {
                 candidates.Add(normalizedRel["media/".Length..]);
             }
+            if (!normalizedRel.StartsWith("generated-images/", StringComparison.OrdinalIgnoreCase))
+            {
+                candidates.Add($"generated-images/{normalizedRel}");
+            }
+            else
+            {
+                candidates.Add(normalizedRel["generated-images/".Length..]);
+            }
             if (safeFileName != normalizedRel)
             {
                 candidates.Add(safeFileName);
                 candidates.Add($"media/{safeFileName}");
+                candidates.Add($"generated-images/{safeFileName}");
                 candidates.Add($".tmp/{safeFileName}");
+            }
+            else
+            {
+                candidates.Add($"generated-images/{safeFileName}");
             }
 
             foreach (var candidatePath in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -1276,13 +1310,16 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     if (!string.IsNullOrWhiteSpace(bareName))
                     {
                         resp.Dispose();
-                        // Try bareName at root first if original had media/ prefix
-                        if (path.Contains('/'))
+                        // Try bareName at root, media/{bareName}, and generated-images/{bareName}
+                        foreach (var altCandidate in new[] { bareName, $"media/{bareName}", $"generated-images/{bareName}" })
                         {
-                            resp = await client.DownloadWorkspaceFileAsync(bareName, agentId, ct);
+                            if (string.Equals(altCandidate, path, StringComparison.OrdinalIgnoreCase)) continue;
+                            resp.Dispose();
+                            resp = await client.DownloadWorkspaceFileAsync(altCandidate, agentId, ct);
                             if (resp.IsSuccessStatusCode)
                             {
-                                targetPath = bareName;
+                                targetPath = altCandidate;
+                                break;
                             }
                         }
 
@@ -1387,11 +1424,24 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             {
                 candidates.Add(normalizedRel["media/".Length..]);
             }
+            if (!normalizedRel.StartsWith("generated-images/", StringComparison.OrdinalIgnoreCase))
+            {
+                candidates.Add($"generated-images/{normalizedRel}");
+            }
+            else
+            {
+                candidates.Add(normalizedRel["generated-images/".Length..]);
+            }
             if (safeFileName != normalizedRel)
             {
                 candidates.Add(safeFileName);
                 candidates.Add($"media/{safeFileName}");
+                candidates.Add($"generated-images/{safeFileName}");
                 candidates.Add($".tmp/{safeFileName}");
+            }
+            else
+            {
+                candidates.Add($"generated-images/{safeFileName}");
             }
 
             foreach (var candidatePath in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
