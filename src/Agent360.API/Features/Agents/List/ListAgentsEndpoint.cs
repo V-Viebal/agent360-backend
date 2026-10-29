@@ -56,15 +56,9 @@ public sealed class ListAgentsEndpoint : IEndpoint
                     return TypedResults.Ok((IReadOnlyList<AgentSummaryResponse>)allAgents);
                 }
 
-                // 2. Member caller: Strictly restrict to assigned agents only (Owner or Operator in AgentAssignments)
-                var userId = currentUser.UserId;
-                if (userId is null || userId <= 0)
-                {
-                    // Local user not resolved or has no DB record -> Return empty list immediately
-                    return TypedResults.Ok(Array.Empty<AgentSummaryResponse>());
-                }
-
-                var assignedSlugs = await AgentOwnershipGuard.GetAssignedAgentSlugsAsync(userId.Value, config, cancellationToken);
+                // 2. Member caller: Strictly restrict to assigned agents or Anyone-enabled agents (-1) in AgentAssignments
+                var userId = currentUser.UserId ?? 0L;
+                var assignedSlugs = await AgentOwnershipGuard.GetAssignedAgentSlugsAsync(userId, config, cancellationToken);
                 if (assignedSlugs.Count == 0)
                 {
                     return TypedResults.Ok(Array.Empty<AgentSummaryResponse>());

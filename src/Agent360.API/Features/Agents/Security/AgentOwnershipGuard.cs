@@ -7,11 +7,20 @@ namespace Agent360.API.Features.Agents.Security;
 
 public static class AgentOwnershipGuard
 {
-    public static string NormalizeAgentSlug(string? agentSlug) =>
-        (agentSlug ?? "")
+    public static string NormalizeAgentSlug(string? agentSlug)
+    {
+        var raw = (agentSlug ?? "")
             .Replace("bot:agent360:", "", StringComparison.OrdinalIgnoreCase)
             .Trim()
             .ToLowerInvariant();
+        if (!string.IsNullOrWhiteSpace(raw) &&
+            Agent360.API.Features.Agents.Services.FleetRoutingState.CustomSlugAliases.TryGetValue(raw, out var canonical) &&
+            !string.IsNullOrWhiteSpace(canonical))
+        {
+            return canonical.ToLowerInvariant();
+        }
+        return raw;
+    }
 
     /// <summary>
     /// Verifies whether the current HTTP caller has full platform Admin clearance.
@@ -124,7 +133,7 @@ public static class AgentOwnershipGuard
     }
 
     /// <summary>
-    /// Returns the set of normalized agent slugs assigned to the given userId in PostgreSQL.
+    /// Returns the set of normalized agent slugs assigned to the given userId (or Anyone with UserId = -1) in PostgreSQL.
     /// </summary>
     public static async Task<HashSet<string>> GetAssignedAgentSlugsAsync(
         long userId,
@@ -132,7 +141,6 @@ public static class AgentOwnershipGuard
         CancellationToken ct = default)
     {
         var assignedSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (userId <= 0) return assignedSlugs;
 
         var connStr = config.GetConnectionString("DefaultConnection")
             ?? config.GetConnectionString("Postgres");
@@ -142,10 +150,11 @@ public static class AgentOwnershipGuard
         {
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
+            await Agent360.API.Features.Agents.Assignments.AgentAssignmentEndpoints.EnsureTableExistsAsync(conn, ct);
             await using var cmd = new NpgsqlCommand(
-                @"SELECT ""AgentSlug"" FROM user_management.""AgentAssignments"" WHERE ""UserId"" = $1",
+                @"SELECT ""AgentSlug"" FROM user_management.""AgentAssignments"" WHERE ""UserId"" = $1 OR ""UserId"" = -1",
                 conn);
-            cmd.Parameters.AddWithValue(userId);
+            cmd.Parameters.AddWithValue(userId > 0 ? userId : -1L);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
@@ -196,9 +205,10 @@ public static class AgentOwnershipGuard
             return (true, null);
         }
 
-        // 2. Member user: must have assigned ownership in user_management."AgentAssignments"
+        // 2. Member user: must have assigned ownership (or Anyone = -1) in user_management."AgentAssignments"
         var userId = currentUser.UserId;
-        if (userId is null || userId <= 0)
+        var isAuthenticated = context.User.Identity?.IsAuthenticated == true || (userId is > 0);
+        if (!isAuthenticated)
         {
             // In Development mode without an authenticated user session AND without DB configured, allow local dev test harness
             var env = context.RequestServices.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>();
@@ -226,12 +236,13 @@ public static class AgentOwnershipGuard
         {
             await using var conn = new NpgsqlConnection(connStr);
             await conn.OpenAsync(ct);
+            await Agent360.API.Features.Agents.Assignments.AgentAssignmentEndpoints.EnsureTableExistsAsync(conn, ct);
             await using var cmd = new NpgsqlCommand(
                 @"SELECT 1 FROM user_management.""AgentAssignments""
-                  WHERE ""UserId"" = $1 AND (LOWER(""AgentSlug"") = $2 OR LOWER(""AgentSlug"") = $3)
+                  WHERE (""UserId"" = $1 OR ""UserId"" = -1) AND (LOWER(""AgentSlug"") = $2 OR LOWER(""AgentSlug"") = $3)
                   LIMIT 1;", conn);
 
-            cmd.Parameters.AddWithValue(userId.Value);
+            cmd.Parameters.AddWithValue(userId is > 0 ? userId.Value : -1L);
             cmd.Parameters.AddWithValue(cleanSlug);
             cmd.Parameters.AddWithValue($"bot:agent360:{cleanSlug}");
 
