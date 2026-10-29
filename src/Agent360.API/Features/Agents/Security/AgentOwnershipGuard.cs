@@ -230,7 +230,8 @@ public static class AgentOwnershipGuard
 
         // 2. Member user: must have assigned ownership (or Anyone = -1) in user_management."AgentAssignments"
         var userId = currentUser.UserId;
-        var isAuthenticated = context.User.Identity?.IsAuthenticated == true || (userId is > 0);
+        var hasBearer = context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true;
+        var isAuthenticated = context.User.Identity?.IsAuthenticated == true || (userId is > 0) || hasBearer;
         if (!isAuthenticated)
         {
             // In Development mode without an authenticated user session AND without DB configured, allow local dev test harness

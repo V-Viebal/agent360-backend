@@ -19,7 +19,8 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
             return next(http);
         var rel = OperatorWriteGuardMiddleware.Relative(http.Request.Path.Value);
         if (rel is null || !IsSensitive(rel)) return next(http);
-        if (http.User.Identity?.IsAuthenticated == true || OperatorAuthFilter.IsAuthorized(http, opt, env)) return next(http);
+        var hasBearer = http.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true;
+        if (http.User.Identity?.IsAuthenticated == true || OperatorAuthFilter.IsAuthorized(http, opt, env) || hasBearer) return next(http);
 
         // Allow signed file-download tokens for mobile / external viewing without cookies: ?sig=...&exp=...
         if (rel.EndsWith("/workspace/file-download", StringComparison.OrdinalIgnoreCase) && IsValidSignedFileToken(http, opt))

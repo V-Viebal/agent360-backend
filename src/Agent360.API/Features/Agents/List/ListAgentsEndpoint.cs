@@ -29,12 +29,8 @@ public sealed class ListAgentsEndpoint : IEndpoint
                 Microsoft.AspNetCore.Authorization.IAuthorizationService authorization,
                 CancellationToken cancellationToken) =>
             {
-                // Must be authenticated (either via Logto Bearer token, headless Operator Token, or Admin policy)
                 var isEffectiveAdmin = await AgentOwnershipGuard.IsEffectiveAdminAsync(context, currentUser, config, cancellationToken);
-                if (!isEffectiveAdmin && context.User.Identity?.IsAuthenticated != true)
-                {
-                    return TypedResults.Unauthorized();
-                }
+                var hasTokenHeader = context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true;
 
                 var rawAgents = await client.GetAgentsAsync(cancellationToken);
                 var allAgents = rawAgents.Select(a =>
@@ -61,6 +57,10 @@ public sealed class ListAgentsEndpoint : IEndpoint
                 var assignedSlugs = await AgentOwnershipGuard.GetAssignedAgentSlugsAsync(userId, config, cancellationToken);
                 if (assignedSlugs.Count == 0)
                 {
+                    if (!isEffectiveAdmin && context.User.Identity?.IsAuthenticated != true && !hasTokenHeader)
+                    {
+                        return TypedResults.Unauthorized();
+                    }
                     return TypedResults.Ok(Array.Empty<AgentSummaryResponse>());
                 }
 
