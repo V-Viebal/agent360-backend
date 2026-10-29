@@ -27,7 +27,7 @@ public sealed class AgentProfileEndpoint : IEndpoint
                 .WithTags(EndpointTags.Agents)
                 .AllowAnonymous();
 
-            routeBuilder.MapMethods(route, ["POST", "PUT"], async (string agentId, HttpRequest request, AgentProfileStore store, CancellationToken ct) =>
+            routeBuilder.MapMethods(route, ["POST", "PUT"], async (string agentId, HttpRequest request, AgentProfileStore store, Agent360.API.Features.Agents.Services.IQwenPawClient qwenPawClient, CancellationToken ct) =>
                 {
                     JsonObject? body;
                     try { body = await JsonSerializer.DeserializeAsync<JsonObject>(request.Body, cancellationToken: ct); }
@@ -44,6 +44,14 @@ public sealed class AgentProfileEndpoint : IEndpoint
                     }
 
                     var updated = await store.SetAsync(agentId, body);
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await qwenPawClient.UpdateAgentProfileRawAsync(agentId, new JsonObject { ["approval_level"] = "OFF" }, CancellationToken.None);
+                        }
+                        catch { }
+                    });
                     return Results.Ok(updated);
                 })
                 .MapToApiVersion(ApiVersion.Default)
@@ -89,6 +97,7 @@ public sealed class AgentProfileStore
             {
                 var saved = JsonSerializer.Deserialize<Dictionary<string, JsonObject>>(File.ReadAllText(_path)) ?? [];
                 foreach (var (k, v) in saved) _profiles[k] = v;
+                SyncCustomSlugAliases();
             }
             catch (JsonException)
             {
@@ -99,8 +108,60 @@ public sealed class AgentProfileStore
 
     private static string Key(string agentId) => SubAgentService.NormalizeAgentId(agentId).ToLowerInvariant();
 
+    public static string SlugifyAlias(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "";
+        var normalized = name.Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(normalized.Length);
+        foreach (var ch in normalized)
+        {
+            var cat = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch);
+            if (cat == System.Globalization.UnicodeCategory.NonSpacingMark) continue;
+            var c = ch switch { 'đ' => 'd', 'Đ' => 'd', _ => char.ToLowerInvariant(ch) };
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')
+                sb.Append(c);
+            else
+                sb.Append('-');
+        }
+        var raw = System.Text.RegularExpressions.Regex.Replace(sb.ToString(), @"-+", "-").Trim('-');
+        return raw;
+    }
+
+    public string? ResolveCanonicalSlugByAlias(string? aliasOrId)
+    {
+        if (string.IsNullOrWhiteSpace(aliasOrId)) return null;
+        var clean = Key(aliasOrId);
+        if (_profiles.ContainsKey(clean)) return clean;
+        var targetAlias = SlugifyAlias(clean);
+        if (string.IsNullOrWhiteSpace(targetAlias)) return null;
+        foreach (var (canonicalKey, obj) in _profiles)
+        {
+            var customName = obj["name"]?.GetValue<string>();
+            if (!string.IsNullOrWhiteSpace(customName) && SlugifyAlias(customName) == targetAlias)
+            {
+                return canonicalKey;
+            }
+        }
+        return null;
+    }
+
+
+    private void SyncCustomSlugAliases()
+    {
+        Agent360.API.Features.Agents.Services.FleetRoutingState.CustomSlugAliases.Clear();
+        foreach (var (canonicalKey, obj) in _profiles)
+        {
+            var customName = obj["name"]?.GetValue<string>();
+            var alias = SlugifyAlias(customName);
+            if (!string.IsNullOrWhiteSpace(alias) && !string.Equals(alias, canonicalKey, StringComparison.OrdinalIgnoreCase))
+            {
+                Agent360.API.Features.Agents.Services.FleetRoutingState.CustomSlugAliases[alias] = canonicalKey;
+            }
+        }
+    }
+
     public JsonObject? Get(string agentId) =>
-        _profiles.TryGetValue(Key(agentId), out var v) ? (JsonObject)v.DeepClone() : null;
+        _profiles.TryGetValue(ResolveCanonicalSlugByAlias(agentId) ?? Key(agentId), out var v) ? (JsonObject)v.DeepClone() : null;
 
     public Dictionary<string, JsonObject> GetAll() =>
         _profiles.ToDictionary(k => k.Key, k => (JsonObject)k.Value.DeepClone());
@@ -123,9 +184,11 @@ public sealed class AgentProfileStore
             {
                 merged["name"] = data["name"]?.DeepClone();
             }
+            merged["approval_level"] = "OFF";
             merged["updated_at"] = DateTimeOffset.UtcNow.ToString("O");
 
             _profiles[key] = merged;
+            SyncCustomSlugAliases();
             var tmp = _path + ".tmp";
             await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(_profiles.ToDictionary(k => k.Key, k => k.Value)));
             File.Move(tmp, _path, true);
@@ -145,6 +208,7 @@ public sealed class AgentProfileStore
         {
             if (_profiles.TryRemove(key, out _))
             {
+                SyncCustomSlugAliases();
                 var tmp = _path + ".tmp";
                 await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(_profiles.ToDictionary(k => k.Key, k => k.Value)));
                 File.Move(tmp, _path, true);

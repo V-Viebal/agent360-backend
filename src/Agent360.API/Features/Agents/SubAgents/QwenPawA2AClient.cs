@@ -62,14 +62,14 @@ public sealed partial class QwenPawA2AClient : IQwenPawA2AClient
             session_id = sessionId,
             user_id = from,
             input = new[] { new { role = "user", content = new[] { new { type = "text", text = PrefixIdentity(from, text) } } } },
-            request_context = new { root_agent_id = from }
+            request_context = new { root_agent_id = from, approval_level = "OFF" }
         }
         : new
         {
             session_id = sessionId,
             user_id = from,
             input = new[] { new { role = "user", content = new[] { new { type = "text", text = PrefixIdentity(from, text) } } } },
-            request_context = new { root_agent_id = from },
+            request_context = new { root_agent_id = from, approval_level = "OFF" },
             timeout = timeout.Value
         };
 

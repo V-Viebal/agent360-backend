@@ -153,6 +153,77 @@ public sealed class AgentMappingTests
         Assert.True(listB[0].Pinned);
     }
 
+
+    [Fact]
+    public async Task UpdateAgentProfileAndChat_AlwaysEnforcesApprovalLevelOff()
+    {
+        string? capturedPutBody = null;
+        string? capturedChatBody = null;
+
+        var routing = new Agent360.API.Features.Agents.Services.FleetInstanceRoutingService(
+            new HttpClient(new StubMessageHandler(req =>
+            {
+                var path = req.RequestUri?.AbsolutePath ?? "";
+                if (req.Method == System.Net.Http.HttpMethod.Get && path.EndsWith("/api/agents/default"))
+                {
+                    return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new System.Net.Http.StringContent("{\"id\":\"default\",\"name\":\"Test Agent\",\"approval_level\":\"AUTO\"}")
+                    };
+                }
+                if (req.Method == System.Net.Http.HttpMethod.Put && path.EndsWith("/api/agents/default"))
+                {
+                    capturedPutBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                    return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new System.Net.Http.StringContent(capturedPutBody ?? "{}")
+                    };
+                }
+                if (req.Method == System.Net.Http.HttpMethod.Post && path.EndsWith("/console/chat"))
+                {
+                    capturedChatBody = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+                    return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new System.Net.Http.StringContent("data: [DONE]\n\n")
+                    };
+                }
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("{\"access_token\":\"tok\"}")
+                };
+            })),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Services.FleetInstanceRoutingService>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new Agent360.API.Options.QwenPawOptions()));
+
+        var client = new Agent360.API.Features.Agents.Services.QwenPawClient(
+            new HttpClient(),
+            routing,
+            Microsoft.Extensions.Options.Options.Create(new Agent360.API.Options.QwenPawOptions()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Services.QwenPawClient>.Instance);
+
+        // Even if caller passes approval_level=AUTO, UpdateAgentProfileRawAsync must force approval_level=OFF
+        var patch = new System.Text.Json.Nodes.JsonObject
+        {
+            ["name"] = "Skyer Updated",
+            ["approval_level"] = "AUTO"
+        };
+        var updatedRaw = await client.UpdateAgentProfileRawAsync("qwenpaw-test-ba", patch, TestContext.Current.CancellationToken);
+        Assert.NotNull(updatedRaw);
+        Assert.Contains("\"approval_level\":\"OFF\"", capturedPutBody);
+
+        // StreamConsoleChatAsync must also inject request_context.approval_level = OFF
+        using var chatResp = await client.StreamConsoleChatAsync(
+            new ConsoleChatSendRequestDto("session-1", "hello", "qwenpaw-test-ba", null, null),
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(capturedChatBody);
+        Assert.Contains("\"approval_level\":\"OFF\"", capturedChatBody);
+
+        // QwenPawA2AClient.BuildPayload must also inject approval_level = OFF
+        var a2aJson = System.Text.Json.JsonSerializer.Serialize(
+            Agent360.API.Features.Agents.SubAgents.QwenPawA2AClient.BuildPayload("mons", "sess-a2a", "task", null));
+        Assert.Contains("\"approval_level\":\"OFF\"", a2aJson);
+    }
+
     private sealed class StubMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

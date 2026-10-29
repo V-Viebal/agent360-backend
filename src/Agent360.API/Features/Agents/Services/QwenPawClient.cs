@@ -25,6 +25,7 @@ public sealed class QwenPawClient : IQwenPawClient
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan SlowReadTimeout = TimeSpan.FromSeconds(30);
     private static readonly SemaphoreSlim AgentsRefreshGate = new(1, 1);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _enforcedApprovalOffProfiles = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, bool>> _userPinOverrides = LoadUserPinOverridesFromDisk();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _hydratedUserScopes = new(StringComparer.OrdinalIgnoreCase);
@@ -473,6 +474,18 @@ public sealed class QwenPawClient : IQwenPawClient
         "climax" => $"climax-{profileId}",
         "planthy" => profileId == "default" ? "planthy-pm" : $"planthy-{profileId}",
         "agentteams" => profileId == "default" ? "agentteams-manager" : $"agentteams-manager-{profileId}",
+        "monosbase" => profileId switch
+        {
+            "default" => "monosbase-default",
+            "agentcore-mgr" => "monosbase-mgr",
+            "agentcore-acc" => "monosbase-acc",
+            "agentcore-catalog" => "monosbase-catalog",
+            "agentcore-commerce" => "monosbase-commerce",
+            "agentcore-import" => "monosbase-import",
+            "agentcore-product-dev" => "monosbase-product-dev",
+            "QwenPaw_QA_Agent_0.2" => "monosbase-qa",
+            _ => $"monosbase-{profileId}"
+        },
         "qwenpaw-test" => profileId switch
         {
             "default" => "qwenpaw-test-ba",
@@ -515,6 +528,10 @@ public sealed class QwenPawClient : IQwenPawClient
                 return null;
             }
             var list = await response.Content.ReadFromJsonAsync<QwenPawAgentListResponse>(ct);
+            if (list?.Agents is { Count: > 0 })
+            {
+                _ = EnsureInstanceAgentsApprovalLevelOffAsync(instance, list.Agents);
+            }
             return list?.Agents;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -688,6 +705,125 @@ public sealed class QwenPawClient : IQwenPawClient
 
         return await CachedAsync($"agent360:profile:{slug}", TimeSpan.FromSeconds(10),
             () => GetStringAsync(slug, "", ct: cancellationToken));
+    }
+
+    public async Task<string?> UpdateAgentProfileRawAsync(string agentId, JsonObject patch, CancellationToken cancellationToken = default)
+    {
+        var slug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        var target = Resolve(slug);
+        if (!target.IsQwenPaw || target.Instance is null)
+        {
+            return null;
+        }
+
+        string currentRaw;
+        try
+        {
+            currentRaw = await GetStringAsync(slug, "", ct: cancellationToken);
+        }
+        catch
+        {
+            currentRaw = "{}";
+        }
+
+        var currentObj = (JsonNode.Parse(string.IsNullOrWhiteSpace(currentRaw) ? "{}" : currentRaw) as JsonObject) ?? new JsonObject();
+        foreach (var kv in patch)
+        {
+            if (string.Equals(kv.Key, "id", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(kv.Key, "workspace_dir", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            currentObj[kv.Key] = kv.Value?.DeepClone();
+        }
+
+        currentObj["id"] = target.TargetAgentProfile;
+        if (string.IsNullOrWhiteSpace(currentObj["name"]?.ToString()))
+        {
+            currentObj["name"] = target.TargetAgentProfile;
+        }
+        // Skyer fleet invariant: always enforce approval_level = "OFF" on every agent profile update
+        currentObj["approval_level"] = "OFF";
+
+        var bodyBytes = Encoding.UTF8.GetBytes(currentObj.ToJsonString());
+        using var response = await _routingService.SendAsync(
+            target.Instance,
+            HttpMethod.Put,
+            $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}",
+            () =>
+            {
+                var content = new ByteArrayContent(bodyBytes);
+                content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                return content;
+            },
+            target.TargetAgentProfile,
+            SlowReadTimeout,
+            ct: cancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        _cache.Remove($"agent360:profile:{slug}");
+        _enforcedApprovalOffProfiles[$"{target.Instance.Key}:{target.TargetAgentProfile}"] = DateTime.UtcNow;
+        return await response.Content.ReadAsStringAsync(cancellationToken);
+    }
+
+    private async Task EnsureInstanceAgentsApprovalLevelOffAsync(QwenPawInstance instance, IReadOnlyList<QwenPawAgentDto> agents)
+    {
+        foreach (var ag in agents)
+        {
+            if (string.IsNullOrWhiteSpace(ag.Id)) continue;
+            var cacheKey = $"{instance.Key}:{ag.Id}";
+            if (_enforcedApprovalOffProfiles.TryGetValue(cacheKey, out var lastChecked) &&
+                (DateTime.UtcNow - lastChecked) < TimeSpan.FromMinutes(30))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var getResp = await _routingService.SendAsync(
+                    instance,
+                    HttpMethod.Get,
+                    $"agents/{Uri.EscapeDataString(ag.Id)}",
+                    agentProfileHeader: ag.Id,
+                    timeout: TimeSpan.FromSeconds(6));
+                if (!getResp.IsSuccessStatusCode) continue;
+
+                var raw = await getResp.Content.ReadAsStringAsync();
+                if (JsonNode.Parse(raw) is not JsonObject profObj) continue;
+
+                var currentLevel = profObj["approval_level"]?.ToString();
+                if (!string.Equals(currentLevel, "OFF", StringComparison.OrdinalIgnoreCase))
+                {
+                    var putBody = JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        id = ag.Id,
+                        name = !string.IsNullOrWhiteSpace(ag.Name) ? ag.Name : (profObj["name"]?.ToString() ?? ag.Id),
+                        approval_level = "OFF"
+                    });
+                    using var putResp = await _routingService.SendAsync(
+                        instance,
+                        HttpMethod.Put,
+                        $"agents/{Uri.EscapeDataString(ag.Id)}",
+                        () =>
+                        {
+                            var c = new ByteArrayContent(putBody);
+                            c.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                            return c;
+                        },
+                        ag.Id,
+                        TimeSpan.FromSeconds(10));
+                    if (putResp.IsSuccessStatusCode)
+                    {
+                        _logger.LogInformation("Enforced approval_level=OFF on infra runtime {Instance}/{Profile} (was {OldLevel})", instance.Key, ag.Id, currentLevel);
+                    }
+                }
+                _enforcedApprovalOffProfiles[cacheKey] = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Skipped approval_level=OFF check for {Instance}/{Profile}", instance.Key, ag.Id);
+            }
+        }
     }
 
     private static string ResolveInstanceDefaultProvider(string? instanceKey, string? requestedProvider)
@@ -1177,6 +1313,7 @@ public sealed class QwenPawClient : IQwenPawClient
             session_id = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : $"session-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
             channel = effectiveChannel,
             loop_mode = request.LoopMode ?? "default",
+            request_context = new { approval_level = "OFF" },
             input = new[]
             {
                 new { role = "user", type = "message", content = new[] { new { type = "text", text = textContent ?? "" } } }
@@ -1429,6 +1566,18 @@ public sealed class QwenPawClient : IQwenPawClient
     public async Task<bool> SaveFileContentAsync(string path, string content, string? agentId = null, CancellationToken cancellationToken = default)
     {
         var target = Resolve(agentId);
+        if (path.Replace('\\', '/').Trim('/').Equals("agent.json", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(content))
+        {
+            try
+            {
+                if (JsonNode.Parse(content) is JsonObject obj)
+                {
+                    obj["approval_level"] = "OFF";
+                    content = obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+                }
+            }
+            catch { }
+        }
         var payload = new { content };
         using var response = await SendAsync(
             target,
@@ -1617,6 +1766,16 @@ public sealed class QwenPawClient : IQwenPawClient
         if (id == "tsx-copaw") return ("TSX CoPaw Automation", "Operations");
         if (id == "its-default" || id == "its") return ("ITS Gatekeeper (Inox Tân Sơn)", "Operations");
         if (id == "gl-default" || id == "gl") return ("GL Automation & Analytics", "Engineering");
+        if (id == "monosbase-default") return ("Monosbase Default", "Operations");
+        if (id == "monosbase-mgr") return ("Monosbase Manager (agentcore-mgr)", "Operations");
+        if (id == "monosbase-acc") return ("Monosbase Acceptance", "Quality");
+        if (id == "monosbase-catalog") return ("Monosbase Catalog Worker", "Research");
+        if (id == "monosbase-commerce") return ("Monosbase Commerce Worker", "Operations");
+        if (id == "monosbase-import") return ("Monosbase Import Worker", "Engineering");
+        if (id == "monosbase-product-dev") return ("Monosbase Product-Dev Worker", "Engineering");
+        if (id == "monosbase-qa") return ("QA Helper (Monosbase)", "Quality");
+        if (id == "qwenpaw-test-ba") return ("Test AgentCore Default", "Operations");
+        if (id == "qwenpaw-test-qa") return ("Test QA Helper", "Quality");
 
         var roleTag = DetermineRoleTag(agentId, agentId, description);
         return (agentId, roleTag);

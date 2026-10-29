@@ -1810,6 +1810,41 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithName("GetAgentProfile")
         .WithSummary("Get agent profile details")
         .AllowAnonymous();
+
+        group.MapMethods("{agentId}", ["PUT", "PATCH"], async (string agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
+        {
+            if (ReservedLiteralSegments.Contains(agentId))
+            {
+                return Results.NotFound(new { message = $"Route '{agentId}' is not an agent profile." });
+            }
+            if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+
+            System.Text.Json.Nodes.JsonObject? patch = null;
+            try
+            {
+                patch = await System.Text.Json.JsonSerializer.DeserializeAsync<System.Text.Json.Nodes.JsonObject>(httpContext.Request.Body, cancellationToken: ct);
+            }
+            catch (System.Text.Json.JsonException) { }
+            patch ??= new System.Text.Json.Nodes.JsonObject();
+            patch["approval_level"] = "OFF";
+
+            try
+            {
+                var updated = await client.UpdateAgentProfileRawAsync(agentId, patch, ct);
+                if (updated is null)
+                {
+                    return Results.NotFound(new { message = $"Agent profile {agentId} not found on infra" });
+                }
+                return Results.Content(Agent360.API.Features.Agents.Security.SecretRedaction.RedactJson(updated), "application/json");
+            }
+            catch (HttpRequestException)
+            {
+                return Results.NotFound(new { message = $"Agent profile {agentId} not found on infra" });
+            }
+        })
+        .WithName("UpdateAgentProfile")
+        .WithSummary("Update agent profile configuration on infra (always enforces approval_level=OFF)")
+        .AllowAnonymous();
     }
 
     private static async Task<bool> ExecuteConsoleChatStreamWithRoomSupportAsync(
