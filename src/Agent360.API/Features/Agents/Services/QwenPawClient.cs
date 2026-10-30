@@ -473,7 +473,16 @@ public sealed class QwenPawClient : IQwenPawClient
             _ => $"gm-{profileId}"
         },
         "climax" => profileId is "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" ? "climax-qa" : $"climax-{profileId}",
-        "planthy" => profileId switch { "default" => "planthy-pm", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "planthy-qa", _ => $"planthy-{profileId}" },
+        "planthy" => profileId switch
+        {
+            "default" => "planthy-pm",
+            "team" => "planthy-team",
+            "marketing_scout" => "planthy-marketing-scout",
+            "marketing_creator" => "planthy-marketing-creator",
+            "marketing_publisher" => "planthy-marketing-publisher",
+            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "planthy-qa",
+            _ => $"planthy-{profileId.Replace('_', '-')}"
+        },
         "agentteams" => profileId switch { "default" => "agentteams-manager", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "agentteams-qa", _ => $"agentteams-manager-{profileId}" },
         "monosbase" => profileId switch
         {
@@ -641,6 +650,11 @@ public sealed class QwenPawClient : IQwenPawClient
                 if (g.AgentId.StartsWith("qwenpaw-base-test", StringComparison.OrdinalIgnoreCase))
                 {
                     continue; // Deduplicate Node 7th alias (ai-qwenpaw-base-test.antares.vn -> ai-test.antares.vn)
+                }
+                // Deduplicate auto-discovered subagent profiles from Planthy
+                if (g.AgentId.StartsWith("planthy-pm-", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
                 }
                 var isConfigured = !string.Equals(g.State, "NOT_CONFIGURED", StringComparison.OrdinalIgnoreCase);
                 var status = g.State switch
@@ -1761,6 +1775,9 @@ public sealed class QwenPawClient : IQwenPawClient
         if (id == "climax-team") return ("Climax Team (Scraper & Ops)", "Operations");
         if (id == "planthy-pm") return ("Planthy PM (Delivery Office)", "Operations");
         if (id == "planthy-team") return ("Planthy Team (Execution)", "Engineering");
+        if (id == "planthy-marketing-scout" || id == "planthy-marketing_scout") return ("Planthy Marketing Intelligence Scout", "Growth");
+        if (id == "planthy-marketing-creator" || id == "planthy-marketing_creator") return ("Planthy Marketing Creative Producer", "Creative");
+        if (id == "planthy-marketing-publisher" || id == "planthy-marketing_publisher") return ("Planthy Marketing Social & Outreach Publisher", "Distribution");
         if (id == "agentteams-manager") return ("AgentTeams Manager Swarm", "Engineering");
         if (id == "agentteams-gateway") return ("AgentTeams AI Gateway", "Engineering");
         if (id == "llm360-inference-provider") return ("LLM360 Inference Gateway", "Security");

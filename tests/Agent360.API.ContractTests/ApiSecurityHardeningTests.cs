@@ -246,4 +246,35 @@ public sealed class ApiSecurityHardeningTests
         public override void OnStarting(Func<object, Task> callback, object state) => _cbs.Add((callback, state));
         public async Task FireAsync() { foreach (var (cb, st) in _cbs) await cb(st); }
     }
+    [Fact]
+    public void AgentSwitching_ChatsIsolation_And_RoutingEquivalence()
+    {
+        // 1. Equivalent slugs resolution for test agents
+        var equiv = Agent360.API.Features.Agents.Security.AgentOwnershipGuard.ExpandEquivalentAgentSlugs("agentcore-test-ba");
+        equiv.Should().Contain("qwenpaw-test-ba");
+        equiv.Should().Contain("default-test");
+
+        // 2. Chat list filtering strictly isolates chats per agent profile
+        const string testBaChats = """
+            [{"id":"chat-ba-1","session_id":"s-ba-1","user_id":"skyer:u1"},
+             {"id":"chat-ba-2","session_id":"s-ba-2","user_id":"skyer:u1"}]
+            """;
+        const string mkaiChats = """
+            [{"id":"chat-mkai-1","session_id":"s-mkai-1","user_id":"default"},
+             {"id":"chat-mkai-2","session_id":"s-mkai-2","user_id":"skyer:u2"}]
+            """;
+
+        // User 1 sees 2 chats on test-ba
+        var filteredBa = Agent360.API.Features.Agents.Security.ChatVisibilityGuard.FilterChatsJson(testBaChats, "skyer:u1");
+        System.Text.Json.JsonDocument.Parse(filteredBa).RootElement.GetArrayLength().Should().Be(2);
+
+        // User 1 switched to mkai (where user 1 is assigned as Operator/Owner -> scope is null: sees all)
+        var filteredMkaiAssigned = Agent360.API.Features.Agents.Security.ChatVisibilityGuard.FilterChatsJson(mkaiChats, null);
+        System.Text.Json.JsonDocument.Parse(filteredMkaiAssigned).RootElement.GetArrayLength().Should().Be(2);
+
+        // User 1 switched to mkai as a non-assigned member (scope = "skyer:u1") -> sees 0 chats
+        var filteredMkaiUnassigned = Agent360.API.Features.Agents.Security.ChatVisibilityGuard.FilterChatsJson(mkaiChats, "skyer:u1");
+        System.Text.Json.JsonDocument.Parse(filteredMkaiUnassigned).RootElement.GetArrayLength().Should().Be(0);
+    }
+
 }

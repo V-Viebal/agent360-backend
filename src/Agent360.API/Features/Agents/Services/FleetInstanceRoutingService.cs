@@ -291,7 +291,10 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "planthy-team" => "team",
                 "planthy-qwenpaw_qa_agent_0.2" or "planthy-agentcore_qa_agent_0.2" or "planthy-qa" => "AgentCore_QA_Agent_0.2",
                 "planthy-dev" => "Planthy_Dev_Agent_0.1",
-                _ => "default"
+                "planthy-marketing-scout" or "planthy-marketing_scout" => "marketing_scout",
+                "planthy-marketing-creator" or "planthy-marketing_creator" => "marketing_creator",
+                "planthy-marketing-publisher" or "planthy-marketing_publisher" => "marketing_publisher",
+                _ => raw.StartsWith("planthy-pm-", StringComparison.OrdinalIgnoreCase) ? raw["planthy-pm-".Length..] : (raw.StartsWith("planthy-", StringComparison.OrdinalIgnoreCase) ? raw["planthy-".Length..] : "default")
             };
             return Target(Instance("planthy"), raw, profile);
         }

@@ -61,7 +61,15 @@ public sealed class AgentBrowserDirectory(
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4" }),
         // Planthy runs its own browser service (not the shared 5th climax browser); tailnet proxy on :19224.
         ["planthy"] = new("planthy-browser-rff7", "https://browser-planthy.hmz.one", "http://100.70.201.83:19224",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["Planthy_Dev_Agent_0.1"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
+                ["default"] = "Default",
+                ["team"] = "Profile 1",
+                ["marketing_scout"] = "Default",
+                ["marketing_creator"] = "Default",
+                ["marketing_publisher"] = "Default",
+                ["Planthy_Dev_Agent_0.1"] = "Profile 2",
+                ["QwenPaw_QA_Agent_0.2"] = "Profile 3"
+            }),
         ["climax"] = new("climax-browser", "https://browser-climax.antares.vn", "http://100.70.201.83:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
         ["its"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19222",
