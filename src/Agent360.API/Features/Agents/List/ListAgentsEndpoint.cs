@@ -53,15 +53,31 @@ public sealed class ListAgentsEndpoint : IEndpoint
                     return TypedResults.Ok((IReadOnlyList<AgentSummaryResponse>)allAgents);
                 }
 
-                // 2. Member caller: Strictly restrict to assigned agents or Anyone-enabled agents (-1) in AgentAssignments
+                // 2. If caller is not authenticated (or presented an expired/invalid Bearer token), return 401 so the SPA can silent-refresh via OIDC refresh_token!
+                if (!isEffectiveAdmin && context.User.Identity?.IsAuthenticated != true)
+                {
+                    if (hasTokenHeader)
+                    {
+                        return TypedResults.Unauthorized();
+                    }
+
+                    // Anonymous caller: only allow Anyone-assigned agents (-1) if any exist
+                    var anyoneSlugs = await AgentOwnershipGuard.GetAssignedAgentSlugsAsync(0L, config, cancellationToken);
+                    var anyoneFiltered = allAgents
+                        .Where(a => anyoneSlugs.Contains(a.Slug) || anyoneSlugs.Contains(a.Id))
+                        .ToList();
+                    if (anyoneFiltered.Count == 0)
+                    {
+                        return TypedResults.Unauthorized();
+                    }
+                    return TypedResults.Ok((IReadOnlyList<AgentSummaryResponse>)anyoneFiltered);
+                }
+
+                // 3. Authenticated Member caller: Strictly restrict to assigned agents or Anyone-enabled agents (-1) in AgentAssignments
                 var userId = currentUser.UserId ?? 0L;
                 var assignedSlugs = await AgentOwnershipGuard.GetAssignedAgentSlugsAsync(userId, config, cancellationToken);
                 if (assignedSlugs.Count == 0)
                 {
-                    if (!isEffectiveAdmin && context.User.Identity?.IsAuthenticated != true && !hasTokenHeader)
-                    {
-                        return TypedResults.Unauthorized();
-                    }
                     return TypedResults.Ok(Array.Empty<AgentSummaryResponse>());
                 }
 

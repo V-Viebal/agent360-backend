@@ -69,7 +69,11 @@ public sealed class AgentBrowserDirectory(
         ["gl"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1" }),
         ["qwenpaw-test"] = new("browser-test-tg733z0rtlfvn6oir46nf8ca", "https://browser-test.antares.vn", "http://100.99.201.47:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-ba"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 2", ["agentcore-catalog"] = "Default", ["agentcore-commerce"] = "Default", ["agentcore-import"] = "Default", ["agentcore-mgr"] = "Default", ["agentcore-product-dev"] = "Default" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-ba"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 2", ["AgentCore_QA_Agent_0.2"] = "Profile 2", ["agentcore-catalog"] = "Default", ["agentcore-commerce"] = "Default", ["agentcore-import"] = "Default", ["agentcore-mgr"] = "Default", ["agentcore-product-dev"] = "Default" }),
+        ["agentcore-test"] = new("browser-test-tg733z0rtlfvn6oir46nf8ca", "https://browser-test.antares.vn", "http://100.99.201.47:19222",
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-ba"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 2", ["AgentCore_QA_Agent_0.2"] = "Profile 2", ["agentcore-catalog"] = "Default", ["agentcore-commerce"] = "Default", ["agentcore-import"] = "Default", ["agentcore-mgr"] = "Default", ["agentcore-product-dev"] = "Default" }),
+        ["monosbase"] = new("browser-gm-21er", "https://browser-gm.antares.vn", "http://100.81.66.42:19222",
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-mgr"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 4", ["AgentCore_QA_Agent_0.2"] = "Profile 4" }),
     };
 
     public bool TryResolve(string agentId, out ResolvedInstanceTarget target, out string service, out string viewerUrl, out string cdpUrl, out string? profile)

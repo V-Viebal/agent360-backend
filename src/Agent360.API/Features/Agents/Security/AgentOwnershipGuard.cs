@@ -30,17 +30,23 @@ public static class AgentOwnershipGuard
         switch (bare)
         {
             case "qwenpaw-test-ba":
+            case "agentcore-test-ba":
             case "default-test":
             case "qwenpaw-test":
+            case "agentcore-test":
             case "qwenpaw-base-test":
                 set.Add("qwenpaw-test-ba");
+                set.Add("agentcore-test-ba");
                 set.Add("default-test");
                 set.Add("qwenpaw-test");
+                set.Add("agentcore-test");
                 set.Add("qwenpaw-base-test");
                 break;
             case "qwenpaw-test-qa":
+            case "agentcore-test-qa":
             case "qwenpaw-base-test-qwenpaw_qa_agent_0.2":
                 set.Add("qwenpaw-test-qa");
+                set.Add("agentcore-test-qa");
                 set.Add("qwenpaw-base-test-qwenpaw_qa_agent_0.2");
                 break;
         }

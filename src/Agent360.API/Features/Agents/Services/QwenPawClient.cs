@@ -462,18 +462,19 @@ public sealed class QwenPawClient : IQwenPawClient
 
     private static string Agent360Slug(string instanceKey, string profileId) => instanceKey switch
     {
-        "its" => profileId == "default" ? "its-default" : $"its-default-{profileId}",
-        "gl" => profileId == "default" ? "gl-default" : $"gl-default-{profileId}",
+        "its" => profileId switch { "default" => "its-default", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "its-qa", _ => $"its-default-{profileId}" },
+        "gl" => profileId switch { "default" => "gl-default", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "gl-qa", _ => $"gl-default-{profileId}" },
         "gm" => profileId switch
         {
             "default" => "gm-boc",
             "customer" => "gm-lua",
             "supplier" => "gm-gao",
+            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "gm-qa",
             _ => $"gm-{profileId}"
         },
-        "climax" => $"climax-{profileId}",
-        "planthy" => profileId == "default" ? "planthy-pm" : $"planthy-{profileId}",
-        "agentteams" => profileId == "default" ? "agentteams-manager" : $"agentteams-manager-{profileId}",
+        "climax" => profileId is "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" ? "climax-qa" : $"climax-{profileId}",
+        "planthy" => profileId switch { "default" => "planthy-pm", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "planthy-qa", _ => $"planthy-{profileId}" },
+        "agentteams" => profileId switch { "default" => "agentteams-manager", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "agentteams-qa", _ => $"agentteams-manager-{profileId}" },
         "monosbase" => profileId switch
         {
             "default" => "monosbase-default",
@@ -483,21 +484,21 @@ public sealed class QwenPawClient : IQwenPawClient
             "agentcore-commerce" => "monosbase-commerce",
             "agentcore-import" => "monosbase-import",
             "agentcore-product-dev" => "monosbase-product-dev",
-            "QwenPaw_QA_Agent_0.2" => "monosbase-qa",
+            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "monosbase-qa",
             _ => $"monosbase-{profileId}"
         },
-        "qwenpaw-test" => profileId switch
+        "qwenpaw-test" or "agentcore-test" => profileId switch
         {
-            "default" => "qwenpaw-test-ba",
-            "agentcore-acc" => "qwenpaw-test-acc",
-            "QwenPaw_QA_Agent_0.2" => "qwenpaw-test-qa",
-            _ => $"qwenpaw-test-ba-{profileId}"
+            "default" => "agentcore-test-ba",
+            "agentcore-acc" => "agentcore-test-acc",
+            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "agentcore-test-qa",
+            _ => $"agentcore-test-ba-{profileId}"
         },
         "qwenpaw-base-test" => profileId == "default" ? "qwenpaw-base-test" : $"qwenpaw-base-test-{profileId}",
         _ => profileId switch
         {
             "default" => "default-core",
-            "QwenPaw_QA_Agent_0.2" => "mons-QwenPaw_QA_Agent_0.2",
+            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "core-qa",
             _ => profileId
         }
     };
@@ -1751,7 +1752,7 @@ public sealed class QwenPawClient : IQwenPawClient
         if (id == "zen") return ("Zen (Sales & Delivery)", "Operations");
         if (id == "mkai") return ("Mkai (Generalist Core)", "Engineering");
         if (id == "default-core") return ("Core Skyer Default", "Operations");
-        if (id.Contains("qa_agent")) return ("QA Helper (Core)", "Quality");
+        if (id.Contains("qa_agent") || id.EndsWith("-qa")) return ("QA Helper", "Quality");
         if (id == "gm-boc") return ("GM Bốc (Executive)", "Operations");
         if (id == "gm-gao") return ("GM Gạo (Procurement)", "Operations");
         if (id == "gm-lua") return ("GM Lúa (Customer Support)", "Operations");
@@ -1774,8 +1775,8 @@ public sealed class QwenPawClient : IQwenPawClient
         if (id == "monosbase-import") return ("Monosbase Import Worker", "Engineering");
         if (id == "monosbase-product-dev") return ("Monosbase Product-Dev Worker", "Engineering");
         if (id == "monosbase-qa") return ("QA Helper (Monosbase)", "Quality");
-        if (id == "qwenpaw-test-ba") return ("Test AgentCore Default", "Operations");
-        if (id == "qwenpaw-test-qa") return ("Test QA Helper", "Quality");
+        if (id is "qwenpaw-test-ba" or "agentcore-test-ba") return ("Test AgentCore Default", "Operations");
+        if (id is "qwenpaw-test-qa" or "agentcore-test-qa") return ("Test QA Helper", "Quality");
 
         var roleTag = DetermineRoleTag(agentId, agentId, description);
         return (agentId, roleTag);
@@ -1828,6 +1829,8 @@ public sealed class QwenPawClient : IQwenPawClient
         var cleanNode = (node ?? "Infra").Trim();
         if (instance != null)
         {
+            if (instance.Contains("Test AgentCore") || instance.Contains("agentcore-test")) return "Node 7th (Test AgentCore) - ai-test.antares.vn";
+            if (instance.Contains("Monosbase") || instance.Contains("monosbase-bot")) return "Node 6th (Monosbase) - ai-bot-gm.s-0.top";
             if (instance.Contains("Core")) return "Node 3rd (Core) - ai.hmz.one";
             if (instance.Contains("Gia Moc")) return "Node 6th (Gia Mộc) - ai-gm.antares.vn";
             if (instance.Contains("Climax")) return "Node 5th (Climax) - ai-climax.antares.vn";

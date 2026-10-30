@@ -6,10 +6,13 @@ using Agent360.UserManagement.UseCase.Users.Queries.GetCurrentProfile;
 using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
+using Npgsql;
 using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Agent360.API.Features.Users.GetCurrentProfile;
+
+public sealed record UpdateMyProfileRequest(string? DisplayName, string? Email, string? AvatarUrl);
 
 public sealed class GetCurrentProfileEndpoint : IEndpoint
 {
@@ -78,6 +81,69 @@ public sealed class GetCurrentProfileEndpoint : IEndpoint
                 StatusCodes.Status200OK,
                 StatusCodes.Status304NotModified)
             .SupportsIfNoneMatch()
+            .RequireAuthorization();
+
+        routeBuilder.MapMethods(
+            "users/me",
+            ["PATCH", "PUT"],
+            async Task<IResult> (
+                UpdateMyProfileRequest req,
+                ICurrentUser currentUser,
+                IConfiguration config,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(currentUser.ExternalUserId) || currentUser.UserId is not { } userId || userId <= 0)
+                {
+                    return TypedResults.Unauthorized();
+                }
+
+                var connStr = config.GetConnectionString("DefaultConnection") ?? config.GetConnectionString("Postgres");
+                if (string.IsNullOrWhiteSpace(connStr))
+                {
+                    return Results.Problem("Database not configured");
+                }
+
+                var cleanName = req.DisplayName?.Trim();
+                var cleanEmail = req.Email?.Trim();
+                var cleanAvatar = req.AvatarUrl?.Trim();
+
+                string? firstName = null;
+                string? lastName = null;
+                if (!string.IsNullOrWhiteSpace(cleanName))
+                {
+                    var parts = cleanName.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                    firstName = parts.Length > 0 ? parts[0] : cleanName;
+                    lastName = parts.Length > 1 ? parts[1] : "";
+                }
+
+                await using var conn = new NpgsqlConnection(connStr);
+                await conn.OpenAsync(ct);
+
+                await using var cmd = new NpgsqlCommand(@"
+                    UPDATE user_management.""Users""
+                    SET ""DisplayName"" = COALESCE(NULLIF($1, ''), ""DisplayName""),
+                        ""FirstName"" = COALESCE(NULLIF($2, ''), ""FirstName""),
+                        ""LastName"" = CASE WHEN $2 IS NOT NULL AND $2 <> '' THEN $3 ELSE ""LastName"" END,
+                        ""Email"" = COALESCE(NULLIF($4, ''), ""Email""),
+                        ""AvatarUrl"" = COALESCE(NULLIF($5, ''), ""AvatarUrl""),
+                        ""ModifiedAt"" = NOW()
+                    WHERE ""Id"" = $6;
+                ", conn);
+
+                cmd.Parameters.AddWithValue((object?)cleanName ?? DBNull.Value);
+                cmd.Parameters.AddWithValue((object?)firstName ?? DBNull.Value);
+                cmd.Parameters.AddWithValue((object?)lastName ?? DBNull.Value);
+                cmd.Parameters.AddWithValue((object?)cleanEmail ?? DBNull.Value);
+                cmd.Parameters.AddWithValue((object?)cleanAvatar ?? DBNull.Value);
+                cmd.Parameters.AddWithValue(userId);
+                await cmd.ExecuteNonQueryAsync(ct);
+
+                return Results.Ok(new { success = true, userId });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("UpdateCurrentUserProfile")
+            .WithTags(EndpointTags.Users)
+            .WithSummary("Update the current authenticated user's profile (displayName, email, avatarUrl)")
             .RequireAuthorization();
     }
 

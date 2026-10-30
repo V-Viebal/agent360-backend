@@ -91,7 +91,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
             Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
             Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
-            Build("qwenpaw-test", "7th", "Test QwenPaw (Node 7th)", "https://ai-test.antares.vn", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
+            Build("agentcore-test", "7th", "Test AgentCore (Node 7th)", "https://ai-test.antares.vn", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
             Build("monosbase", "6th", "Monosbase Bot (Node 6th)", "https://ai-bot-gm.s-0.top", "https://ai-bot-gm.s-0.top", true, "http://100.81.66.42:19222"),
         ];
     }
@@ -265,7 +265,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "gm-team" => "team",
                 "gm-lua" => "customer",
                 "gm-gao" => "supplier",
-                "gm-boc-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "gm-boc-qwenpaw_qa_agent_0.2" or "gm-boc-agentcore_qa_agent_0.2" or "gm-qa" => "AgentCore_QA_Agent_0.2",
                 _ => raw["gm-".Length..]
             };
             return Target(Instance("gm"), raw, profile);
@@ -278,7 +278,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "climax" => "default",
                 "climax-default" => "default",
                 "climax-team" => "team",
-                "climax-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "climax-qwenpaw_qa_agent_0.2" or "climax-agentcore_qa_agent_0.2" or "climax-qa" => "AgentCore_QA_Agent_0.2",
                 _ => raw["climax-".Length..]
             };
             return Target(Instance("climax"), raw, profile);
@@ -289,7 +289,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             var profile = id switch
             {
                 "planthy-team" => "team",
-                "planthy-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "planthy-qwenpaw_qa_agent_0.2" or "planthy-agentcore_qa_agent_0.2" or "planthy-qa" => "AgentCore_QA_Agent_0.2",
                 "planthy-dev" => "Planthy_Dev_Agent_0.1",
                 _ => "default"
             };
@@ -306,7 +306,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             var profile = id switch
             {
                 "its-default" => "default",
-                "its-default-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "its-default-qwenpaw_qa_agent_0.2" or "its-default-agentcore_qa_agent_0.2" or "its-qa" => "AgentCore_QA_Agent_0.2",
                 _ => raw["its-".Length..]
             };
             return Target(Instance("its"), raw, profile);
@@ -317,7 +317,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             var profile = id switch
             {
                 "gl-default" => "default",
-                "gl-default-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "gl-default-qwenpaw_qa_agent_0.2" or "gl-default-agentcore_qa_agent_0.2" or "gl-qa" => "AgentCore_QA_Agent_0.2",
                 _ => raw["gl-".Length..]
             };
             return Target(Instance("gl"), raw, profile);
@@ -335,7 +335,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "monosbase-commerce" => "agentcore-commerce",
                 "monosbase-import" => "agentcore-import",
                 "monosbase-product-dev" => "agentcore-product-dev",
-                "monosbase-qa" or "monosbase-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+                "monosbase-qa" or "monosbase-qwenpaw_qa_agent_0.2" or "monosbase-agentcore_qa_agent_0.2" => "AgentCore_QA_Agent_0.2",
                 _ => raw["monosbase-".Length..]
             };
             return Target(Instance("monosbase"), raw, profile);
@@ -349,20 +349,20 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
                 "qwenpaw-base-test-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
                 _ => raw["qwenpaw-base-test-".Length..]
             };
-            return Target(Instance("qwenpaw-test"), raw, profile);
+            return Target(Instance("agentcore-test"), raw, profile);
         }
 
-        if (id.StartsWith("qwenpaw-test-"))
+        if (id.StartsWith("qwenpaw-test-") || id.StartsWith("agentcore-test-"))
         {
             var profile = id switch
             {
-                "qwenpaw-test-ba" => "default",
+                "qwenpaw-test-ba" or "agentcore-test-ba" => "default",
                 var s when s.StartsWith("qwenpaw-test-ba-") => raw["qwenpaw-test-ba-".Length..],
                 "qwenpaw-test-acc" => "agentcore-acc",
-                "qwenpaw-test-qa" => "QwenPaw_QA_Agent_0.2",
+                "qwenpaw-test-qa" or "agentcore-test-qa" => "AgentCore_QA_Agent_0.2",
                 _ => raw["qwenpaw-test-".Length..]
             };
-            return Target(Instance("qwenpaw-test"), raw, profile);
+            return Target(Instance("agentcore-test"), raw, profile);
         }
 
         // Non-AgentCore runtimes or external agent types surfaced by Agent Guardian
@@ -374,7 +374,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         var coreProfile = id switch
         {
             "default-core" => "default",
-            "mons-qwenpaw_qa_agent_0.2" => "QwenPaw_QA_Agent_0.2",
+            "mons-qwenpaw_qa_agent_0.2" or "mons-agentcore_qa_agent_0.2" or "core-qa" => "AgentCore_QA_Agent_0.2",
             _ => raw
         };
         return Target(Instance("core"), raw, coreProfile);
@@ -444,7 +444,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         {
             return ("admin", "OiOhIEJ0Zk6gAercIveUisKYXxyBpX3K");
         }
-        if (key.Equals("qwenpaw-test", StringComparison.OrdinalIgnoreCase))
+        if (key.Equals("agentcore-test", StringComparison.OrdinalIgnoreCase) || key.Equals("qwenpaw-test", StringComparison.OrdinalIgnoreCase))
         {
             return ("admin", "wujnE9nyD1ikqGRRiuFDGpWRmoa5Vqjn");
         }
