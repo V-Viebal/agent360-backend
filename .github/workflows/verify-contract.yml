@@ -57,5 +57,5 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - name: Contract tests with real PostgreSQL (SubAgentPostgresPersistenceTests no longer skipped)
-        run: dotnet test tests/Agent360.API.ContractTests -c Release
+        run: dotnet run --project tests/Agent360.API.ContractTests -c Release
 
