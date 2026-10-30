@@ -218,6 +218,12 @@ public sealed class WalletService(
             var sender = config["SENDER_EMAIL"] ?? "noreply@hmz.one";
             var recipient = config["ALERT_EMAIL"] ?? "hmzonehub@gmail.com";
 
+            if (string.IsNullOrWhiteSpace(pass))
+            {
+                logger.LogInformation("Skip low balance email alert: SMTP_PASSWORD is not configured");
+                return;
+            }
+
             using var smtp = new SmtpClient(host, port)
             {
                 EnableSsl = true,
