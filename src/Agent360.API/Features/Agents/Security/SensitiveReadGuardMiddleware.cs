@@ -19,9 +19,7 @@ public sealed class SensitiveReadGuardMiddleware(RequestDelegate next)
             return next(http);
         var rel = OperatorWriteGuardMiddleware.Relative(http.Request.Path.Value);
         if (rel is null || !IsSensitive(rel)) return next(http);
-        var hasBearer = http.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
-            || !string.IsNullOrWhiteSpace(http.Request.Query["access_token"].FirstOrDefault());
-        if (http.User.Identity?.IsAuthenticated == true || OperatorAuthFilter.IsAuthorized(http, opt, env) || hasBearer) return next(http);
+        if (http.User.Identity?.IsAuthenticated == true || OperatorAuthFilter.IsAuthorized(http, opt, env)) return next(http);
 
         // Allow signed file-download tokens or direct file-download / file-preview queries (AgentOwnershipGuard still enforces Anyone / assignment check)
         if ((rel.EndsWith("/workspace/file-download", StringComparison.OrdinalIgnoreCase) ||

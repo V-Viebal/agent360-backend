@@ -72,6 +72,15 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
                         continue;
                     }
 
+                    var wsChatScope = await ChatVisibilityGuard.ResolveScopeAsync(agentId, context, ct);
+                    if (wsChatScope is not null && !string.IsNullOrWhiteSpace(sessionId) &&
+                        await ChatVisibilityGuard.EnforceChatAsync(agentId, sessionId, context, qwenPawClient, ct) is not null)
+                    {
+                        var errPayload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "error", error = "CHAT_NOT_FOUND" }));
+                        await webSocket.SendAsync(new ArraySegment<byte>(errPayload), WebSocketMessageType.Text, true, ct);
+                        continue;
+                    }
+
                     if (!IamRevocationGuard.IsExecutionAllowed(agentId, out var reason))
                     {
                         var errPayload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "error", error = "IAM_REVOKED", message = reason }));
@@ -87,7 +96,8 @@ public sealed class ChatWebSocketEndpoint : IEndpoint
                             Message: messageText,
                             AgentId: agentId,
                             ModelSlotOverride: null,
-                            Input: null);
+                            Input: null,
+                            UserId: wsChatScope);
 
                         using var responseStream = await qwenPawClient.StreamConsoleChatAsync(sendReq, ct);
                         if (!responseStream.IsSuccessStatusCode)

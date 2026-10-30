@@ -64,6 +64,12 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     await httpContext.Response.Body.FlushAsync(ct);
                     return;
                 }
+                if (await ChatVisibilityGuard.EnforceChatAsync(agentId, chatId, httpContext, client, ct) is not null)
+                {
+                    httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await httpContext.Response.WriteAsync("data: {\"error\": \"CHAT_NOT_FOUND\"}\n\n", ct);
+                    return;
+                }
 
                 int lastKnownCount = -1;
                 string? lastKnownMessageId = null;
@@ -319,6 +325,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 {
                     return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden);
                 }
+                if (await ChatVisibilityGuard.EnforceChatAsync(agentId, chatId, httpContext, client, ct) is { } hidden) return hidden;
 
                 string sessionId = chatId;
                 string? userId = null;

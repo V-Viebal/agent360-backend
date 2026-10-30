@@ -208,6 +208,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         group.MapGet("chats/{chatId}", async (string chatId, [FromQuery] string? agentId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
             if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
+            if (await ChatVisibilityGuard.EnforceChatAsync(agentId ?? "mons", chatId, httpContext, client, ct) is { } hidden) return hidden;
             var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>() ?? new Agent360.API.Features.Agents.SubAgents.SessionRoomStore();
             try
             {
@@ -538,6 +539,19 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             string qwenPawSessionId = effectiveSessionId;
             string? detectedChatChannel = request.Channel;
             string? detectedChatUserId = request.UserId;
+            var consoleChatScope = await ChatVisibilityGuard.ResolveScopeAsync(agentTarget, httpContext, ct);
+            if (consoleChatScope is not null)
+            {
+                string? scopeChatsRaw = null;
+                try { scopeChatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
+                if (!ChatVisibilityGuard.CanAccessChat(scopeChatsRaw, effectiveSessionId, consoleChatScope))
+                {
+                    httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await httpContext.Response.WriteAsJsonAsync(new { error = "CHAT_NOT_FOUND", message = $"Chat {effectiveSessionId} not found" }, ct);
+                    return;
+                }
+                detectedChatUserId = consoleChatScope;
+            }
             try
             {
                 var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
@@ -577,7 +591,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                             var uid = m.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
                             if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
                             if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
-                            if (!string.IsNullOrWhiteSpace(uid)) detectedChatUserId = uid;
+                            if (!string.IsNullOrWhiteSpace(uid) && consoleChatScope is null) detectedChatUserId = uid;
                         }
                     }
                 }
@@ -687,6 +701,19 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             string qwenPawSessionId = effectiveSessionId;
             string? detectedChatChannel = request.Channel;
             string? detectedChatUserId = request.UserId;
+            var consoleChatScope = await ChatVisibilityGuard.ResolveScopeAsync(agentTarget, httpContext, ct);
+            if (consoleChatScope is not null)
+            {
+                string? scopeChatsRaw = null;
+                try { scopeChatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
+                if (!ChatVisibilityGuard.CanAccessChat(scopeChatsRaw, effectiveSessionId, consoleChatScope))
+                {
+                    httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await httpContext.Response.WriteAsJsonAsync(new { error = "CHAT_NOT_FOUND", message = $"Chat {effectiveSessionId} not found" }, ct);
+                    return;
+                }
+                detectedChatUserId = consoleChatScope;
+            }
             try
             {
                 var chatsRaw = await client.GetAgentChatsRawAsync(agentTarget, ct);
@@ -726,7 +753,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                             var uid = m.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
                             if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
                             if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
-                            if (!string.IsNullOrWhiteSpace(uid)) detectedChatUserId = uid;
+                            if (!string.IsNullOrWhiteSpace(uid) && consoleChatScope is null) detectedChatUserId = uid;
                         }
                     }
                 }
@@ -1164,6 +1191,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             try
             {
                 var chatsJson = await client.GetAgentChatsRawAsync(agentId, ct);
+                chatsJson = ChatVisibilityGuard.FilterChatsJson(chatsJson, await ChatVisibilityGuard.ResolveScopeAsync(agentId, httpContext, ct));
                 if (string.IsNullOrWhiteSpace(chatsJson))
                 {
                     return TypedResults.Ok(Array.Empty<AgentSessionResponse>());
@@ -1239,6 +1267,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         group.MapGet("{agentId}/chats/{chatId}", async (string agentId, string chatId, HttpContext httpContext, IQwenPawClient client, CancellationToken ct) =>
         {
             if (await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            if (await ChatVisibilityGuard.EnforceChatAsync(agentId, chatId, httpContext, client, ct) is { } hidden) return hidden;
             var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>() ?? new Agent360.API.Features.Agents.SubAgents.SessionRoomStore();
             try
             {

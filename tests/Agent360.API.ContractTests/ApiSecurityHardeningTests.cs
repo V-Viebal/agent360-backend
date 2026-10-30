@@ -155,6 +155,12 @@ public sealed class ApiSecurityHardeningTests
         await mw.InvokeAsync(anon, monitor, env);
         anon.Response.StatusCode.Should().Be(401);
 
+        // A syntactically present but unvalidated bearer must not bypass the guard.
+        var forged = Ctx("/api/v1/agents/mons/chats");
+        forged.Request.Headers.Authorization = "Bearer test-member-token";
+        await mw.InvokeAsync(forged, monitor, env);
+        forged.Response.StatusCode.Should().Be(401);
+
         var op = Ctx("/api/v1/agents/mons/chats");
         op.Request.Headers["X-Agent360-Operator-Token"] = "op-secret";
         await mw.InvokeAsync(op, monitor, env);
@@ -171,6 +177,29 @@ public sealed class ApiSecurityHardeningTests
         var off = Ctx("/api/v1/agents/mons/chats");
         await mw.InvokeAsync(off, monitor, env);
         reached.Should().Be(4);
+    }
+
+    [Fact]
+    public void ChatVisibility_SharedMemberSeesOnlyOwnChats_AdminSeesAll()
+    {
+        const string chats = """
+            [{"id":"a","session_id":"s-a","user_id":"skyer:u1"},
+             {"id":"b","session_id":"s-b","user_id":"default"},
+             {"id":"c","session_id":"s-c","user_id":"skyer:u2"}]
+            """;
+        var own = System.Text.Json.JsonDocument.Parse(ChatVisibilityGuard.FilterChatsJson(chats, "skyer:u1")).RootElement;
+        own.GetArrayLength().Should().Be(1);
+        own[0].GetProperty("id").GetString().Should().Be("a");
+        ChatVisibilityGuard.FilterChatsJson(chats, null).Should().Be(chats);
+        System.Text.Json.JsonDocument.Parse(ChatVisibilityGuard.FilterChatsJson(chats, "")).RootElement.GetArrayLength().Should().Be(0);
+
+        ChatVisibilityGuard.CanAccessChat(chats, "a", "skyer:u1").Should().BeTrue();
+        ChatVisibilityGuard.CanAccessChat(chats, "s-a", "skyer:u1").Should().BeTrue();
+        ChatVisibilityGuard.CanAccessChat(chats, "b", "skyer:u1").Should().BeFalse();
+        ChatVisibilityGuard.CanAccessChat(chats, "s-c", "skyer:u1").Should().BeFalse();
+        ChatVisibilityGuard.CanAccessChat(chats, "session-new", "skyer:u1").Should().BeTrue();
+        ChatVisibilityGuard.CanAccessChat(chats, "session-new", "").Should().BeFalse();
+        ChatVisibilityGuard.CanAccessChat(chats, "c", null).Should().BeTrue();
     }
 
     private sealed class StaticMonitor(Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions v)

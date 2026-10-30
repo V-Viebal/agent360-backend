@@ -236,9 +236,7 @@ public static class AgentOwnershipGuard
 
         // 2. Member user: must have assigned ownership (or Anyone = -1) in user_management."AgentAssignments"
         var userId = currentUser.UserId;
-        var hasBearer = context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
-            || !string.IsNullOrWhiteSpace(context.Request.Query["access_token"].FirstOrDefault());
-        var isAuthenticated = context.User.Identity?.IsAuthenticated == true || (userId is > 0) || hasBearer;
+        var isAuthenticated = context.User.Identity?.IsAuthenticated == true || (userId is > 0);
         var isReadOnlyFileOrPreview =
             (HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method)) &&
             (context.Request.Path.Value?.Contains("/workspace/file-", StringComparison.OrdinalIgnoreCase) == true ||

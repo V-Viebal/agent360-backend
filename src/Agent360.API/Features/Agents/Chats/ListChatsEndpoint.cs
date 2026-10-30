@@ -64,6 +64,8 @@ public sealed class ListChatsEndpoint : IEndpoint
                 try
                 {
                     var chatsJson = await client.GetAgentChatsRawAsync(agentId ?? "mons", cancellationToken);
+                    var chatScope = await Agent360.API.Features.Agents.Security.ChatVisibilityGuard.ResolveScopeAsync(agentId ?? "mons", httpContext, cancellationToken);
+                    chatsJson = Agent360.API.Features.Agents.Security.ChatVisibilityGuard.FilterChatsJson(chatsJson, chatScope);
                     chats = string.IsNullOrWhiteSpace(chatsJson)
                         ? Array.Empty<QwenPawChatDto>()
                         : System.Text.Json.JsonSerializer.Deserialize<IReadOnlyList<QwenPawChatDto>>(chatsJson);
@@ -135,9 +137,10 @@ public sealed class ListChatsEndpoint : IEndpoint
         // Mark session as read
         routeBuilder.MapPost(
             "chats/{chatId}/read",
-            async (string chatId, [FromQuery] string? agentId, HttpContext httpContext, IFleetInstanceRoutingService routing, CancellationToken ct) =>
+            async (string chatId, [FromQuery] string? agentId, HttpContext httpContext, IFleetInstanceRoutingService routing, IQwenPawClient qwenPawClient, CancellationToken ct) =>
             {
                 if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId ?? "mons", httpContext, ct) is { } denied) return denied;
+                if (await Agent360.API.Features.Agents.Security.ChatVisibilityGuard.EnforceChatAsync(agentId ?? "mons", chatId, httpContext, qwenPawClient, ct) is { } hidden) return hidden;
                 ChannelResponseStore.MarkRead(chatId);
                 try
                 {
@@ -165,9 +168,10 @@ public sealed class ListChatsEndpoint : IEndpoint
 
         routeBuilder.MapPost(
             "agents/{agentId}/chats/{chatId}/read",
-            async (string agentId, string chatId, HttpContext httpContext, IFleetInstanceRoutingService routing, CancellationToken ct) =>
+            async (string agentId, string chatId, HttpContext httpContext, IFleetInstanceRoutingService routing, IQwenPawClient qwenPawClient, CancellationToken ct) =>
             {
                 if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+                if (await Agent360.API.Features.Agents.Security.ChatVisibilityGuard.EnforceChatAsync(agentId, chatId, httpContext, qwenPawClient, ct) is { } hidden) return hidden;
                 ChannelResponseStore.MarkRead(chatId);
                 try
                 {
@@ -204,6 +208,7 @@ public sealed class ListChatsEndpoint : IEndpoint
             CancellationToken ct)
         {
             if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            if (await Agent360.API.Features.Agents.Security.ChatVisibilityGuard.EnforceChatAsync(agentId, chatId, httpContext, client, ct) is { } hidden) return hidden;
             var rawTitle = body?.Title ?? body?.Name;
             var hasTitle = !string.IsNullOrWhiteSpace(rawTitle);
             var hasPinned = body?.Pinned.HasValue == true;
@@ -397,6 +402,7 @@ public sealed class ListChatsEndpoint : IEndpoint
             CancellationToken ct)
         {
             if (await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied) return denied;
+            if (await Agent360.API.Features.Agents.Security.ChatVisibilityGuard.EnforceChatAsync(agentId, chatId, httpContext, client, ct) is { } hidden) return hidden;
             var target = routing.ResolveTarget(agentId);
             if (target.Instance is null)
             {

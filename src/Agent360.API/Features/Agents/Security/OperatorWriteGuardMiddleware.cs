@@ -34,10 +34,9 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
         if (!opt.ProtectRuntimeProxyWrites) return next(http);
         var rel = Relative(http.Request.Path.Value);
         if (rel is null || !IsProtected(rel)) return next(http);
-        var hasBearer = http.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true;
         if (OperatorAuthFilter.IsAuthorized(http, opt, env)
             || OperatorAuthFilter.IsSignedInAdmin(http, opt)
-            || ((http.User.Identity?.IsAuthenticated == true || hasBearer) && IsUserOwnedAgentWrite(rel)))
+            || (http.User.Identity?.IsAuthenticated == true && IsUserOwnedAgentWrite(rel)))
         {
             return next(http);
         }
