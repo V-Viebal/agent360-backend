@@ -1,5 +1,3 @@
-using System.Net.Http.Headers;
-using System.Text.Json.Nodes;
 using Hmz.Core.SharedKernel.Authorization;
 using Agent360.API.Identity;
 using Agent360.UserManagement.Domain.UserAggregate;
@@ -7,6 +5,7 @@ using Agent360.UserManagement.Infrastructure.Authorization;
 using Agent360.UserManagement.Infrastructure.Persistence;
 using Agent360.UserManagement.UseCase.Abstractions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Npgsql;
 
 namespace Agent360.API.Middlewares;
@@ -14,7 +13,6 @@ namespace Agent360.API.Middlewares;
 public sealed class UserResolutionMiddleware(
     RequestDelegate next,
     ILogger<UserResolutionMiddleware> logger,
-    IHttpClientFactory httpClientFactory,
     IConfiguration configuration)
 {
     public async Task InvokeAsync(
@@ -23,7 +21,10 @@ public sealed class UserResolutionMiddleware(
         CurrentUser currentUser,
         PermissionSnapshotResolver permissionResolver,
         IPermissionSnapshotAccessor snapshotAccessor,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        LogtoManagementClient logto,
+        Microsoft.Extensions.Caching.Memory.IMemoryCache memoryCache,
+        Microsoft.Extensions.Caching.Hybrid.HybridCache hybridCache)
     {
         if (currentUser.IsAuthenticated && !string.IsNullOrWhiteSpace(currentUser.ExternalUserId))
         {
@@ -48,12 +49,12 @@ public sealed class UserResolutionMiddleware(
                         // Fetch the real identity from Logto Management API on first sign-in / sign-up!
                         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(name))
                         {
-                            var logtoProfile = await FetchLogtoUserProfileAsync(currentUser.ExternalUserId, context.RequestAborted);
+                            var logtoProfile = await logto.GetUserAsync(currentUser.ExternalUserId, context.RequestAborted);
                             if (logtoProfile is not null)
                             {
-                                if (string.IsNullOrWhiteSpace(email)) email = logtoProfile.Value.Email;
-                                if (string.IsNullOrWhiteSpace(name)) name = logtoProfile.Value.Name;
-                                if (string.IsNullOrWhiteSpace(avatarUrl)) avatarUrl = logtoProfile.Value.AvatarUrl;
+                                if (string.IsNullOrWhiteSpace(email)) email = logtoProfile.Email;
+                                if (string.IsNullOrWhiteSpace(name)) name = logtoProfile.Name;
+                                if (string.IsNullOrWhiteSpace(avatarUrl)) avatarUrl = logtoProfile.AvatarUrl;
                             }
                         }
 
@@ -63,10 +64,9 @@ public sealed class UserResolutionMiddleware(
                         var firstName = parts.Length > 0 ? parts[0] : finalName;
                         var lastName = parts.Length > 1 ? parts[1] : "";
 
-                        // Default to Customer role (Id 1) or Admin role (Id 2) if admin claim present
-                        var isAdmin = context.User.FindAll("roles").Concat(context.User.FindAll(System.Security.Claims.ClaimTypes.Role))
-                            .Any(r => string.Equals(r.Value, "admin", StringComparison.OrdinalIgnoreCase));
-                        var defaultRoleId = isAdmin ? 2L : 1L;
+                        // Access tokens carry no role claims; the user's Logto "admin" role decides the initial local role.
+                        var isAdmin = await logto.IsLogtoAdminAsync(currentUser.ExternalUserId, context.RequestAborted) == true;
+                        var defaultRoleId = isAdmin ? AdminRoleId : CustomerRoleId;
 
                         var newUser = User.Register(
                             currentUser.ExternalUserId,
@@ -97,6 +97,8 @@ public sealed class UserResolutionMiddleware(
 
             if (localId is { } userId)
             {
+                await ReconcileAdminRoleAsync(userId, currentUser.ExternalUserId, logto, memoryCache, hybridCache, context.RequestAborted);
+
                 try
                 {
                     snapshotAccessor.Set(await permissionResolver.ResolveAsync(userId, context.RequestAborted));
@@ -110,7 +112,7 @@ public sealed class UserResolutionMiddleware(
                 // values ("User Skyer" or "{sub}@skyer.hmz.one"), self-heal it once from Logto Management API!
                 if (context.Request.Path.Value?.EndsWith("/users/me", StringComparison.OrdinalIgnoreCase) == true)
                 {
-                    await HealPlaceholderUserRecordIfNeededAsync(userId, currentUser.ExternalUserId, context.RequestAborted);
+                    await HealPlaceholderUserRecordIfNeededAsync(userId, currentUser.ExternalUserId, logto, context.RequestAborted);
                 }
             }
         }
@@ -118,7 +120,7 @@ public sealed class UserResolutionMiddleware(
         await next(context);
     }
 
-    private async Task HealPlaceholderUserRecordIfNeededAsync(long userId, string externalUserId, CancellationToken ct)
+    private async Task HealPlaceholderUserRecordIfNeededAsync(long userId, string externalUserId, LogtoManagementClient logto, CancellationToken ct)
     {
         var connStr = configuration.GetConnectionString("DefaultConnection") ?? configuration.GetConnectionString("Postgres");
         if (string.IsNullOrWhiteSpace(connStr)) return;
@@ -151,11 +153,11 @@ public sealed class UserResolutionMiddleware(
 
             if (!isPlaceholderEmail && !isPlaceholderName) return;
 
-            var logtoProfile = await FetchLogtoUserProfileAsync(externalUserId, ct);
+            var logtoProfile = await logto.GetUserAsync(externalUserId, ct);
             if (logtoProfile is null) return;
 
-            var realEmail = !string.IsNullOrWhiteSpace(logtoProfile.Value.Email) ? logtoProfile.Value.Email : currentEmail;
-            var realName = !string.IsNullOrWhiteSpace(logtoProfile.Value.Name) ? logtoProfile.Value.Name : currentDisplayName;
+            var realEmail = !string.IsNullOrWhiteSpace(logtoProfile.Email) ? logtoProfile.Email : currentEmail;
+            var realName = !string.IsNullOrWhiteSpace(logtoProfile.Name) ? logtoProfile.Name : currentDisplayName;
             if (string.IsNullOrWhiteSpace(realEmail) && string.IsNullOrWhiteSpace(realName)) return;
 
             var parts = (realName ?? "User").Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
@@ -176,7 +178,7 @@ public sealed class UserResolutionMiddleware(
             updCmd.Parameters.AddWithValue((object?)realName ?? DBNull.Value);
             updCmd.Parameters.AddWithValue(firstName);
             updCmd.Parameters.AddWithValue(lastName);
-            updCmd.Parameters.AddWithValue((object?)logtoProfile.Value.AvatarUrl ?? DBNull.Value);
+            updCmd.Parameters.AddWithValue((object?)logtoProfile.AvatarUrl ?? DBNull.Value);
             updCmd.Parameters.AddWithValue(userId);
             await updCmd.ExecuteNonQueryAsync(ct);
         }
@@ -186,64 +188,100 @@ public sealed class UserResolutionMiddleware(
         }
     }
 
-    private async Task<(string? Email, string? Name, string? AvatarUrl)?> FetchLogtoUserProfileAsync(string externalUserId, CancellationToken ct)
+    private const long CustomerRoleId = 1L;
+    private const long AdminRoleId = 2L;
+    private static readonly TimeSpan RoleSyncInterval = TimeSpan.FromMinutes(2);
+
+    public static string RoleSyncCacheKey(string externalUserId) => $"logto:role-sync:{externalUserId}";
+
+    /// <summary>
+    /// Keeps the local platform role in line with the user's Logto "admin" role (the identity provider owns
+    /// admin membership; the admin UI writes role changes to Logto first). Throttled per user; when Logto cannot
+    /// be read the local role is left unchanged. SYSTEM users are never touched.
+    /// </summary>
+    private async Task ReconcileAdminRoleAsync(
+        long userId,
+        string externalUserId,
+        LogtoManagementClient logto,
+        Microsoft.Extensions.Caching.Memory.IMemoryCache memoryCache,
+        Microsoft.Extensions.Caching.Hybrid.HybridCache hybridCache,
+        CancellationToken ct)
     {
+        var syncKey = RoleSyncCacheKey(externalUserId);
+        if (memoryCache.TryGetValue(syncKey, out _)) return;
+
+        var logtoAdmin = await logto.IsLogtoAdminAsync(externalUserId, ct);
+        if (logtoAdmin is null)
+        {
+            // Logto unreachable or unknown subject: retry soon, never change roles on an error.
+            memoryCache.Set(syncKey, true, TimeSpan.FromSeconds(20));
+            return;
+        }
+
+        var connStr = configuration.GetConnectionString("DefaultConnection") ?? configuration.GetConnectionString("Postgres");
+        if (string.IsNullOrWhiteSpace(connStr)) return;
+
         try
         {
-            var endpoint = "https://auth-skyer.hmz.one";
-            var m2mId = "skyer-m2m-backend";
-            var m2mSecret = "7pPJ85w2sM3l7CtgxTVZdGz7WEtvBb9P";
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
 
-            var httpClient = httpClientFactory.CreateClient();
-            httpClient.Timeout = TimeSpan.FromSeconds(8);
-
-            using var tokenReq = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/oidc/token")
+            var codes = new List<string>();
+            await using (var cmd = new NpgsqlCommand(
+                @"SELECT UPPER(r.""Code"") FROM user_management.""UserRoles"" ur
+                  JOIN user_management.""Roles"" r ON ur.""RoleId"" = r.""Id""
+                  WHERE ur.""UserId"" = $1;", conn))
             {
-                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                cmd.Parameters.AddWithValue(userId);
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct)) codes.Add(reader.GetString(0));
+            }
+
+            if (codes.Contains("SYSTEM"))
+            {
+                memoryCache.Set(syncKey, true, RoleSyncInterval);
+                return;
+            }
+
+            var localAdmin = codes.Contains("ADMIN");
+            if (localAdmin != logtoAdmin.Value)
+            {
+                var targetRoleId = logtoAdmin.Value ? AdminRoleId : CustomerRoleId;
+                await using var tx = await conn.BeginTransactionAsync(ct);
+                await using (var del = new NpgsqlCommand(
+                    @"DELETE FROM user_management.""UserRoles"" WHERE ""UserId"" = $1 AND ""RoleId"" IN ($2, $3);", conn, tx))
                 {
-                    ["grant_type"] = "client_credentials",
-                    ["client_id"] = m2mId,
-                    ["client_secret"] = m2mSecret,
-                    ["resource"] = "https://default.logto.app/api",
-                    ["scope"] = "all"
-                })
-            };
-            tokenReq.Headers.Add("User-Agent", "Agent360/1.0");
+                    del.Parameters.AddWithValue(userId);
+                    del.Parameters.AddWithValue(CustomerRoleId);
+                    del.Parameters.AddWithValue(AdminRoleId);
+                    await del.ExecuteNonQueryAsync(ct);
+                }
+                await using (var ins = new NpgsqlCommand(
+                    @"INSERT INTO user_management.""UserRoles"" (""UserId"", ""RoleId"", ""Id"", ""CreatedAt"", ""CreatedBy"", ""ModifiedAt"", ""ModifiedBy"")
+                      VALUES ($1, $2, $1, NOW(), 1, NOW(), 1) ON CONFLICT DO NOTHING;", conn, tx))
+                {
+                    ins.Parameters.AddWithValue(userId);
+                    ins.Parameters.AddWithValue(targetRoleId);
+                    await ins.ExecuteNonQueryAsync(ct);
+                }
+                await using (var stamp = new NpgsqlCommand(
+                    @"UPDATE user_management.""Users"" SET ""PermissionStamp"" = NOW() WHERE ""Id"" = $1;", conn, tx))
+                {
+                    stamp.Parameters.AddWithValue(userId);
+                    await stamp.ExecuteNonQueryAsync(ct);
+                }
+                await tx.CommitAsync(ct);
 
-            using var tokenResp = await httpClient.SendAsync(tokenReq, ct);
-            if (!tokenResp.IsSuccessStatusCode) return null;
+                await hybridCache.RemoveAsync($"um:permissions:user:{userId}", ct);
+                await hybridCache.RemoveByTagAsync($"um:permissions:user:{userId}", ct);
+                logger.LogInformation("Reconciled local role of user {UserId} ({ExternalUserId}) to {Role} from Logto", userId, externalUserId, logtoAdmin.Value ? "ADMIN" : "CUSTOMER");
+            }
 
-            var tokenJson = await tokenResp.Content.ReadFromJsonAsync<JsonObject>(ct);
-            var mgmtToken = tokenJson?["access_token"]?.ToString();
-            if (string.IsNullOrWhiteSpace(mgmtToken)) return null;
-
-            using var userReq = new HttpRequestMessage(HttpMethod.Get, $"{endpoint}/api/users/{Uri.EscapeDataString(externalUserId)}");
-            userReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", mgmtToken);
-            userReq.Headers.Add("User-Agent", "Agent360/1.0");
-
-            using var userResp = await httpClient.SendAsync(userReq, ct);
-            if (!userResp.IsSuccessStatusCode) return null;
-
-            var u = await userResp.Content.ReadFromJsonAsync<JsonObject>(ct);
-            if (u is null) return null;
-
-            var identities = u["identities"] as JsonObject;
-            var googleDetails = identities?["google"]?["details"] as JsonObject;
-
-            var email = u["primaryEmail"]?.ToString()
-                ?? googleDetails?["email"]?.ToString();
-            var name = u["name"]?.ToString()
-                ?? googleDetails?["name"]?.ToString()
-                ?? u["username"]?.ToString()
-                ?? email?.Split('@')[0];
-            var avatarUrl = u["avatar"]?.ToString()
-                ?? googleDetails?["avatar"]?.ToString();
-
-            return (email, name, avatarUrl);
+            memoryCache.Set(syncKey, true, RoleSyncInterval);
         }
-        catch
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            return null;
+            logger.LogWarning(ex, "Role reconciliation from Logto failed for user {UserId}", userId);
         }
     }
 }

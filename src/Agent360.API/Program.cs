@@ -229,6 +229,7 @@ try
 
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<CurrentUser>();
+    builder.Services.AddSingleton<LogtoManagementClient>();
     builder.Services.AddScoped<ICurrentUser>(sp => sp.GetRequiredService<CurrentUser>());
 
     var app = builder.Build();
