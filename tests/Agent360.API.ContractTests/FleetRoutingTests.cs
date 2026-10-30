@@ -17,7 +17,7 @@ public sealed class FleetRoutingTests
     [Theory]
     [InlineData("mons", "core", "mons")]
     [InlineData("bot:agent360:default-core", "core", "default")]
-    [InlineData("mons-QwenPaw_QA_Agent_0.2", "core", "QwenPaw_QA_Agent_0.2")]
+    [InlineData("mons-QwenPaw_QA_Agent_0.2", "core", "AgentCore_QA_Agent_0.2")]
     [InlineData("gm-boc", "gm", "default")]
     [InlineData("gm-team", "gm", "team")]
     [InlineData("gm-lua", "gm", "customer")]
