@@ -41,7 +41,7 @@ public sealed class AgentProfileEndpoint : IEndpoint
                         return Results.Problem("Invalid JSON payload", statusCode: StatusCodes.Status400BadRequest);
                     }
 
-                    if (body.ToJsonString().Length > 50000)
+                    if (body.ToJsonString().Length > 10_000_000)
                     {
                         return Results.Problem("Payload too large", statusCode: StatusCodes.Status400BadRequest);
                     }
