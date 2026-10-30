@@ -1,0 +1,8 @@
+<Project>
+  <!-- Suppress VSTest deprecation error for dotnet test on .NET 10 with Microsoft.Testing.Platform runner -->
+  <Target Name="_MTPBeforeVSTest" BeforeTargets="VSTest">
+    <PropertyGroup>
+      <_SupportsGlobalJsonTestRunner>false</_SupportsGlobalJsonTestRunner>
+    </PropertyGroup>
+  </Target>
+</Project>
