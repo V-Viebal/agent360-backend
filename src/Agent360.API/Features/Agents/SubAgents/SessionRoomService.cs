@@ -1177,10 +1177,22 @@ public sealed class SessionRoomStore
         return extractedWaves;
     }
 
+    private static readonly System.Text.RegularExpressions.Regex InlineBase64PayloadRegex = new(
+        @"(\\u0022|\\""|"")data\1:\s*\1[A-Za-z0-9+/=\\u]{2048,}\1",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public string EnrichChatHistoryJson(string historyRaw, string? agentId, string chatId)
     {
         try
         {
+            if (!string.IsNullOrEmpty(historyRaw) && historyRaw.Length > 32768)
+            {
+                historyRaw = InlineBase64PayloadRegex.Replace(historyRaw, m =>
+                {
+                    var q = m.Groups[1].Value;
+                    return $"{q}data{q}:{q}[base64_image_omitted]{q}";
+                });
+            }
             var node = System.Text.Json.Nodes.JsonNode.Parse(string.IsNullOrWhiteSpace(historyRaw) ? "{}" : historyRaw) as System.Text.Json.Nodes.JsonObject
                 ?? new System.Text.Json.Nodes.JsonObject();
 
