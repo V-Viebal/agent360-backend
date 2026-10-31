@@ -978,6 +978,83 @@ public sealed class SessionRoomStore
         };
     }
 
+    private static readonly Regex SystemNotificationBlockRegex = new(
+        @"<system-(?:notification|info|reminder)>[\s\S]*?</system-(?:notification|info|reminder)>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex HeadlineLineRegex = new(
+        @"^[ \t]*(?:<!--)?[ \t]*[⟦〚][ \t]*(.+?)[ \t]*[⟧〛][ \t]*(?:-->)?[ \t]*$",
+        RegexOptions.Multiline | RegexOptions.Compiled);
+
+    private static string StripInternalRuntimeArtifacts(string rawStr)
+    {
+        if (string.IsNullOrEmpty(rawStr)) return rawStr;
+        var cleaned = SystemNotificationBlockRegex.Replace(rawStr, "");
+        cleaned = HeadlineLineRegex.Replace(cleaned, "");
+        cleaned = Regex.Replace(cleaned, @"\n{3,}", "\n\n");
+        return cleaned.Trim();
+    }
+
+    private static bool IsInternalRuntimeMessageNode(System.Text.Json.Nodes.JsonObject msgObj)
+    {
+        var origName = msgObj["metadata"]?["original_name"]?.ToString() ?? msgObj["name"]?.ToString();
+        if (string.Equals(origName, "system", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(origName, "memory", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(origName, "visual_history", StringComparison.OrdinalIgnoreCase))
+        {
+            var mtype = msgObj["type"]?.ToString() ?? "message";
+            if (string.Equals(mtype, "message", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(mtype))
+            {
+                return true;
+            }
+        }
+        var txt = ExtractMessageNodeText(msgObj).Trim();
+        if (txt.StartsWith("<system-notification>", StringComparison.OrdinalIgnoreCase) &&
+            txt.EndsWith("</system-notification>", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private static bool SanitizeAssistantMessageContent(System.Text.Json.Nodes.JsonObject msgObj)
+    {
+        var role = msgObj["role"]?.ToString();
+        if (!string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase)) return true;
+        var mtype = msgObj["type"]?.ToString() ?? "message";
+        if (!string.Equals(mtype, "message", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(mtype)) return true;
+
+        if (msgObj["content"] is System.Text.Json.Nodes.JsonValue sVal && sVal.TryGetValue<string>(out var rStr))
+        {
+            var cleaned = StripInternalRuntimeArtifacts(rStr);
+            if (string.IsNullOrWhiteSpace(cleaned)) return false;
+            msgObj["content"] = cleaned;
+            return true;
+        }
+        if (msgObj["content"] is System.Text.Json.Nodes.JsonArray cArr)
+        {
+            var hasAny = false;
+            foreach (var part in cArr.OfType<System.Text.Json.Nodes.JsonObject>())
+            {
+                var pType = part["type"]?.ToString() ?? "text";
+                if (string.Equals(pType, "text", StringComparison.OrdinalIgnoreCase) &&
+                    part["text"] is System.Text.Json.Nodes.JsonValue tVal &&
+                    tVal.TryGetValue<string>(out var pStr))
+                {
+                    var cleaned = StripInternalRuntimeArtifacts(pStr);
+                    part["text"] = cleaned;
+                    if (!string.IsNullOrWhiteSpace(cleaned)) hasAny = true;
+                }
+                else
+                {
+                    hasAny = true;
+                }
+            }
+            return hasAny;
+        }
+        return true;
+    }
+
     private static string StripSharedRoomContextPreservingAttachments(string rawStr)
     {
         if (string.IsNullOrEmpty(rawStr)) return rawStr;
@@ -1127,6 +1204,10 @@ public sealed class SessionRoomStore
                 var soloFiltered = new List<System.Text.Json.Nodes.JsonObject>();
                 foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
                 {
+                    if (IsInternalRuntimeMessageNode(msgObj) || !SanitizeAssistantMessageContent(msgObj))
+                    {
+                        continue;
+                    }
                     var role = msgObj["role"]?.ToString();
                     var txt = ExtractMessageNodeText(msgObj);
                     if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) &&
@@ -1336,6 +1417,10 @@ public sealed class SessionRoomStore
             var filteredList = new List<System.Text.Json.Nodes.JsonObject>();
             foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
             {
+                if (IsInternalRuntimeMessageNode(msgObj) || !SanitizeAssistantMessageContent(msgObj))
+                {
+                    continue;
+                }
                 var role = msgObj["role"]?.ToString();
                 var text = ExtractMessageNodeText(msgObj);
                 if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) && text.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))

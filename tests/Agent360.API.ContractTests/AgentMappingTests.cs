@@ -256,6 +256,62 @@ public sealed class AgentMappingTests
         }
     }
 
+
+    [Fact]
+    public void SessionRoomStore_EnrichChatHistoryJson_StripsInternalRuntimeNoticesAndHeadlines()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "a360-room-store-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var store = new Agent360.API.Features.Agents.SubAgents.SessionRoomStore(new TestEnv(tempDir));
+
+            const string rawHistory = """
+            {
+              "messages": [
+                {
+                  "id": "m-user-1",
+                  "role": "user",
+                  "type": "message",
+                  "content": [{ "type": "text", "text": "tóm tắt đi" }],
+                  "metadata": { "original_name": "user" }
+                },
+                {
+                  "id": "m-sys-notice",
+                  "role": "assistant",
+                  "type": "message",
+                  "content": [{ "type": "text", "text": "<system-notification>\nThe tools available to you changed since earlier in this conversation.\n</system-notification>" }],
+                  "metadata": { "original_name": "system" }
+                },
+                {
+                  "id": "m-asst-1",
+                  "role": "assistant",
+                  "type": "message",
+                  "content": [{ "type": "text", "text": "<system-notification>\nBackground tool call finished.\n</system-notification>\n\nEm tóm tắt cuốn theo 13 chương, bằng lời của em, không dịch nguyên văn.\n\n⟦ Dzogchen Teachings summary | completed ⟧" }],
+                  "metadata": { "original_name": "Default" }
+                }
+              ],
+              "status": "idle"
+            }
+            """;
+
+            var enriched = store.EnrichChatHistoryJson(rawHistory, "qwenpaw-test-ba", "chat-test-123");
+            using var parsedDoc = System.Text.Json.JsonDocument.Parse(enriched);
+            var msgs = parsedDoc.RootElement.GetProperty("messages");
+            Assert.Equal(2, msgs.GetArrayLength());
+            Assert.Equal("m-user-1", msgs[0].GetProperty("id").GetString());
+            Assert.Equal("m-asst-1", msgs[1].GetProperty("id").GetString());
+            var asstText = msgs[1].GetProperty("content")[0].GetProperty("text").GetString() ?? "";
+            Assert.DoesNotContain("<system-notification>", asstText);
+            Assert.DoesNotContain("⟦", asstText);
+            Assert.Equal("Em tóm tắt cuốn theo 13 chương, bằng lời của em, không dịch nguyên văn.", asstText);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
     private sealed class StubMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
