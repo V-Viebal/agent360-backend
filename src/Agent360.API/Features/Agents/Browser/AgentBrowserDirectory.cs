@@ -107,7 +107,20 @@ public sealed class AgentBrowserDirectory(
         _options.Instances.TryGetValue(key, out var cfg);
         var service = Nonblank(cfg?.BrowserService) ?? builtIn?.Service;
         var viewer = Nonblank(cfg?.BrowserViewerUrl) is { } v && v.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? v.TrimEnd('/') : builtIn?.ViewerUrl;
-        var profiles = ParseProfileMap(cfg?.BrowserProfileMap) ?? builtIn?.Profiles;
+        // Built-in profiles contain the canonical agent mappings for all known profiles (including planthy marketing agents).
+        // If an env override is missing a newly added profile, merge it with built-in profiles so no agent gets a 404.
+        var envProfiles = ParseProfileMap(cfg?.BrowserProfileMap);
+        IReadOnlyDictionary<string, string>? profiles;
+        if (envProfiles is not null && builtIn?.Profiles is not null)
+        {
+            var merged = new Dictionary<string, string>(builtIn.Profiles, StringComparer.OrdinalIgnoreCase);
+            foreach (var (profKey, profVal) in envProfiles) merged[profKey] = profVal;
+            profiles = merged;
+        }
+        else
+        {
+            profiles = envProfiles ?? builtIn?.Profiles;
+        }
         if (service is null || viewer is null || profiles is null)
         {
             return null;
