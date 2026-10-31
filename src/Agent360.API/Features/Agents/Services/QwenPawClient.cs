@@ -480,7 +480,7 @@ public sealed class QwenPawClient : IQwenPawClient
             "marketing_scout" => "planthy-marketing-scout",
             "marketing_creator" => "planthy-marketing-creator",
             "marketing_publisher" => "planthy-marketing-publisher",
-            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "planthy-qa",
+            "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "", // Obsolete QA helper suppressed from active fleet
             _ => $"planthy-{profileId.Replace('_', '-')}"
         },
         "agentteams" => profileId switch { "default" => "agentteams-manager", "QwenPaw_QA_Agent_0.2" or "AgentCore_QA_Agent_0.2" => "agentteams-qa", _ => $"agentteams-manager-{profileId}" },
