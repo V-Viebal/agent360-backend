@@ -124,7 +124,7 @@ public sealed class BrowserViewerAccessEndpoint : IEndpoint
         routeBuilder.MapPost(
             "agents/{agentId}/browser/viewer",
             async Task<IResult> (string agentId, HttpContext http, CurrentUser currentUser, IConfiguration config,
-                AgentBrowserDirectory directory, BrowserViewerAccess access,
+                AgentBrowserDirectory directory, BrowserViewerAccess access, IHttpClientFactory httpFactory,
                 IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment env,
                 Microsoft.AspNetCore.Authorization.IAuthorizationService authorization, CancellationToken ct) =>
             {
@@ -153,6 +153,14 @@ public sealed class BrowserViewerAccessEndpoint : IEndpoint
                 {
                     return TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser" });
                 }
+                // Best-effort: bring the agent's own Chromium profile window and active tab to the front of the Selkies desktop
+                try
+                {
+                    using var fcts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    fcts.CancelAfter(TimeSpan.FromSeconds(3));
+                    await AgentBrowserCdpEndpoint.FocusAgentWindowAsync(directory, httpFactory, agentId, fcts.Token);
+                }
+                catch { }
                 var mode = string.Equals(http.Request.Query["mode"], "watch", StringComparison.OrdinalIgnoreCase) ? "watch" : "control";
                 var host = new Uri(viewerUrl).Host;
                 var token = access.Sign("session", host, mode, DateTimeOffset.UtcNow.Add(BrowserViewerAccess.SessionTtl));

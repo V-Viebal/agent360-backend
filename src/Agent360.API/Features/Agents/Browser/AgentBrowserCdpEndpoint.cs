@@ -370,6 +370,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         return data;
     }
 
+    internal static async Task<bool> FocusAgentWindowAsync(AgentBrowserDirectory directory, IHttpClientFactory httpFactory, string agentId, CancellationToken ct)
+    {
+        var (page, cdp, contextId, _) = await PickPageAsync(directory, agentId, null, ct);
+        if (page is null || string.IsNullOrEmpty(cdp)) return false;
+        return await ActivateAsync(httpFactory, cdp, page.TargetId, contextId, ct);
+    }
+
     private static async Task<(AgentBrowserTab? Page, string? Cdp, string? ContextId, string? Error)> PickPageAsync(
         AgentBrowserDirectory directory, string agentId, string? pageId, CancellationToken ct)
     {
