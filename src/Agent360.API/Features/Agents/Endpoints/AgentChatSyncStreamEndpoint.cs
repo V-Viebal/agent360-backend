@@ -242,7 +242,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                             Channel: detectedChannel,
                                             Role: role,
                                             Content: extractedContent,
-                                            Status: msgStatus ?? "completed",
+                                            Status: isTurnRunning ? "running" : (msgStatus ?? "completed"),
                                             RecordedAt: DateTime.UtcNow
                                         ));
                                     }
@@ -358,6 +358,13 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     catch (Exception) when (!ct.IsCancellationRequested)
                     {
                     }
+                }
+
+                if (!foundChat)
+                {
+                    httpContext.Response.ContentType = "text/event-stream";
+                    await httpContext.Response.WriteAsync(": idle\n\n", ct);
+                    return Results.Empty;
                 }
 
                 httpContext.Response.ContentType = "text/event-stream";
