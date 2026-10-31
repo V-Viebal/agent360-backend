@@ -610,7 +610,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 }
 
                 Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                    agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
+                    agentTarget, qwenPawSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted", chatId: effectiveSessionId);
 
                 var effectiveRequest = request with
                 {
@@ -627,7 +627,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 {
                     client.InvalidateChatList(agentTarget);
                     Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                        agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
+                        agentTarget, qwenPawSessionId, request.Channel ?? "console", "assistant", "", "completed", chatId: effectiveSessionId);
                 }
             }
             finally
@@ -772,7 +772,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 }
 
                 Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                    agentTarget, effectiveSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted");
+                    agentTarget, qwenPawSessionId, request.Channel ?? "console", "user", request.Message ?? "", "submitted", chatId: effectiveSessionId);
 
                 var effectiveRequest = request with
                 {
@@ -789,7 +789,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 {
                     client.InvalidateChatList(agentTarget);
                     Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                        agentTarget, effectiveSessionId, request.Channel ?? "console", "assistant", "", "completed");
+                        agentTarget, qwenPawSessionId, request.Channel ?? "console", "assistant", "", "completed", chatId: effectiveSessionId);
                 }
             }
             finally
@@ -2413,7 +2413,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     try
                     {
                         Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
-                            agentTarget, effectiveSessionId, capturedChannel, "assistant", "", "completed");
+                            agentTarget, qwenPawSessionId, capturedChannel, "assistant", "", "completed", chatId: effectiveSessionId);
                     }
                     catch {}
                     queueManager.SetSessionTurnActive(effectiveSessionId, false, agentTarget);

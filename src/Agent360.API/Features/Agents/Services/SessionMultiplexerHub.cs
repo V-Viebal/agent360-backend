@@ -88,7 +88,8 @@ public sealed class SessionMultiplexerHub : IDisposable
         var payload = JsonSerializer.Serialize(new
         {
             type = "session_turn_update",
-            id = ev.Id,
+            event_id = ev.Id,
+            chat_id = ev.ChatId,
             agent_id = normalizedAgentId,
             session_id = ev.SessionId,
             channel = ev.Channel,

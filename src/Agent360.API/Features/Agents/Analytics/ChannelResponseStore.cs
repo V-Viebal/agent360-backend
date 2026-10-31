@@ -14,7 +14,8 @@ public sealed record ChannelResponseEvent(
     string? Tool = null,
     string? Arguments = null,
     string? Result = null,
-    string? Metadata = null);
+    string? Metadata = null,
+    string? ChatId = null);
 
 public static class ChannelResponseStore
 {
@@ -57,7 +58,8 @@ public static class ChannelResponseStore
         string? tool = null,
         string? arguments = null,
         string? result = null,
-        string? metadata = null)
+        string? metadata = null,
+        string? chatId = null)
     {
         var ev = new ChannelResponseEvent(
             Id: id ?? Guid.NewGuid().ToString("N"),
@@ -71,7 +73,8 @@ public static class ChannelResponseStore
             Tool: tool,
             Arguments: arguments,
             Result: result,
-            Metadata: metadata
+            Metadata: metadata,
+            ChatId: chatId
         );
         Record(ev);
         return ev;

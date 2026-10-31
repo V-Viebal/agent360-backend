@@ -277,4 +277,56 @@ public sealed class ApiSecurityHardeningTests
         System.Text.Json.JsonDocument.Parse(filteredMkaiUnassigned).RootElement.GetArrayLength().Should().Be(0);
     }
 
+    [Fact]
+    public async Task SessionMultiplexerHub_EmitsExplicitEventIdAndChatId_NeverOverloadingId()
+    {
+        var qm = new Agent360.API.Features.Agents.Services.SessionQueueManager();
+        using var hub = new Agent360.API.Features.Agents.Services.SessionMultiplexerHub(
+            qm,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Services.SessionMultiplexerHub>.Instance);
+
+        var reader = hub.SubscribeSse(out var subId);
+        try
+        {
+            var recorded = Agent360.API.Features.Agents.Analytics.ChannelResponseStore.Record(
+                agentId: "bot:agent360:agentcore-test-ba",
+                sessionId: "session-081130",
+                channel: "console",
+                role: "user",
+                content: "Tạo clip quảng cáo sản phẩm",
+                status: "submitted",
+                id: "evt-telemetry-999",
+                chatId: "4bb70b9c-12a9-4ded-b632-24d475d91e0a");
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            string? matchedMsg = null;
+            while (await reader.WaitToReadAsync(cts.Token))
+            {
+                while (reader.TryRead(out var msg))
+                {
+                    if (msg.Contains("evt-telemetry-999", StringComparison.Ordinal))
+                    {
+                        matchedMsg = msg;
+                        break;
+                    }
+                }
+                if (matchedMsg is not null) break;
+            }
+
+            matchedMsg.Should().NotBeNull();
+            using var doc = System.Text.Json.JsonDocument.Parse(matchedMsg!);
+            var root = doc.RootElement;
+            root.GetProperty("type").GetString().Should().Be("session_turn_update");
+            root.GetProperty("event_id").GetString().Should().Be("evt-telemetry-999");
+            root.GetProperty("chat_id").GetString().Should().Be("4bb70b9c-12a9-4ded-b632-24d475d91e0a");
+            root.GetProperty("session_id").GetString().Should().Be("session-081130");
+            root.GetProperty("agent_id").GetString().Should().Be("agentcore-test-ba");
+            root.TryGetProperty("id", out _).Should().BeFalse("telemetry record id must use event_id so clients never mistake it for a chat session id");
+        }
+        finally
+        {
+            hub.UnsubscribeSse(subId);
+        }
+    }
+
 }

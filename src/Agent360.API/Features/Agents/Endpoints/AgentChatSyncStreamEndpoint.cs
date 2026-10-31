@@ -243,7 +243,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                             Role: role,
                                             Content: extractedContent,
                                             Status: isTurnRunning ? "running" : (msgStatus ?? "completed"),
-                                            RecordedAt: DateTime.UtcNow
+                                            RecordedAt: DateTime.UtcNow,
+                                            ChatId: effectiveChatId
                                         ));
                                     }
 
@@ -415,7 +416,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 tool: dto.Tool,
                 arguments: dto.Arguments,
                 result: dto.Result,
-                metadata: dto.Metadata
+                metadata: dto.Metadata,
+                chatId: dto.ChatId
             );
 
             // If response is tagged with room_id or session belongs to an active Room, sync turn to Room
