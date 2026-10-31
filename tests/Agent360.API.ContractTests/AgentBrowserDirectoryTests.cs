@@ -29,6 +29,9 @@ public sealed class AgentBrowserDirectoryTests
     [InlineData("climax-team", "climax-browser", "Profile 2", "http://100.70.201.83:19222")]
     [InlineData("planthy-pm", "planthy-browser-rff7", "Default", "http://100.70.201.83:19224")]
     [InlineData("planthy-team", "planthy-browser-rff7", "Profile 1", "http://100.70.201.83:19224")]
+    [InlineData("planthy-marketing-scout", "planthy-browser-rff7", "Profile 4", "http://100.70.201.83:19224")]
+    [InlineData("planthy-marketing-creator", "planthy-browser-rff7", "Profile 5", "http://100.70.201.83:19224")]
+    [InlineData("planthy-marketing-publisher", "planthy-browser-rff7", "Profile 6", "http://100.70.201.83:19224")]
     [InlineData("its-default", "browser-its", "Default", "http://100.66.243.55:19222")]
     [InlineData("gl-default", "browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "Default", "http://100.66.243.55:19224")]
     public void EveryAgentResolvesToItsOwnBrowserAndProfile(string agent, string service, string profile, string cdp)
@@ -44,7 +47,7 @@ public sealed class AgentBrowserDirectoryTests
     {
         var dir = Create();
         var seen = new Dictionary<string, string>();
-        foreach (var agent in new[] { "mons", "ken", "zen", "mkai", "gm-boc", "gm-team", "gm-lua", "gm-gao", "climax-default", "climax-team", "planthy-pm", "planthy-team", "its-default", "gl-default" })
+        foreach (var agent in new[] { "mons", "ken", "zen", "mkai", "gm-boc", "gm-team", "gm-lua", "gm-gao", "climax-default", "climax-team", "planthy-pm", "planthy-team", "planthy-marketing-scout", "planthy-marketing-creator", "planthy-marketing-publisher", "its-default", "gl-default" })
         {
             dir.TryResolve(agent, out _, out var svc, out _, out _, out var prof);
             seen.TryAdd($"{svc}/{prof}", agent).Should().BeTrue($"{svc}/{prof} must not be shared ({agent})");

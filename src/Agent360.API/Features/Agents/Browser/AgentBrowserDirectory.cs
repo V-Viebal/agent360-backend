@@ -64,11 +64,12 @@ public sealed class AgentBrowserDirectory(
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
                 ["default"] = "Default",
                 ["team"] = "Profile 1",
-                ["marketing_scout"] = "Default",
-                ["marketing_creator"] = "Default",
-                ["marketing_publisher"] = "Default",
                 ["Planthy_Dev_Agent_0.1"] = "Profile 2",
-                ["QwenPaw_QA_Agent_0.2"] = "Profile 3"
+                ["QwenPaw_QA_Agent_0.2"] = "Profile 3",
+                ["AgentCore_QA_Agent_0.2"] = "Profile 3",
+                ["marketing_scout"] = "Profile 4",
+                ["marketing_creator"] = "Profile 5",
+                ["marketing_publisher"] = "Profile 6"
             }),
         ["climax"] = new("climax-browser", "https://browser-climax.antares.vn", "http://100.70.201.83:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
