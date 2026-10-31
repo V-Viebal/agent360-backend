@@ -192,7 +192,11 @@ public sealed class AgentBrowserDirectory(
             }
             if (!string.IsNullOrWhiteSpace(mcpRes.Service)) service = mcpRes.Service!;
             if (!string.IsNullOrWhiteSpace(mcpRes.ViewerUrl)) viewerUrl = mcpRes.ViewerUrl!;
-            if (!string.IsNullOrWhiteSpace(mcpRes.CdpUrl) && IsInternalEndpoint(mcpRes.CdpUrl!)) cdpUrl = mcpRes.CdpUrl!;
+            var effectiveKey = !string.IsNullOrWhiteSpace(mcpRes.InstanceKey) ? mcpRes.InstanceKey! : target.Instance.Key;
+            if (!string.IsNullOrWhiteSpace(mcpRes.CdpUrl))
+            {
+                cdpUrl = InternalCdpUrl(effectiveKey, mcpRes.CdpUrl!);
+            }
             if (!string.IsNullOrWhiteSpace(mcpRes.Profile)) profile = mcpRes.Profile!;
         }
 
