@@ -72,10 +72,10 @@ public sealed class AgentBrowserDirectory(
             }),
         ["climax"] = new("climax-browser", "https://browser-climax.antares.vn", "http://100.70.201.83:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
-        ["its"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1" }),
-        ["gl"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1" }),
+        ["its"] = new("browser-its", "https://browser-its.antares.vn", "http://100.66.243.55:19222",
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1", ["AgentCore_QA_Agent_0.2"] = "Profile 1" }),
+        ["gl"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19224",
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1", ["AgentCore_QA_Agent_0.2"] = "Profile 1" }),
         ["qwenpaw-test"] = new("browser-test-tg733z0rtlfvn6oir46nf8ca", "https://browser-test.antares.vn", "http://100.99.201.47:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["agentcore-ba"] = "Default", ["agentcore-acc"] = "Profile 1", ["QwenPaw_QA_Agent_0.2"] = "Profile 2", ["AgentCore_QA_Agent_0.2"] = "Profile 2", ["agentcore-catalog"] = "Default", ["agentcore-commerce"] = "Default", ["agentcore-import"] = "Default", ["agentcore-mgr"] = "Default", ["agentcore-product-dev"] = "Default" }),
         ["agentcore-test"] = new("browser-test-tg733z0rtlfvn6oir46nf8ca", "https://browser-test.antares.vn", "http://100.99.201.47:19222",
@@ -156,13 +156,174 @@ public sealed class AgentBrowserDirectory(
         }
     }
 
-    public async Task<AgentBrowserInfo?> GetAsync(string agentId, CancellationToken ct)
+    public sealed record DynamicMcpBrowserResolution(
+        bool HasBrowserMcp,
+        string? InstanceKey,
+        string? Service,
+        string? ViewerUrl,
+        string? CdpUrl,
+        string? Profile);
+
+    public async Task<(bool Ok, ResolvedInstanceTarget Target, string Service, string ViewerUrl, string CdpUrl, string? Profile)> ResolveDynamicAsync(
+        string agentId,
+        CancellationToken ct = default)
     {
-        if (!TryResolve(agentId, out var target, out var service, out var viewer, out var cdp, out var profile) || profile is null)
+        if (!TryResolve(agentId, out var target, out var service, out var viewerUrl, out var cdpUrl, out var profile) || profile is null || target.Instance is null)
+        {
+            return (false, target, service, viewerUrl, cdpUrl, profile);
+        }
+
+        var slug = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+        var cacheKey = $"agent360:browser-mcp-bind:{slug}";
+        if (!cache.TryGetValue(cacheKey, out DynamicMcpBrowserResolution? mcpRes) || mcpRes is null)
+        {
+            mcpRes = await ProbeAgentBrowserMcpAsync(target, ct);
+            if (mcpRes is not null)
+            {
+                cache.Set(cacheKey, mcpRes, TimeSpan.FromSeconds(15));
+            }
+        }
+
+        if (mcpRes is not null)
+        {
+            if (!mcpRes.HasBrowserMcp)
+            {
+                return (false, target, "", "", "", null);
+            }
+            if (!string.IsNullOrWhiteSpace(mcpRes.Service)) service = mcpRes.Service!;
+            if (!string.IsNullOrWhiteSpace(mcpRes.ViewerUrl)) viewerUrl = mcpRes.ViewerUrl!;
+            if (!string.IsNullOrWhiteSpace(mcpRes.CdpUrl) && IsInternalEndpoint(mcpRes.CdpUrl!)) cdpUrl = mcpRes.CdpUrl!;
+            if (!string.IsNullOrWhiteSpace(mcpRes.Profile)) profile = mcpRes.Profile!;
+        }
+
+        return (true, target, service, viewerUrl, cdpUrl, profile);
+    }
+
+    private async Task<DynamicMcpBrowserResolution?> ProbeAgentBrowserMcpAsync(ResolvedInstanceTarget target, CancellationToken ct)
+    {
+        if (target.Instance is null || string.IsNullOrWhiteSpace(target.BaseUrl))
         {
             return null;
         }
-        var key = $"agent360:browser:{target.Instance!.Key}:{profile}";
+        try
+        {
+            using var resp = await routing.SendAsync(
+                target.Instance,
+                HttpMethod.Get,
+                $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}",
+                agentProfileHeader: target.TargetAgentProfile,
+                timeout: TimeSpan.FromSeconds(3),
+                ct: ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return null;
+            }
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            return ResolveFromAgentProfileJson(json, target.Instance.Key, target.TargetAgentProfile);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static DynamicMcpBrowserResolution? ResolveFromAgentProfileJson(string? profileJson, string defaultInstanceKey, string defaultAgentProfile)
+    {
+        if (string.IsNullOrWhiteSpace(profileJson))
+        {
+            return null;
+        }
+        try
+        {
+            var root = JsonNode.Parse(profileJson) as JsonObject;
+            var clients = root?["mcp"]?["clients"] as JsonObject;
+            if (clients is null)
+            {
+                return null;
+            }
+
+            foreach (var kv in clients)
+            {
+                if (kv.Value is not JsonObject clientObj) continue;
+                var enabled = clientObj["enabled"]?.GetValue<bool>() ?? false;
+                if (!enabled) continue;
+
+                var key = kv.Key;
+                var name = clientObj["name"]?.ToString() ?? "";
+                var cmd = clientObj["command"]?.ToString() ?? "";
+                var args = (clientObj["args"] as JsonArray)?.Select(a => a?.ToString() ?? "").ToList() ?? [];
+                var env = clientObj["env"] as JsonObject;
+
+                var cdpUrlRaw = env?["BROWSER_CDP_URL"]?.ToString()
+                    ?? env?["CHROME_DEVTOOLS_BROWSER_URL"]?.ToString();
+                var bindingFile = env?["BROWSER_CDP_BINDING_FILE"]?.ToString();
+                var explicitProfile = env?["BROWSER_PROFILE_NAME"]?.ToString();
+
+                var isBrowserMcp = !string.IsNullOrWhiteSpace(cdpUrlRaw)
+                    || !string.IsNullOrWhiteSpace(bindingFile)
+                    || key.Contains("browser", StringComparison.OrdinalIgnoreCase)
+                    || key.Contains("devtools", StringComparison.OrdinalIgnoreCase)
+                    || key.Contains("playwright", StringComparison.OrdinalIgnoreCase)
+                    || name.Contains("browser", StringComparison.OrdinalIgnoreCase)
+                    || cmd.Contains("browser", StringComparison.OrdinalIgnoreCase)
+                    || args.Any(a => a.Contains("browser-cdp", StringComparison.OrdinalIgnoreCase) || a.Contains("chrome-devtools", StringComparison.OrdinalIgnoreCase));
+
+                if (!isBrowserMcp) continue;
+
+                var matchedKey = MatchBrowserInstanceKey(cdpUrlRaw, bindingFile, key, name) ?? defaultInstanceKey;
+                Services.TryGetValue(matchedKey, out var matchedSvc);
+                Services.TryGetValue(defaultInstanceKey, out var defaultSvc);
+                var svc = matchedSvc ?? defaultSvc;
+
+                string? resolvedProfile = null;
+                if (!string.IsNullOrWhiteSpace(explicitProfile))
+                {
+                    resolvedProfile = explicitProfile.Equals("default", StringComparison.OrdinalIgnoreCase) ? "Default" : explicitProfile.Trim();
+                }
+                else if (svc is not null && svc.Profiles.TryGetValue(defaultAgentProfile, out var p))
+                {
+                    resolvedProfile = p;
+                }
+
+                return new DynamicMcpBrowserResolution(
+                    HasBrowserMcp: true,
+                    InstanceKey: matchedKey,
+                    Service: svc?.Service,
+                    ViewerUrl: svc?.ViewerUrl,
+                    CdpUrl: svc?.CdpUrl,
+                    Profile: resolvedProfile);
+            }
+
+            // Agent profile loaded cleanly and has no enabled browser MCP client -> fail closed.
+            return new DynamicMcpBrowserResolution(false, null, null, null, null, null);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    internal static string? MatchBrowserInstanceKey(string? cdpUrl, string? bindingFile, string? clientKey, string? clientName)
+    {
+        var combined = $"{cdpUrl} {bindingFile} {clientKey} {clientName}".ToLowerInvariant();
+        if (combined.Contains("browser-its") || combined.Contains("100.66.243.55:19222") || combined.Contains("/its-")) return "its";
+        if (combined.Contains("browser-gl") || combined.Contains("100.66.243.55:19224") || combined.Contains("/gl-")) return "gl";
+        if (combined.Contains("planthy-browser") || combined.Contains("100.70.201.83:19224") || combined.Contains("/planthy-")) return "planthy";
+        if (combined.Contains("climax-browser") || combined.Contains("100.70.201.83:19222") || combined.Contains("/climax-")) return "climax";
+        if (combined.Contains("browser-gm") || combined.Contains("100.81.66.42:19222") || combined.Contains("gm-browser-binding") || combined.Contains("gm-runtime-binding")) return "gm";
+        if (combined.Contains("chromium-browser-q4yu") || combined.Contains("100.76.185.111:19222") || combined.Contains("100.76.185.111:19223") || combined.Contains("/core-")) return "core";
+        if (combined.Contains("browser-test") || combined.Contains("100.99.201.47:19222") || combined.Contains("/test-")) return "agentcore-test";
+        return null;
+    }
+
+    public async Task<AgentBrowserInfo?> GetAsync(string agentId, CancellationToken ct)
+    {
+        var (ok, target, service, viewer, cdp, profile) = await ResolveDynamicAsync(agentId, ct);
+        if (!ok || profile is null)
+        {
+            return null;
+        }
+        var key = $"agent360:browser:{service}:{profile}";
         if (cache.TryGetValue(key, out AgentBrowserInfo? cached) && cached is not null)
         {
             return cached with { AgentId = agentId };

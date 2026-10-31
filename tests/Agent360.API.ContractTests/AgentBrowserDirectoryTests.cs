@@ -29,6 +29,8 @@ public sealed class AgentBrowserDirectoryTests
     [InlineData("climax-team", "climax-browser", "Profile 2", "http://100.70.201.83:19222")]
     [InlineData("planthy-pm", "planthy-browser-rff7", "Default", "http://100.70.201.83:19224")]
     [InlineData("planthy-team", "planthy-browser-rff7", "Profile 1", "http://100.70.201.83:19224")]
+    [InlineData("its-default", "browser-its", "Default", "http://100.66.243.55:19222")]
+    [InlineData("gl-default", "browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "Default", "http://100.66.243.55:19224")]
     public void EveryAgentResolvesToItsOwnBrowserAndProfile(string agent, string service, string profile, string cdp)
     {
         Create().TryResolve(agent, out _, out var svc, out _, out var cdpUrl, out var prof).Should().BeTrue();
@@ -42,7 +44,7 @@ public sealed class AgentBrowserDirectoryTests
     {
         var dir = Create();
         var seen = new Dictionary<string, string>();
-        foreach (var agent in new[] { "mons", "ken", "zen", "mkai", "gm-boc", "gm-team", "gm-lua", "gm-gao", "climax-default", "climax-team", "planthy-pm", "planthy-team" })
+        foreach (var agent in new[] { "mons", "ken", "zen", "mkai", "gm-boc", "gm-team", "gm-lua", "gm-gao", "climax-default", "climax-team", "planthy-pm", "planthy-team", "its-default", "gl-default" })
         {
             dir.TryResolve(agent, out _, out var svc, out _, out _, out var prof);
             seen.TryAdd($"{svc}/{prof}", agent).Should().BeTrue($"{svc}/{prof} must not be shared ({agent})");
@@ -171,6 +173,53 @@ public sealed class AgentBrowserDirectoryTests
         AgentBrowserCdpEndpoint.DefaultTab([anchor, newtab]).Should().Be(anchor);
         AgentBrowserCdpEndpoint.DefaultTab([anchor, newtab, web]).Should().Be(web);
         AgentBrowserCdpEndpoint.DefaultTab([newtab]).Should().BeNull();
+    }
+
+
+    [Fact]
+    public void DynamicResolutionFollowsAgentBrowserMcpAndFailsClosedWithoutBrowserMcp()
+    {
+        var itsProfileJson = """
+        {
+          "id": "default",
+          "mcp": {
+            "clients": {
+              "browser-cdp-mcp-server": {
+                "name": "browser-cdp-mcp-server",
+                "enabled": true,
+                "command": "node",
+                "args": ["/app/working.secret/browser-cdp-mcp-server/index.js"],
+                "env": {
+                  "BROWSER_CDP_BINDING_FILE": "/app/working/.tmp/qwenpaw-browser-cdp/its-default-browser.json",
+                  "BROWSER_CDP_URL": "http://browser-its:9223",
+                  "BROWSER_PROFILE_NAME": "Default"
+                }
+              }
+            }
+          }
+        }
+        """;
+        var itsRes = AgentBrowserDirectory.ResolveFromAgentProfileJson(itsProfileJson, "its", "default");
+        itsRes.Should().NotBeNull();
+        itsRes!.HasBrowserMcp.Should().BeTrue();
+        itsRes.Service.Should().Be("browser-its");
+        itsRes.ViewerUrl.Should().Be("https://browser-its.antares.vn");
+        itsRes.CdpUrl.Should().Be("http://100.66.243.55:19222");
+        itsRes.Profile.Should().Be("Default");
+
+        var noBrowserJson = """
+        {
+          "id": "default",
+          "mcp": {
+            "clients": {
+              "anysearch": { "name": "anysearch", "enabled": false }
+            }
+          }
+        }
+        """;
+        var noBrowserRes = AgentBrowserDirectory.ResolveFromAgentProfileJson(noBrowserJson, "monosbase", "default");
+        noBrowserRes.Should().NotBeNull();
+        noBrowserRes!.HasBrowserMcp.Should().BeFalse();
     }
 
     private sealed class NoHttpFactory : IHttpClientFactory

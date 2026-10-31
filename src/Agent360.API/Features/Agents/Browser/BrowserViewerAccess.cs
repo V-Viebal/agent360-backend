@@ -146,7 +146,10 @@ public sealed class BrowserViewerAccessEndpoint : IEndpoint
                 {
                     return Results.Problem(detail: "Browser viewer signing is not configured.", statusCode: StatusCodes.Status503ServiceUnavailable);
                 }
-                if (!directory.TryResolve(agentId, out _, out _, out var viewerUrl, out _, out var profile) || profile is null || string.IsNullOrEmpty(viewerUrl))
+                var resolved = await directory.ResolveDynamicAsync(agentId, ct);
+                var viewerUrl = resolved.ViewerUrl;
+                var profile = resolved.Profile;
+                if (!resolved.Ok || profile is null || string.IsNullOrEmpty(viewerUrl))
                 {
                     return TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser" });
                 }

@@ -90,7 +90,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             // AgentTeams manager is a QwenPaw runtime bound to loopback on 4th; only the public proxy is reachable.
             Build("agentteams", "4th", "AgentTeams Swarm (Node 4th)", "https://manager-ai.hmz.one", "https://manager-ai.hmz.one", false, ""),
             Build("its", "8th", "ITS Operational Gatekeeper (Node 8th)", "http://100.66.243.55:26889", "https://ai-its.antares.vn", true, "http://100.66.243.55:19222"),
-            Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19222"),
+            Build("gl", "8th", "GL Automation & Analytics (Node 8th)", "http://100.66.243.55:26890", "https://ai-gl.antares.vn", true, "http://100.66.243.55:19224"),
             Build("agentcore-test", "7th", "Test AgentCore (Node 7th)", "https://ai-test.antares.vn", "https://ai-test.antares.vn", true, "http://100.99.201.47:19222"),
             Build("monosbase", "6th", "Monosbase Bot (Node 6th)", "https://ai-bot-gm.s-0.top", "https://ai-bot-gm.s-0.top", true, "http://100.81.66.42:19222"),
         ];
