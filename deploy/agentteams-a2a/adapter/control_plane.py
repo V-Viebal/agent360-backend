@@ -515,6 +515,8 @@ def registry_status():
         for a in reg:  # keep directory identities in sync with the latest export
             if a.get("matrix_user_id"):
                 L.upsert_agent(a)
+                if a.get("health") == "online":
+                    L.set_health(a["agent_ref"], "online")
     except Exception as e:  # noqa: BLE001
         out["error"] = str(e)[:200]
     return out
