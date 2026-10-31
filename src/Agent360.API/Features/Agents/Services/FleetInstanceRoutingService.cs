@@ -248,6 +248,22 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         var raw = NormalizeAgentId(agentId);
         var id = raw.ToLowerInvariant();
 
+        if (id.StartsWith("planthy-"))
+        {
+            var profile = id switch
+            {
+                "planthy-pm" or "planthy-default" => "default",
+                "planthy-team" => "team",
+                "planthy-qwenpaw_qa_agent_0.2" or "planthy-agentcore_qa_agent_0.2" or "planthy-qa" => "AgentCore_QA_Agent_0.2",
+                "planthy-dev" => "Planthy_Dev_Agent_0.1",
+                "planthy-marketing-scout" or "planthy-marketing_scout" => "marketing_scout",
+                "planthy-marketing-creator" or "planthy-marketing_creator" => "marketing_creator",
+                "planthy-marketing-publisher" or "planthy-marketing_publisher" => "marketing_publisher",
+                _ => raw.StartsWith("planthy-pm-", StringComparison.OrdinalIgnoreCase) ? raw["planthy-pm-".Length..] : (raw.StartsWith("planthy-", StringComparison.OrdinalIgnoreCase) ? raw["planthy-".Length..] : "default")
+            };
+            return Target(Instance("planthy"), raw, profile);
+        }
+
         if (_state.DynamicAgentMappings.TryGetValue(id, out var dynamicMapping))
         {
             var inst = Instances.FirstOrDefault(i => i.Key.Equals(dynamicMapping.InstanceKey, StringComparison.OrdinalIgnoreCase));
