@@ -72,6 +72,8 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
          rel.EndsWith("/toggle", StringComparison.OrdinalIgnoreCase) ||
          rel.EndsWith("/pin", StringComparison.OrdinalIgnoreCase) ||
          rel.Contains("/workspace/file-content", StringComparison.OrdinalIgnoreCase) ||
+         rel.Contains("/config/channels", StringComparison.OrdinalIgnoreCase) ||
+         rel.Contains("/cron/jobs", StringComparison.OrdinalIgnoreCase) ||
          rel.Contains("/webhooks/", StringComparison.OrdinalIgnoreCase) ||
          rel.Contains("/chats/", StringComparison.OrdinalIgnoreCase));
 

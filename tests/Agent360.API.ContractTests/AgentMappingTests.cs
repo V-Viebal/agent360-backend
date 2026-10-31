@@ -312,6 +312,41 @@ public sealed class AgentMappingTests
         }
     }
 
+
+    [Fact]
+    public void AgentRuntimeProxyEndpoint_NormalizeChannelResponseDefaults_AppliesTelegramDefaults()
+    {
+        const string rawTelegramJson = """
+        {
+          "enabled": false,
+          "bot_prefix": "",
+          "bot_token": "",
+          "base_url": "",
+          "show_typing": null,
+          "require_mention": false,
+          "no_text_debounce": true,
+          "access_control_dm": false,
+          "access_control_group": false,
+          "dm_policy": "open",
+          "group_policy": "open"
+        }
+        """;
+
+        var normalizedBytes = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.NormalizeChannelResponseDefaults(
+            "config/channels/telegram",
+            System.Text.Encoding.UTF8.GetBytes(rawTelegramJson));
+        using var doc = System.Text.Json.JsonDocument.Parse(normalizedBytes);
+        var root = doc.RootElement;
+
+        Assert.Equal("http://100.70.201.83:8083", root.GetProperty("base_url").GetString());
+        Assert.True(root.GetProperty("show_typing").GetBoolean());
+        Assert.False(root.GetProperty("access_control_dm").GetBoolean());
+        Assert.False(root.GetProperty("access_control_group").GetBoolean());
+        Assert.True(root.GetProperty("require_mention").GetBoolean());
+        Assert.True(root.GetProperty("no_text_debounce").GetBoolean());
+        Assert.True(Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware.IsUserOwnedAgentWrite("agents/qwenpaw-test-ba/config/channels/telegram"));
+    }
+
     private sealed class StubMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

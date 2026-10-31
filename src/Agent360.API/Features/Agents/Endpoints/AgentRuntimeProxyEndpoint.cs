@@ -65,6 +65,67 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         cache.Set(key + ":last-good", new CachedResponse(payload, type), TimeSpan.FromMinutes(30));
     }
 
+    public const string DefaultTelegramApiBaseUrl = "http://100.70.201.83:8083";
+
+    internal static void ApplyTelegramChannelDefaults(System.Text.Json.Nodes.JsonObject tgObj, bool isWrite)
+    {
+        var baseUrl = tgObj["base_url"]?.ToString();
+        if (string.IsNullOrWhiteSpace(baseUrl))
+        {
+            tgObj["base_url"] = DefaultTelegramApiBaseUrl;
+        }
+        if (tgObj["show_typing"] is null)
+        {
+            tgObj["show_typing"] = true;
+        }
+        if (tgObj["access_control_dm"] is null)
+        {
+            tgObj["access_control_dm"] = string.Equals(tgObj["dm_policy"]?.ToString(), "allowlist", StringComparison.OrdinalIgnoreCase);
+        }
+        if (tgObj["access_control_group"] is null)
+        {
+            tgObj["access_control_group"] = string.Equals(tgObj["group_policy"]?.ToString(), "allowlist", StringComparison.OrdinalIgnoreCase);
+        }
+        if (tgObj["no_text_debounce"] is null)
+        {
+            tgObj["no_text_debounce"] = true;
+        }
+        if (tgObj["require_mention"] is null)
+        {
+            tgObj["require_mention"] = true;
+        }
+        else if (!isWrite && tgObj["enabled"]?.GetValue<bool>() != true && string.IsNullOrWhiteSpace(tgObj["bot_token"]?.ToString()) && tgObj["require_mention"]?.GetValue<bool>() == false)
+        {
+            tgObj["require_mention"] = true;
+        }
+    }
+
+    internal static byte[] NormalizeChannelResponseDefaults(string cleanRoute, byte[] rawJson)
+    {
+        if (!cleanRoute.Equals("config/channels", StringComparison.OrdinalIgnoreCase) &&
+            !cleanRoute.Equals("config/channels/telegram", StringComparison.OrdinalIgnoreCase))
+        {
+            return rawJson;
+        }
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(rawJson) is System.Text.Json.Nodes.JsonObject rootObj)
+            {
+                if (cleanRoute.Equals("config/channels/telegram", StringComparison.OrdinalIgnoreCase))
+                {
+                    ApplyTelegramChannelDefaults(rootObj, isWrite: false);
+                }
+                else if (rootObj["telegram"] is System.Text.Json.Nodes.JsonObject tgChild)
+                {
+                    ApplyTelegramChannelDefaults(tgChild, isWrite: false);
+                }
+                return System.Text.Encoding.UTF8.GetBytes(rootObj.ToJsonString());
+            }
+        }
+        catch { }
+        return rawJson;
+    }
+
     private static readonly TimeSpan WarmedFreshTtl = TimeSpan.FromSeconds(90);
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
@@ -77,8 +138,17 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
             {
                 var clean = (path ?? "").Trim('/');
                 var isLoopModeRoute = clean.Equals("loop-mode", StringComparison.OrdinalIgnoreCase) || clean.Equals("config/loop-mode", StringComparison.OrdinalIgnoreCase);
+                var isUserOwnedRuntimeWrite =
+                    clean.Equals("config/channels", StringComparison.OrdinalIgnoreCase) ||
+                    clean.StartsWith("config/channels/", StringComparison.OrdinalIgnoreCase) ||
+                    clean.Equals("cron/jobs", StringComparison.OrdinalIgnoreCase) ||
+                    clean.StartsWith("cron/jobs/", StringComparison.OrdinalIgnoreCase) ||
+                    clean.Equals("workspace/file-content", StringComparison.OrdinalIgnoreCase) ||
+                    clean.Equals("workspace/running-config", StringComparison.OrdinalIgnoreCase);
                 if (security.CurrentValue.ProtectRuntimeProxyWrites && !HttpMethods.IsGet(context.Request.Method) && !isLoopModeRoute
-                    && !Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.IsAuthorized(context, security.CurrentValue, env))
+                    && !Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.IsAuthorized(context, security.CurrentValue, env)
+                    && !Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.IsSignedInAdmin(context, security.CurrentValue)
+                    && !isUserOwnedRuntimeWrite)
                 {
                     return Results.Problem("Operator token required for this action.", statusCode: StatusCodes.Status401Unauthorized, title: "Unauthorized");
                 }
@@ -200,7 +270,20 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 {
                     try
                     {
-                        if (clean.Equals("workspace/running-config", StringComparison.OrdinalIgnoreCase) &&
+                        if (clean.Equals("config/channels/telegram", StringComparison.OrdinalIgnoreCase) &&
+                            System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject tgWriteObj)
+                        {
+                            ApplyTelegramChannelDefaults(tgWriteObj, isWrite: true);
+                            body = System.Text.Encoding.UTF8.GetBytes(tgWriteObj.ToJsonString());
+                        }
+                        else if (clean.Equals("config/channels", StringComparison.OrdinalIgnoreCase) &&
+                                 System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject chsWriteObj &&
+                                 chsWriteObj["telegram"] is System.Text.Json.Nodes.JsonObject tgNestedObj)
+                        {
+                            ApplyTelegramChannelDefaults(tgNestedObj, isWrite: true);
+                            body = System.Text.Encoding.UTF8.GetBytes(chsWriteObj.ToJsonString());
+                        }
+                        else if (clean.Equals("workspace/running-config", StringComparison.OrdinalIgnoreCase) &&
                             System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject rcObj)
                         {
                             rcObj["approval_level"] = "OFF";
@@ -267,7 +350,8 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     if (mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
                     {
                         // Agent configs carry channel bot tokens and MCP env secrets: never return them raw.
-                        var json = SecretRedaction.RedactJson(await response.Content.ReadAsByteArrayAsync(ct));
+                        var rawBytes = NormalizeChannelResponseDefaults(clean, await response.Content.ReadAsByteArrayAsync(ct));
+                        var json = SecretRedaction.RedactJson(rawBytes);
                         context.Response.Headers.ContentLength = json.Length;
                         await context.Response.Body.WriteAsync(json, ct);
                         return Results.Empty;
