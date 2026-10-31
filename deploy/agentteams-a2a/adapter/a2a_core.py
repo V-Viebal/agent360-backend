@@ -6,8 +6,12 @@ Stdlib only.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
+import random
+import socket
+import ssl
 import re
 import secrets
 import sqlite3
@@ -22,21 +26,34 @@ MSG_REQUEST = "agent360.delegation.request.v1"
 MSG_STATUS = "agent360.delegation.status.v1"
 MSG_RESULT = "agent360.delegation.result.v1"
 MSG_CANCEL = "agent360.delegation.cancel.v1"
+MSG_MESSAGE = "agent360.delegation.message.v1"   # v2 multi-turn: question/answer/followup/redirect/progress
+PROTOCOL_VERSION = 2
+TURN_KINDS = {"request", "question", "answer", "followup", "redirect", "progress", "result", "system",
+              "approval_request", "approval", "escalation"}
+TURN_ROLES = {"parent", "child", "operator", "system"}
+MAX_TURN_TEXT = 8000
+MAX_THREAD_TEXT = 64000
 EVENT_TYPE = "vn.antares.agent360.a2a"  # custom Matrix event type
 MAX_INLINE_OUTPUT = 12000
 
-ACTIVE = {"draft", "policy_checked", "sent", "delivered", "running", "retry_queued"}
+ACTIVE = {"draft", "policy_checked", "sent", "delivered", "running", "retry_queued", "awaiting_parent"}
 TERMINAL = {"accepted", "rejected", "failed", "timed_out", "cancelled", "delivery_failed"}
 TRANSITIONS = {
     "draft": {"policy_checked", "cancelled"},
     "policy_checked": {"sent", "delivery_failed", "cancelled"},
     "sent": {"delivered", "running", "completed", "failed", "delivery_failed", "timed_out", "cancelled"},
-    "delivered": {"running", "completed", "failed", "timed_out", "cancelled"},
-    "running": {"running", "completed", "failed", "timed_out", "cancelled"},
+    "delivered": {"running", "completed", "failed", "timed_out", "cancelled", "awaiting_parent"},
+    "running": {"running", "completed", "failed", "timed_out", "cancelled", "awaiting_parent"},
+    # v2: child asked a blocking question; deadline paused until the parent/operator answers.
+    "awaiting_parent": {"running", "completed", "failed", "timed_out", "cancelled", "awaiting_parent"},
     "completed": {"under_review"},
-    "under_review": {"accepted", "rejected"},
+    # v2: a follow-up continues the same attempt/session instead of a reject+retry.
+    "under_review": {"accepted", "rejected", "running"},
     "rejected": {"retry_queued"},
     "retry_queued": {"sent", "delivery_failed", "cancelled"},
+    # A Matrix PUT can time out client-side after the homeserver accepted it; a signed event from the bound
+    # child proves delivery, so the ledger may recover to `sent` (see control_plane.apply_event).
+    "delivery_failed": {"sent"},
 }
 
 _SECRET_PATTERNS = [
@@ -81,29 +98,143 @@ def parse_agent_ref(ref: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- Matrix
+def send_reliable(send, room_id: str, content: dict, txn_id: str, budget_seconds: float = 180):
+    """PUT with a deterministic txn id (homeserver de-duplicates) retried with jittered backoff."""
+    deadline, delay = time.time() + budget_seconds, 1.0
+    while True:
+        try:
+            return send(room_id, content, txn_id=txn_id)
+        except Exception:  # noqa: BLE001
+            if time.time() + delay > deadline:
+                raise
+            time.sleep(delay + random.random() * 0.5)
+            delay = min(delay * 2, 20)
+
+
+class _PinnedHTTPS(http.client.HTTPSConnection):
+    """HTTPS to a pinned origin IP while keeping SNI + certificate verification for the real hostname."""
+
+    def __init__(self, host, port, ip, timeout, context):
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pin_ip = ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pin_ip or self.host, self.port), self.timeout)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+RETRYABLE_STATUS = {502, 503, 504, 520, 521, 522, 523, 524, 525, 526}
+
+
 class MatrixClient:
-    def __init__(self, homeserver: str, access_token: str, user_id: str, timeout: int = 30):
+    """Matrix client-server API over keep-alive connections.
+
+    Transport (A2A_MATRIX_ORIGIN_IP): when set, requests go straight to the homeserver origin (e.g. the
+    AgentTeams node's Tailscale IP) with SNI/cert verification for the public hostname, and fall back to
+    public DNS (Cloudflare) on connection errors/5xx. A circuit breaker skips the direct path for
+    A2A_MATRIX_DIRECT_COOLDOWN seconds after a failure. Connections are per-thread (sync, heartbeat,
+    senders never share a socket)."""
+
+    def __init__(self, homeserver: str, access_token: str, user_id: str, timeout: int = 30, origin_ip: str | None = None):
         self.hs = homeserver.rstrip("/")
         self.token = access_token
         self.user_id = user_id
         self.timeout = timeout
+        u = urllib.parse.urlsplit(self.hs)
+        self._https = u.scheme == "https"
+        self._host = u.hostname
+        self._port = u.port or (443 if self._https else 80)
+        self._prefix = u.path.rstrip("/")
+        self.origin_ip = (origin_ip if origin_ip is not None else os.environ.get("A2A_MATRIX_ORIGIN_IP", "")).strip() or None
+        self.direct_cooldown = float(os.environ.get("A2A_MATRIX_DIRECT_COOLDOWN", "60"))
+        self._direct_down_until = 0.0
+        self._direct_streak = 0
+        self._ctx = ssl.create_default_context() if self._https else None
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self.stats = {"direct_ok": 0, "public_ok": 0, "direct_fail": 0, "public_fail": 0, "fallbacks": 0,
+                      "last_path": None, "last_ms": None}
+
+    def _conn(self, path_kind, timeout):
+        c = getattr(self._local, path_kind, None)
+        if c is None:
+            ip = self.origin_ip if path_kind == "direct" else None
+            if self._https:
+                c = _PinnedHTTPS(self._host, self._port, ip, timeout, self._ctx)
+            else:
+                c = http.client.HTTPConnection(ip or self._host, self._port, timeout=timeout)
+            setattr(self._local, path_kind, c)
+        c.timeout = timeout
+        if c.sock is not None:
+            c.sock.settimeout(timeout)
+        return c
+
+    def _drop(self, path_kind):
+        c = getattr(self._local, path_kind, None)
+        if c is not None:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+        setattr(self._local, path_kind, None)
+
+    def _paths(self):
+        if self.origin_ip and time.time() >= self._direct_down_until:
+            return ["direct", "direct", "public"]
+        return ["public", "public"]
 
     def _call(self, method: str, path: str, body=None, query=None, timeout=None):
-        url = f"{self.hs}/_matrix/client/v3{path}"
+        target = f"{self._prefix}/_matrix/client/v3{path}"
         if query:
-            url += "?" + urllib.parse.urlencode(query)
+            target += "?" + urllib.parse.urlencode(query)
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-            "User-Agent": "agent360-a2a/1.0",
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
-                return json.loads(r.read() or b"{}")
-        except urllib.error.HTTPError as e:
-            raw = e.read().decode("utf-8", "ignore")[:400]
-            raise RuntimeError(f"matrix {method} {path} -> {e.code}: {raw}") from None
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
+                   "User-Agent": "agent360-a2a/1.1", "Connection": "keep-alive"}
+        last = None
+        for i, kind in enumerate(self._paths()):
+            t0 = time.time()
+            try:
+                c = self._conn(kind, timeout or self.timeout)
+                c.request(method, target, body=data, headers=headers)
+                r = c.getresponse()
+                raw = r.read()
+                if r.getheader("connection", "").lower() == "close":
+                    self._drop(kind)
+            except (OSError, http.client.HTTPException) as e:
+                self._drop(kind)
+                last = e
+                self._fail(kind)
+                continue
+            if r.status in RETRYABLE_STATUS:
+                self._drop(kind)
+                last = RuntimeError(f"matrix {method} {path} -> {r.status}")
+                self._fail(kind)
+                continue
+            with self._lock:
+                if kind == "direct":
+                    self._direct_streak = 0
+                self.stats[f"{kind}_ok"] += 1
+                self.stats["last_path"], self.stats["last_ms"] = kind, int((time.time() - t0) * 1000)
+                if i and kind == "public":
+                    self.stats["fallbacks"] += 1
+            if r.status >= 400:
+                raise RuntimeError(f"matrix {method} {path} -> {r.status}: {raw.decode('utf-8', 'ignore')[:400]}")
+            return json.loads(raw or b"{}")
+        raise RuntimeError(f"matrix {method} {path} failed on all paths: {type(last).__name__}: {last}")
+
+    def _fail(self, kind):
+        with self._lock:
+            self.stats[f"{kind}_fail"] += 1
+            if kind == "direct":
+                # one failure is usually a stale keep-alive socket; two in a row => origin path is down
+                self._direct_streak += 1
+                if self._direct_streak >= 2:
+                    self._direct_down_until = time.time() + self.direct_cooldown
+                    self._direct_streak = 0
+
+    def send_reliable(self, room_id: str, content: dict, txn_id: str, budget_seconds: float = 180):
+        return send_reliable(self.send, room_id, content, txn_id, budget_seconds)
 
     def whoami(self):
         return self._call("GET", "/account/whoami")
@@ -186,7 +317,17 @@ CREATE TABLE IF NOT EXISTS external_delegation_tasks(
 CREATE TABLE IF NOT EXISTS a2a_events(
   event_id TEXT PRIMARY KEY, correlation_id TEXT, type TEXT, source TEXT, received_at TEXT, payload TEXT);
 CREATE TABLE IF NOT EXISTS a2a_kv(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS a2a_turns(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, correlation_id TEXT, attempt INTEGER, turn_no INTEGER,
+  message_id TEXT UNIQUE, role TEXT, kind TEXT, text TEXT, options TEXT, blocking INTEGER,
+  in_reply_to INTEGER, author_ref TEXT, created_at TEXT, delivered_at TEXT);
+CREATE INDEX IF NOT EXISTS a2a_turns_cid ON a2a_turns(correlation_id, turn_no);
 """
+
+# v2 columns added to existing ledgers in place (idempotent).
+TASK_V2_COLUMNS = {"turn_count": "INTEGER DEFAULT 0", "question_count": "INTEGER DEFAULT 0",
+                   "awaiting_since": "TEXT", "question_deadline_at": "TEXT", "conversation": "TEXT",
+                   "protocol": "INTEGER DEFAULT 1"}
 
 
 class Ledger:
@@ -198,6 +339,10 @@ class Ledger:
         with self.lock:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.executescript(SCHEMA)
+            have = {r[1] for r in self.db.execute("PRAGMA table_info(external_delegation_tasks)").fetchall()}
+            for col, decl in TASK_V2_COLUMNS.items():
+                if col not in have:
+                    self.db.execute(f"ALTER TABLE external_delegation_tasks ADD COLUMN {col} {decl}")
 
     def q(self, sql, args=()):
         with self.lock:
@@ -300,13 +445,67 @@ class Ledger:
         return self.x("DELETE FROM external_subagent_bindings WHERE parent_agent_ref=? AND child_agent_ref=?", (parent, child))
 
     # ---- tasks
-    _JSON = ("constraints", "acceptance_criteria", "evidence", "self_check", "acceptance")
+    _JSON = ("constraints", "acceptance_criteria", "evidence", "self_check", "acceptance", "conversation")
 
     def _task_row(self, r):
         for k in self._JSON:
-            r[k] = json.loads(r[k]) if r.get(k) else ([] if k != "acceptance" else None)
+            r[k] = json.loads(r[k]) if r.get(k) else ([] if k not in ("acceptance", "conversation") else None)
         r["write_intent"] = bool(r["write_intent"])
         r["approved"] = bool(r["approved"])
+        return r
+
+    # ------------------------------------------------------------ v2 turns
+    def add_turn(self, cid, attempt, role, kind, text, *, turn_no=None, message_id=None, options=None,
+                 blocking=False, in_reply_to=None, author_ref=None):
+        """Append one conversation turn. Idempotent on message_id; returns (turn, created)."""
+        if role not in TURN_ROLES or kind not in TURN_KINDS:
+            raise ValueError(f"invalid turn role/kind {role}/{kind}")
+        text = redact(str(text or ""))[:MAX_TURN_TEXT]
+        with self.lock:
+            if message_id:
+                ex = self.q("SELECT * FROM a2a_turns WHERE message_id=?", (message_id,))
+                if ex:
+                    return self._turn_row(ex[0]), False
+            if turn_no is None:
+                turn_no = (self.q("SELECT COALESCE(MAX(turn_no),0) n FROM a2a_turns WHERE correlation_id=?", (cid,))[0]["n"] or 0) + 1
+            elif self.q("SELECT 1 FROM a2a_turns WHERE correlation_id=? AND turn_no=?", (cid, turn_no)):
+                # collision (both sides numbered concurrently): re-sequence at the end, keep order of arrival
+                turn_no = (self.q("SELECT MAX(turn_no) n FROM a2a_turns WHERE correlation_id=?", (cid,))[0]["n"] or 0) + 1
+            message_id = message_id or f"{cid}:{turn_no}:{role}:{kind}"
+            self.x("INSERT INTO a2a_turns(correlation_id,attempt,turn_no,message_id,role,kind,text,options,blocking,"
+                   "in_reply_to,author_ref,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (cid, attempt, turn_no, message_id, role, kind, text, json.dumps(options or []),
+                    int(bool(blocking)), in_reply_to, author_ref, now_iso()))
+            self.x("UPDATE external_delegation_tasks SET turn_count=COALESCE(turn_count,0)+1"
+                   + (", question_count=COALESCE(question_count,0)+1" if kind == "question" else "")
+                   + " WHERE correlation_id=?", (cid,))
+            return self._turn_row(self.q("SELECT * FROM a2a_turns WHERE message_id=?", (message_id,))[0]), True
+
+    def turns(self, cid, after=0, limit=200):
+        return [self._turn_row(r) for r in self.q(
+            "SELECT * FROM a2a_turns WHERE correlation_id=? AND turn_no>? ORDER BY turn_no LIMIT ?", (cid, after, limit))]
+
+    def open_question(self, cid):
+        """Latest child question that has no answer/redirect/approval after it."""
+        rows = self.q("SELECT * FROM a2a_turns WHERE correlation_id=? ORDER BY turn_no", (cid,))
+        pending = None
+        for r in rows:
+            if r["role"] == "child" and r["kind"] in ("question", "approval_request") and r["blocking"]:
+                pending = r
+            elif pending and r["kind"] in ("answer", "redirect", "approval", "system") and r["role"] != "child":
+                pending = None
+            elif pending and r["role"] == "child" and r["kind"] == "result":
+                pending = None
+        return self._turn_row(pending) if pending else None
+
+    def thread_chars(self, cid):
+        return self.q("SELECT COALESCE(SUM(LENGTH(text)),0) n FROM a2a_turns WHERE correlation_id=?", (cid,))[0]["n"]
+
+    @staticmethod
+    def _turn_row(r):
+        r = dict(r)
+        r["options"] = json.loads(r["options"]) if r.get("options") else []
+        r["blocking"] = bool(r.get("blocking"))
         return r
 
     def insert_task(self, t):
