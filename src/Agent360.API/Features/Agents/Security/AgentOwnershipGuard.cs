@@ -49,6 +49,21 @@ public static class AgentOwnershipGuard
                 set.Add("agentcore-test-qa");
                 set.Add("qwenpaw-base-test-qwenpaw_qa_agent_0.2");
                 break;
+            case "planthy-marketing-scout":
+            case "planthy-marketing_scout":
+                set.Add("planthy-marketing-scout");
+                set.Add("planthy-marketing_scout");
+                break;
+            case "planthy-marketing-creator":
+            case "planthy-marketing_creator":
+                set.Add("planthy-marketing-creator");
+                set.Add("planthy-marketing_creator");
+                break;
+            case "planthy-marketing-publisher":
+            case "planthy-marketing_publisher":
+                set.Add("planthy-marketing-publisher");
+                set.Add("planthy-marketing_publisher");
+                break;
         }
         return set.ToList();
     }
