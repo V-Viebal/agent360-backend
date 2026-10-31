@@ -1289,5 +1289,18 @@ public class SessionRoomTests
         roomStore.GetByChat("gm-boc", soloChatId).Should().BeNull();
         roomStore.GetByChat("gm-boc", "chat-multi-keep").Should().NotBeNull();
         roomStore.GetByChat("gm-boc", "chat-react-keep").Should().NotBeNull();
+
+        // 5. SyncRoomTitleAsync and PostRoomMessageAsync (reaction) on a solo session with no multi-agent room do NOT create a room
+        var syncTitleResult = await orchestrator.SyncRoomTitleAsync("gm-boc", "chat-pure-solo-02", "Đổi tên phiên chat cá nhân", ct);
+        syncTitleResult.Should().BeNull();
+        roomStore.GetByChat("gm-boc", "chat-pure-solo-02").Should().BeNull();
+
+        var (noopRoom, _) = await orchestrator.PostRoomMessageAsync(
+            "gm-boc",
+            "chat-pure-solo-02",
+            new PostRoomMessageRequest("user", "user", "reaction", "[Reaction Reply ❤️]", "gm-boc"),
+            ct);
+        noopRoom.Participants.Should().BeEmpty();
+        roomStore.GetByChat("gm-boc", "chat-pure-solo-02").Should().BeNull();
     }
 }

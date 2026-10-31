@@ -290,15 +290,20 @@ public sealed class ListChatsEndpoint : IEndpoint
             // Invalidate Agent360 cached chat list so next GET /chats returns the updated name/pin state
             client.InvalidateChatList(agentId);
 
-            // 3. Also sync Matrix session collaboration room title if title changed
+            // 3. Also sync Matrix session collaboration room title ONLY if an active multi-agent room already exists for this chat
             if (hasTitle && !string.IsNullOrWhiteSpace(cleanTitle))
             {
                 try
                 {
-                    var orchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
-                    if (orchestrator is not null)
+                    var roomStore = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+                    var existingRoom = roomStore?.GetByChat(agentId, chatId);
+                    if (Agent360.API.Features.Agents.SubAgents.SessionRoomStore.IsMultiAgentRoom(existingRoom))
                     {
-                        await orchestrator.SyncRoomTitleAsync(agentId, chatId, cleanTitle, ct);
+                        var orchestrator = httpContext.RequestServices.GetService<Agent360.API.Features.Agents.SubAgents.SessionRoomOrchestrator>();
+                        if (orchestrator is not null)
+                        {
+                            await orchestrator.SyncRoomTitleAsync(agentId, chatId, cleanTitle, ct);
+                        }
                     }
                 }
                 catch { }

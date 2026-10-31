@@ -119,19 +119,11 @@ public sealed class SubAgentEndpoints : IEndpoint
             .WithName("GetAdaptiveRoomSpecialtyProfiles")
             .WithSummary("Retrieve adaptive collaborator specialty weights and quality-gate reliability profiles learned by AgentTeams Manager");
 
-        agents.MapGet("chats/{chatId}/room", async (string agentId, string chatId, [FromQuery] bool? ensure, HttpContext http, CancellationToken ct) =>
+        agents.MapGet("chats/{chatId}/room", (string agentId, string chatId, [FromQuery] bool? ensure, HttpContext http) =>
             {
                 var roomStore = http.RequestServices.GetService<SessionRoomStore>() ?? new SessionRoomStore();
                 var room = roomStore.GetByChat(agentId, chatId);
-                if (room is null && ensure == true)
-                {
-                    var orchestrator = http.RequestServices.GetService<SessionRoomOrchestrator>();
-                    if (orchestrator is not null)
-                    {
-                        room = await orchestrator.EnsureRoomAsync(agentId, chatId, null, chatId, ct);
-                    }
-                }
-                else if (ensure != true && !SessionRoomStore.IsMultiAgentRoom(room))
+                if (!SessionRoomStore.IsMultiAgentRoom(room))
                 {
                     room = null;
                 }

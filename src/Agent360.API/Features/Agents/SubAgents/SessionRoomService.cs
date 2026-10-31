@@ -1881,7 +1881,10 @@ public sealed partial class SessionRoomOrchestrator(
 
     private string? ResolveMatrixAppServiceToken()
     {
-        var tok = configuration?["AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN"]
+        // Never provision live Matrix rooms from unit/contract tests where configuration is null
+        if (configuration is null) return null;
+
+        var tok = configuration["AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN"]
             ?? Environment.GetEnvironmentVariable("AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN");
         if (!string.IsNullOrWhiteSpace(tok)) return tok.Trim();
 
@@ -1916,6 +1919,12 @@ public sealed partial class SessionRoomOrchestrator(
         IReadOnlyList<SessionRoomParticipant> participants,
         CancellationToken ct)
     {
+        // Strictly create a real Matrix room on AgentTeams ONLY when the chat session calls/includes another collaborator agent
+        bool hasCollaborator = participants.Any(p =>
+            string.Equals(p.Role, "collaborator", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(p.AgentId, SubAgentService.NormalizeAgentId(hostAgentId), StringComparison.OrdinalIgnoreCase));
+        if (!hasCollaborator) return null;
+
         var asToken = ResolveMatrixAppServiceToken();
         if (string.IsNullOrWhiteSpace(asToken)) return null;
 
@@ -2039,9 +2048,9 @@ public sealed partial class SessionRoomOrchestrator(
         string? rawPromptOrTitle,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(rawPromptOrTitle)) return roomStore.GetByChat(hostAgentId, hostChatId);
-        var room = roomStore.GetByChat(hostAgentId, hostChatId)
-            ?? await EnsureRoomAsync(hostAgentId, hostChatId, null, hostChatId, ct);
+        var room = roomStore.GetByChat(hostAgentId, hostChatId);
+        if (room is null || !SessionRoomStore.IsMultiAgentRoom(room) || string.IsNullOrWhiteSpace(rawPromptOrTitle))
+            return room;
 
         var nextTitle = BuildCleanRoomTitle(room.HostAgentId, rawPromptOrTitle);
         if (string.Equals(room.RoomTitle, nextTitle, StringComparison.Ordinal))
@@ -2930,8 +2939,43 @@ public sealed partial class SessionRoomOrchestrator(
             && !string.Equals(author, ManagerAgentId, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(author, AdminUserId, StringComparison.OrdinalIgnoreCase);
 
-        var room = roomStore.GetByChat(hostAgentId, hostChatId)
-            ?? await EnsureRoomAsync(hostAgentId, hostChatId, isCollab ? author : null, null, ct);
+        var room = roomStore.GetByChat(hostAgentId, hostChatId);
+        if (room is null)
+        {
+            if (!isCollab || string.Equals(request.Kind, "reaction", StringComparison.OrdinalIgnoreCase))
+            {
+                var host = SubAgentService.NormalizeAgentId(hostAgentId);
+                var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
+                var stubSlug = $"room_{host}_{shortHash}";
+                var noopTurn = new SessionRoomTurn(
+                    $"rt_{Guid.NewGuid():N}"[..12],
+                    1,
+                    author,
+                    FriendlyAgentName(author),
+                    request.AuthorRole ?? "user",
+                    request.Kind ?? "reaction",
+                    request.Text.Trim(),
+                    request.TargetAgentId ?? host,
+                    DateTimeOffset.UtcNow);
+                var noopRoom = new SessionCollaborationRoom(
+                    stubSlug,
+                    $"!{stubSlug}:{GatewayDomain}",
+                    $"{ElementBaseUrl}{Uri.EscapeDataString($"!{stubSlug}:{GatewayDomain}")}",
+                    host,
+                    hostChatId,
+                    hostChatId,
+                    [],
+                    "idle",
+                    null,
+                    4,
+                    0,
+                    [],
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow);
+                return (noopRoom, noopTurn);
+            }
+            room = await EnsureRoomAsync(hostAgentId, hostChatId, author, null, ct);
+        }
 
         if (isCollab && room.Participants.All(p => !string.Equals(p.AgentId, author, StringComparison.OrdinalIgnoreCase)))
         {
