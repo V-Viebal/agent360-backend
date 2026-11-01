@@ -21,7 +21,7 @@ namespace Agent360.API.Features.Agents.Browser;
 public sealed class BrowserViewerAccess(IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment? env = null)
 {
     public const string PathPrefix = "/a360/";
-    private const string DevFallbackOperatorToken = "fd90fead6f7381094c0f891bf3268a5a041d22ea1ca4a0be";
+    private const string DevFallbackOperatorToken = "4c72b68abbe9a28628df95234d79e665d76e65ff5154deff54ac40f9b1b6b10b";
     internal static readonly TimeSpan SessionTtl = TimeSpan.FromHours(8);
 
     private string EffectiveOperatorToken()
