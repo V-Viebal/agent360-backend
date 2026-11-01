@@ -267,6 +267,36 @@ public sealed class AgentMappingTests
         }
     }
 
+    [Fact]
+    public async Task SessionRoomStore_RecordsAndEnrichesClaimedInteractions()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "a360-ix-store-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var store = new Agent360.API.Features.Agents.SubAgents.SessionRoomStore(new TestEnv(tempDir));
+
+            var req = new Agent360.API.Features.Agents.SubAgents.SubmitChatInteractionRequestDto(
+                InteractionId: "ix_opt_test_1",
+                MessageId: "msg_101",
+                Kind: "options",
+                SelectedIds: ["opt_1"],
+                SelectedLabels: ["🚀 Triển khai lên Production"]);
+
+            var (_, claimed) = await store.RecordClaimedInteractionAsync("agentcore-test-ba", "24f462e1-9ff6-47d9-bf55-5c2d532c6a4e", req, "user_1", TestContext.Current.CancellationToken);
+            Assert.Equal("ix_opt_test_1", claimed.InteractionId);
+            Assert.Contains("opt_1", claimed.SelectedIds);
+
+            var enriched = store.EnrichChatHistoryJson("{\"messages\":[]}", "agentcore-test-ba", "24f462e1-9ff6-47d9-bf55-5c2d532c6a4e");
+            Assert.Contains("claimed_interactions", enriched);
+            Assert.Contains("ix_opt_test_1", enriched);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
 
     [Fact]
     public void SessionRoomStore_EnrichChatHistoryJson_StripsInternalRuntimeNoticesAndHeadlines()

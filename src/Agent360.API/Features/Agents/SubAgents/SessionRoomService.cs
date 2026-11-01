@@ -126,7 +126,26 @@ public sealed record SessionCollaborationRoom(
     [property: JsonPropertyName("active_round")] int ActiveRound = 1,
     [property: JsonPropertyName("run_state")] string? RunState = null,
     [property: JsonPropertyName("pinned_message_ids")] IReadOnlyList<string>? PinnedMessageIds = null,
-    [property: JsonPropertyName("pinned_messages")] IReadOnlyList<PinnedMessageRecord>? PinnedMessages = null);
+    [property: JsonPropertyName("pinned_messages")] IReadOnlyList<PinnedMessageRecord>? PinnedMessages = null,
+    [property: JsonPropertyName("claimed_interactions")] IReadOnlyList<ClaimedInteractionRecord>? ClaimedInteractions = null);
+
+public sealed record ClaimedInteractionRecord(
+    [property: JsonPropertyName("interaction_id")] string InteractionId,
+    [property: JsonPropertyName("message_id")] string? MessageId,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("selected_ids")] IReadOnlyList<string> SelectedIds,
+    [property: JsonPropertyName("selected_labels")] IReadOnlyList<string> SelectedLabels,
+    [property: JsonPropertyName("input_value")] string? InputValue,
+    [property: JsonPropertyName("claimed_by")] string ClaimedBy,
+    [property: JsonPropertyName("claimed_at")] DateTimeOffset ClaimedAt);
+
+public sealed record SubmitChatInteractionRequestDto(
+    [property: JsonPropertyName("interaction_id")] string InteractionId,
+    [property: JsonPropertyName("message_id")] string? MessageId = null,
+    [property: JsonPropertyName("kind")] string? Kind = "options",
+    [property: JsonPropertyName("selected_ids")] IReadOnlyList<string>? SelectedIds = null,
+    [property: JsonPropertyName("selected_labels")] IReadOnlyList<string>? SelectedLabels = null,
+    [property: JsonPropertyName("input_value")] string? InputValue = null);
 
 public sealed record PinnedMessageRecord(
     [property: JsonPropertyName("message_id")] string MessageId,
@@ -672,6 +691,68 @@ public sealed class SessionRoomStore
         };
         var saved = await SaveAsync(updatedRoom);
         return (saved, targetPin, ids);
+    }
+
+    public async Task<(SessionCollaborationRoom Room, ClaimedInteractionRecord Claimed)> RecordClaimedInteractionAsync(
+        string hostAgentId,
+        string hostChatId,
+        SubmitChatInteractionRequestDto req,
+        string? userId,
+        CancellationToken ct = default)
+    {
+        var host = SubAgentService.NormalizeAgentId(hostAgentId);
+        var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
+        var roomSlug = $"room_{host}_{shortHash}";
+        var room = GetByChat(host, hostChatId)
+            ?? new SessionCollaborationRoom(
+                roomSlug,
+                $"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}",
+                $"{SessionRoomOrchestrator.ElementBaseUrl}{Uri.EscapeDataString($"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}")}",
+                host,
+                hostChatId,
+                hostChatId,
+                [],
+                "idle",
+                null,
+                10,
+                0,
+                [],
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow);
+
+        var list = room.ClaimedInteractions is not null
+            ? new List<ClaimedInteractionRecord>(room.ClaimedInteractions)
+            : new List<ClaimedInteractionRecord>();
+
+        var interactionId = string.IsNullOrWhiteSpace(req.InteractionId) ? $"ix_{Guid.NewGuid():N}" : req.InteractionId.Trim();
+        list.RemoveAll(x => string.Equals(x.InteractionId, interactionId, StringComparison.OrdinalIgnoreCase));
+
+        var record = new ClaimedInteractionRecord(
+            InteractionId: interactionId,
+            MessageId: req.MessageId,
+            Kind: req.Kind ?? "options",
+            SelectedIds: req.SelectedIds ?? [],
+            SelectedLabels: req.SelectedLabels ?? [],
+            InputValue: req.InputValue,
+            ClaimedBy: userId ?? "user",
+            ClaimedAt: DateTimeOffset.UtcNow);
+
+        list.Add(record);
+
+        var updatedRoom = room with
+        {
+            ClaimedInteractions = list,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var saved = await SaveAsync(updatedRoom);
+        return (saved, record);
+    }
+
+    public IReadOnlyList<ClaimedInteractionRecord> GetClaimedInteractionsForChat(string agentId, string chatId)
+    {
+        var host = SubAgentService.NormalizeAgentId(agentId);
+        var room = GetByChat(host, chatId);
+        return room?.ClaimedInteractions ?? [];
     }
 
     public IReadOnlyList<PinnedMessageRecord> GetPinnedMessagesForAgent(string agentId, string? chatId = null)
@@ -1277,6 +1358,10 @@ public sealed class SessionRoomStore
                 {
                     node["pinned_messages"] = JsonSerializer.SerializeToNode(room.PinnedMessages);
                 }
+                if (room?.ClaimedInteractions is { Count: > 0 })
+                {
+                    node["claimed_interactions"] = JsonSerializer.SerializeToNode(room.ClaimedInteractions);
+                }
                 return node.ToJsonString();
             }
 
@@ -1771,6 +1856,10 @@ public sealed class SessionRoomStore
             if (room.PinnedMessages is { Count: > 0 })
             {
                 node["pinned_messages"] = JsonSerializer.SerializeToNode(room.PinnedMessages);
+            }
+            if (room.ClaimedInteractions is { Count: > 0 })
+            {
+                node["claimed_interactions"] = JsonSerializer.SerializeToNode(room.ClaimedInteractions);
             }
 
             node["messages"] = new System.Text.Json.Nodes.JsonArray(

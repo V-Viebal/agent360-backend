@@ -405,6 +405,79 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Pin or unpin a message in an agent chat session and synchronize to QwenPaw workspace")
         .AllowAnonymous();
 
+        // 1e-interactions. Record and retrieve claimed interactive widgets (CTA options, polls, guided inputs) in an agent chat session
+        group.MapPost("{agentId}/chats/{chatId}/interactions", async (
+            string agentId,
+            string chatId,
+            [FromBody] Agent360.API.Features.Agents.SubAgents.SubmitChatInteractionRequestDto request,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var currentUser = httpContext.RequestServices.GetService<Agent360.API.Identity.CurrentUser>();
+            var userId = currentUser?.ExternalUserId ?? "user";
+
+            var (room, claimed) = await roomStore.RecordClaimedInteractionAsync(agentId, chatId, request, userId, ct);
+
+            var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+            if (multiplexerHub is not null)
+            {
+                var normAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "chat_interaction_claimed",
+                    agent_id = normAgent,
+                    chat_id = chatId,
+                    interaction = claimed,
+                    claimed_interactions = room.ClaimedInteractions,
+                    timestamp = DateTimeOffset.UtcNow.ToString("O")
+                }));
+            }
+
+            return Results.Ok(new
+            {
+                success = true,
+                agent_id = agentId,
+                chat_id = chatId,
+                interaction = claimed,
+                claimed_interactions = room.ClaimedInteractions
+            });
+        })
+        .WithName("SubmitChatInteraction")
+        .WithSummary("Record user selection on an interactive CTA option, poll, or guided input card")
+        .AllowAnonymous();
+
+        group.MapGet("{agentId}/chats/{chatId}/interactions", async (
+            string agentId,
+            string chatId,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var roomStore = httpContext.RequestServices.GetRequiredService<Agent360.API.Features.Agents.SubAgents.SessionRoomStore>();
+            var list = roomStore.GetClaimedInteractionsForChat(agentId, chatId);
+            return Results.Ok(new
+            {
+                agent_id = agentId,
+                chat_id = chatId,
+                claimed_interactions = list
+            });
+        })
+        .WithName("GetChatInteractions")
+        .WithSummary("Get claimed interactive widgets for a specific agent chat session")
+        .AllowAnonymous();
+
         // Get pinned messages for a specific chat session
         group.MapGet("{agentId}/chats/{chatId}/pinned-messages", async (
             string agentId,
