@@ -238,7 +238,7 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         }
         return raw.ToLowerInvariant() switch
         {
-            "default-test" or "qwenpaw-test" => "qwenpaw-test-ba",
+            "default-test" or "test-default" or "qwenpaw-test" or "agentcore-test" => "qwenpaw-test-ba",
             _ => raw
         };
     }

@@ -248,7 +248,18 @@ public sealed class AgentMappingTests
             // Alias must resolve in store and in FleetRoutingState.CustomSlugAliases
             Assert.Equal("qwenpaw-test-ba", store.ResolveCanonicalSlugByAlias("default-test"));
             Assert.Equal("qwenpaw-test-ba", Agent360.API.Features.Agents.Services.FleetInstanceRoutingService.NormalizeAgentId("default-test"));
+            Assert.Equal("qwenpaw-test-ba", Agent360.API.Features.Agents.Services.FleetInstanceRoutingService.NormalizeAgentId("test-default"));
             Assert.NotNull(store.Get("default-test"));
+
+            // Renaming agent preserves previous_aliases so historical bookmark URLs still resolve
+            var rename1 = new System.Text.Json.Nodes.JsonObject { ["name"] = "Alpha Bot" };
+            await store.SetAsync("mons", rename1, TestContext.Current.CancellationToken);
+            var rename2 = new System.Text.Json.Nodes.JsonObject { ["name"] = "Beta Bot" };
+            var savedMons = await store.SetAsync("mons", rename2, TestContext.Current.CancellationToken);
+            Assert.Equal("Beta Bot", savedMons["name"]?.ToString());
+            Assert.Equal("mons", store.ResolveCanonicalSlugByAlias("alpha-bot"));
+            Assert.Equal("mons", store.ResolveCanonicalSlugByAlias("beta-bot"));
+            Assert.Equal("mons", Agent360.API.Features.Agents.Services.FleetInstanceRoutingService.NormalizeAgentId("alpha-bot"));
         }
         finally
         {

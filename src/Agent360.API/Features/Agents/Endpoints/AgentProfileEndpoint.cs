@@ -298,6 +298,17 @@ public sealed class AgentProfileStore
             {
                 return canonicalKey;
             }
+            if (obj["previous_aliases"] is JsonArray prevArr)
+            {
+                foreach (var item in prevArr)
+                {
+                    var prevAlias = SlugifyAlias(item?.GetValue<string>());
+                    if (!string.IsNullOrWhiteSpace(prevAlias) && prevAlias == targetAlias)
+                    {
+                        return canonicalKey;
+                    }
+                }
+            }
         }
         return null;
     }
@@ -312,6 +323,17 @@ public sealed class AgentProfileStore
             if (!string.IsNullOrWhiteSpace(alias) && !string.Equals(alias, canonicalKey, StringComparison.OrdinalIgnoreCase))
             {
                 Agent360.API.Features.Agents.Services.FleetRoutingState.CustomSlugAliases[alias] = canonicalKey;
+            }
+            if (obj["previous_aliases"] is JsonArray prevArr)
+            {
+                foreach (var item in prevArr)
+                {
+                    var prevAlias = SlugifyAlias(item?.GetValue<string>());
+                    if (!string.IsNullOrWhiteSpace(prevAlias) && !string.Equals(prevAlias, canonicalKey, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Agent360.API.Features.Agents.Services.FleetRoutingState.CustomSlugAliases.TryAdd(prevAlias, canonicalKey);
+                    }
+                }
             }
         }
     }
@@ -338,6 +360,38 @@ public sealed class AgentProfileStore
             }
             if (data.ContainsKey("name"))
             {
+                var prevName = merged["name"]?.GetValue<string>();
+                var prevAlias = SlugifyAlias(prevName);
+                var nextName = data["name"]?.GetValue<string>();
+                var nextAlias = SlugifyAlias(nextName);
+                var histSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (merged["previous_aliases"] is JsonArray existingHist)
+                {
+                    foreach (var n in existingHist)
+                    {
+                        var s = SlugifyAlias(n?.GetValue<string>());
+                        if (!string.IsNullOrWhiteSpace(s)) histSet.Add(s);
+                    }
+                }
+                if (data["previous_aliases"] is JsonArray incomingHist)
+                {
+                    foreach (var n in incomingHist)
+                    {
+                        var s = SlugifyAlias(n?.GetValue<string>());
+                        if (!string.IsNullOrWhiteSpace(s)) histSet.Add(s);
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(prevAlias) && !string.Equals(prevAlias, nextAlias, StringComparison.OrdinalIgnoreCase))
+                {
+                    histSet.Add(prevAlias);
+                }
+                if (!string.IsNullOrWhiteSpace(nextAlias))
+                {
+                    histSet.Add(nextAlias);
+                }
+                var newHistArr = new JsonArray();
+                foreach (var h in histSet) newHistArr.Add(h);
+                merged["previous_aliases"] = newHistArr;
                 merged["name"] = data["name"]?.DeepClone();
             }
             merged["approval_level"] = "OFF";

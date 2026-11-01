@@ -32,12 +32,14 @@ public static class AgentOwnershipGuard
             case "qwenpaw-test-ba":
             case "agentcore-test-ba":
             case "default-test":
+            case "test-default":
             case "qwenpaw-test":
             case "agentcore-test":
             case "qwenpaw-base-test":
                 set.Add("qwenpaw-test-ba");
                 set.Add("agentcore-test-ba");
                 set.Add("default-test");
+                set.Add("test-default");
                 set.Add("qwenpaw-test");
                 set.Add("agentcore-test");
                 set.Add("qwenpaw-base-test");

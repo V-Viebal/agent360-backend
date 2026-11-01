@@ -177,10 +177,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             if (inline == true)
             {
                 httpContext.Response.Headers.ContentDisposition = $"inline; filename=\"{fileName.Replace("\"", "")}\"";
-                return Results.Bytes(bytes, contentType);
+                return Results.File(bytes, contentType, enableRangeProcessing: true);
             }
 
-            return Results.File(bytes, contentType, fileName);
+            return Results.File(bytes, contentType, fileName, enableRangeProcessing: true);
         })
         .WithName("DownloadWorkspaceFile")
         .WithSummary("Stream or download a workspace file with ACL enforcement")
@@ -1034,7 +1034,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         {
                             var bytes = await File.ReadAllBytesAsync(exactLocal, ct);
                             httpContext.Response.Headers.ContentDisposition = $"{(isDownload ? "attachment" : "inline")}; filename=\"{safeFileName.Replace("\"", "")}\"";
-                            return Results.Bytes(bytes, fallbackContentType);
+                            return Results.File(bytes, fallbackContentType, enableRangeProcessing: true);
                         }
                     }
                 }
@@ -1088,7 +1088,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                             contentType = fallbackContentType;
                         }
                         httpContext.Response.Headers.ContentDisposition = $"{(isDownload ? "attachment" : "inline")}; filename=\"{safeFileName.Replace("\"", "")}\"";
-                        return Results.Bytes(bytes, contentType);
+                        return Results.File(bytes, contentType, enableRangeProcessing: true);
                     }
                 }
                 catch
@@ -1124,7 +1124,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                                 contentType = fallbackContentType;
                             }
                             httpContext.Response.Headers.ContentDisposition = $"{(isDownload ? "attachment" : "inline")}; filename=\"{safeFileName.Replace("\"", "")}\"";
-                            return Results.Bytes(bytes, contentType);
+                            return Results.File(bytes, contentType, enableRangeProcessing: true);
                         }
                     }
                 }
@@ -1395,10 +1395,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     if (inline == true)
                     {
                         httpContext.Response.Headers.ContentDisposition = $"inline; filename=\"{fileName.Replace("\"", "")}\"";
-                        return Results.Bytes(bytes, contentType);
+                        return Results.File(bytes, contentType, enableRangeProcessing: true);
                     }
 
-                    return Results.File(bytes, contentType, fileName);
+                    return Results.File(bytes, contentType, fileName, enableRangeProcessing: true);
                 }
             });
         })
