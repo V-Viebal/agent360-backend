@@ -1943,7 +1943,11 @@ public sealed partial class SessionRoomOrchestrator(
         {
             "agentteams-manager" or "manager" => $"@manager:{GatewayDomain}",
             "admin" => $"@admin:{GatewayDomain}",
-            "gm-boc" or "gm-gao" or "gm-lua" or "gm" => $"@gm-default:{GatewayDomain}",
+            "gm-boc" or "gm" => $"@gm-default:{GatewayDomain}",
+            "gm-gao" or "gm-supplier" => $"@gm-supplier:{GatewayDomain}",
+            "gm-lua" or "gm-customer" => $"@gm-customer:{GatewayDomain}",
+            "test-default" or "default-test" or "qwenpaw-test-ba" or "agentcore-test-ba" or "qwenpaw-test" or "agentcore-test" => $"@agentcore-test-ba:{GatewayDomain}",
+            "mons-app360" or "app360" => $"@mons:{GatewayDomain}",
             _ => $"@{norm}:{GatewayDomain}"
         };
     }
@@ -1968,7 +1972,11 @@ public sealed partial class SessionRoomOrchestrator(
         };
     }
 
-    private string? ResolveMatrixAppServiceToken()
+    private static string? _cachedMatrixAppServiceToken;
+    private static DateTimeOffset _cachedMatrixAppServiceTokenAt = DateTimeOffset.MinValue;
+    private static readonly SemaphoreSlim MatrixTokenResolveGate = new(1, 1);
+
+    private async Task<string?> ResolveMatrixAppServiceTokenAsync(CancellationToken ct = default)
     {
         // Never provision live Matrix rooms from unit/contract tests where configuration is null
         if (configuration is null) return null;
@@ -1977,8 +1985,21 @@ public sealed partial class SessionRoomOrchestrator(
             ?? Environment.GetEnvironmentVariable("AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN");
         if (!string.IsNullOrWhiteSpace(tok)) return tok.Trim();
 
+        if (!string.IsNullOrWhiteSpace(_cachedMatrixAppServiceToken) &&
+            DateTimeOffset.UtcNow - _cachedMatrixAppServiceTokenAt < TimeSpan.FromMinutes(30))
+        {
+            return _cachedMatrixAppServiceToken;
+        }
+
+        await MatrixTokenResolveGate.WaitAsync(ct);
         try
         {
+            if (!string.IsNullOrWhiteSpace(_cachedMatrixAppServiceToken) &&
+                DateTimeOffset.UtcNow - _cachedMatrixAppServiceTokenAt < TimeSpan.FromMinutes(30))
+            {
+                return _cachedMatrixAppServiceToken;
+            }
+
             foreach (var candidate in new[]
             {
                 Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".tmp", "as_token.txt"),
@@ -1986,11 +2007,104 @@ public sealed partial class SessionRoomOrchestrator(
                 "D:\\vps\\projects\\agent360\\.tmp\\as_token.txt"
             })
             {
-                if (File.Exists(candidate))
+                try
                 {
-                    var fileTok = File.ReadAllText(candidate).Trim();
-                    if (!string.IsNullOrWhiteSpace(fileTok)) return fileTok;
+                    if (File.Exists(candidate))
+                    {
+                        var fileTok = (await File.ReadAllTextAsync(candidate, ct)).Trim();
+                        if (!string.IsNullOrWhiteSpace(fileTok))
+                        {
+                            _cachedMatrixAppServiceToken = fileTok;
+                            _cachedMatrixAppServiceTokenAt = DateTimeOffset.UtcNow;
+                            return fileTok;
+                        }
+                    }
                 }
+                catch {}
+            }
+
+            // Dual-source fallback: resolve AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN from Infisical (core/prod:/agent360-backend/app/backend)
+            var infisicalResolved = await TryFetchMatrixTokenFromInfisicalAsync(ct);
+            if (!string.IsNullOrWhiteSpace(infisicalResolved))
+            {
+                _cachedMatrixAppServiceToken = infisicalResolved;
+                _cachedMatrixAppServiceTokenAt = DateTimeOffset.UtcNow;
+                return infisicalResolved;
+            }
+        }
+        finally
+        {
+            MatrixTokenResolveGate.Release();
+        }
+        return null;
+    }
+
+    private string? ResolveMatrixAppServiceToken() =>
+        ResolveMatrixAppServiceTokenAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    private async Task<string?> TryFetchMatrixTokenFromInfisicalAsync(CancellationToken ct)
+    {
+        try
+        {
+            string? apiUrl = configuration?["INFISICAL_API_URL"] ?? Environment.GetEnvironmentVariable("INFISICAL_API_URL");
+            string? clientId = configuration?["INFISICAL_CLIENT_ID"] ?? Environment.GetEnvironmentVariable("INFISICAL_CLIENT_ID");
+            string? clientSecret = configuration?["INFISICAL_CLIENT_SECRET"] ?? Environment.GetEnvironmentVariable("INFISICAL_CLIENT_SECRET");
+
+            if (string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+            {
+                foreach (var envFile in new[]
+                {
+                    Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", ".env"),
+                    "/mnt/d/vps/.env",
+                    "D:\\vps\\.env"
+                })
+                {
+                    if (!File.Exists(envFile)) continue;
+                    foreach (var rawLine in await File.ReadAllLinesAsync(envFile, ct))
+                    {
+                        var line = rawLine.Trim();
+                        if (string.IsNullOrEmpty(line) || line.StartsWith('#')) continue;
+                        var eq = line.IndexOf('=');
+                        if (eq <= 0) continue;
+                        var k = line[..eq].Trim();
+                        var v = line[(eq + 1)..].Trim().Trim('"', '\'');
+                        if (k == "INFISICAL_API_URL" && string.IsNullOrWhiteSpace(apiUrl)) apiUrl = v;
+                        else if (k == "INFISICAL_CLIENT_ID" && string.IsNullOrWhiteSpace(clientId)) clientId = v;
+                        else if (k == "INFISICAL_CLIENT_SECRET" && string.IsNullOrWhiteSpace(clientSecret)) clientSecret = v;
+                    }
+                    if (!string.IsNullOrWhiteSpace(apiUrl) && !string.IsNullOrWhiteSpace(clientId) && !string.IsNullOrWhiteSpace(clientSecret))
+                        break;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+                return null;
+
+            using var loginCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            loginCts.CancelAfter(TimeSpan.FromSeconds(6));
+            using var loginReq = new HttpRequestMessage(HttpMethod.Post, $"{apiUrl.TrimEnd('/')}/api/v1/auth/universal-auth/login")
+            {
+                Content = JsonContent.Create(new { clientId, clientSecret })
+            };
+            using var loginResp = await SharedMatrixHttp.SendAsync(loginReq, loginCts.Token);
+            if (!loginResp.IsSuccessStatusCode) return null;
+            using var loginDoc = JsonDocument.Parse(await loginResp.Content.ReadAsStringAsync(loginCts.Token));
+            if (!loginDoc.RootElement.TryGetProperty("accessToken", out var atProp)) return null;
+            var accessToken = atProp.GetString();
+            if (string.IsNullOrWhiteSpace(accessToken)) return null;
+
+            const string coreWorkspaceId = "ed243bea-df8c-4835-bad0-d6a291274729";
+            var secretUrl = $"{apiUrl.TrimEnd('/')}/api/v3/secrets/raw/AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN?workspaceId={coreWorkspaceId}&environment=prod&secretPath=%2Fagent360-backend%2Fapp%2Fbackend";
+            using var secReq = new HttpRequestMessage(HttpMethod.Get, secretUrl);
+            secReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var secResp = await SharedMatrixHttp.SendAsync(secReq, loginCts.Token);
+            if (!secResp.IsSuccessStatusCode) return null;
+            using var secDoc = JsonDocument.Parse(await secResp.Content.ReadAsStringAsync(loginCts.Token));
+            if (secDoc.RootElement.TryGetProperty("secret", out var secObj) &&
+                secObj.TryGetProperty("secretValue", out var valProp))
+            {
+                var secretVal = valProp.GetString()?.Trim();
+                if (!string.IsNullOrWhiteSpace(secretVal)) return secretVal;
             }
         }
         catch {}
@@ -2014,7 +2128,7 @@ public sealed partial class SessionRoomOrchestrator(
             !string.Equals(p.AgentId, SubAgentService.NormalizeAgentId(hostAgentId), StringComparison.OrdinalIgnoreCase));
         if (!hasCollaborator) return null;
 
-        var asToken = ResolveMatrixAppServiceToken();
+        var asToken = await ResolveMatrixAppServiceTokenAsync(ct);
         if (string.IsNullOrWhiteSpace(asToken)) return null;
 
         var managerMxid = $"@manager:{GatewayDomain}";
@@ -2061,58 +2175,86 @@ public sealed partial class SessionRoomOrchestrator(
                         realRoomId = ridProp.GetString();
                     }
                 }
+                else
+                {
+                    // Fallback: if any invited MXID is not yet registered on the homeserver, create room with @admin first and invite/join each valid participant individually
+                    var fallbackPayload = new
+                    {
+                        preset = "trusted_private_chat",
+                        name = $"Session [{hostAgentId}] - {hostChatId}",
+                        topic = $"Agent360 Session Room | Host: @{hostAgentId} | Session: {hostChatId}",
+                        invite = new[] { $"@admin:{GatewayDomain}" },
+                        is_direct = false
+                    };
+                    using var fbReq = new HttpRequestMessage(HttpMethod.Post, createUrl)
+                    {
+                        Content = JsonContent.Create(fallbackPayload)
+                    };
+                    fbReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                    fbReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                    using var fbResp = await SharedMatrixHttp.SendAsync(fbReq, ct);
+                    if (fbResp.IsSuccessStatusCode)
+                    {
+                        using var fbDoc = JsonDocument.Parse(await fbResp.Content.ReadAsStringAsync(ct));
+                        if (fbDoc.RootElement.TryGetProperty("room_id", out var fbRid))
+                        {
+                            realRoomId = fbRid.GetString();
+                        }
+                    }
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(realRoomId))
             {
                 var encodedRoom = Uri.EscapeDataString(realRoomId);
-                foreach (var mxid in targetMxids)
-                {
-                    if (string.Equals(mxid, managerMxid, StringComparison.OrdinalIgnoreCase)) continue;
-                    try
+                await Task.WhenAll(targetMxids
+                    .Where(mxid => !string.Equals(mxid, managerMxid, StringComparison.OrdinalIgnoreCase))
+                    .Select(async mxid =>
                     {
-                        // Invite as manager, then join as the target user via AppService identity
-                        using var invReq = new HttpRequestMessage(
-                            HttpMethod.Post,
-                            $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/invite?user_id={Uri.EscapeDataString(managerMxid)}")
+                        try
                         {
-                            Content = JsonContent.Create(new { user_id = mxid })
-                        };
-                        invReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
-                        invReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
-                        using var _ = await SharedMatrixHttp.SendAsync(invReq, ct);
+                            using var invReq = new HttpRequestMessage(
+                                HttpMethod.Post,
+                                $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/invite?user_id={Uri.EscapeDataString(managerMxid)}")
+                            {
+                                Content = JsonContent.Create(new { user_id = mxid })
+                            };
+                            invReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                            invReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                            using var _ = await SharedMatrixHttp.SendAsync(invReq, ct);
 
-                        using var joinReq = new HttpRequestMessage(
-                            HttpMethod.Post,
-                            $"{MatrixHomeserverUrl}/_matrix/client/v3/join/{encodedRoom}?user_id={Uri.EscapeDataString(mxid)}")
-                        {
-                            Content = new StringContent("{}", Encoding.UTF8, "application/json")
-                        };
-                        joinReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
-                        joinReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
-                        using var __ = await SharedMatrixHttp.SendAsync(joinReq, ct);
-                    }
-                    catch {}
-                }
+                            using var joinReq = new HttpRequestMessage(
+                                HttpMethod.Post,
+                                $"{MatrixHomeserverUrl}/_matrix/client/v3/join/{encodedRoom}?user_id={Uri.EscapeDataString(mxid)}")
+                            {
+                                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                            };
+                            joinReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                            joinReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                            using var __ = await SharedMatrixHttp.SendAsync(joinReq, ct);
+                        }
+                        catch {}
+                    }));
 
                 // Evict any legacy hardcoded @mon / @mons from the Matrix room if neither is a scoped participant of this chat session
-                foreach (var strayMxid in new[] { $"@mon:{GatewayDomain}", $"@mons:{GatewayDomain}" })
-                {
-                    if (targetMxids.Contains(strayMxid, StringComparer.OrdinalIgnoreCase)) continue;
-                    try
+                await Task.WhenAll(new[] { $"@mon:{GatewayDomain}", $"@mons:{GatewayDomain}" }
+                    .Where(strayMxid => !targetMxids.Contains(strayMxid, StringComparer.OrdinalIgnoreCase))
+                    .Select(async strayMxid =>
                     {
-                        using var leaveReq = new HttpRequestMessage(
-                            HttpMethod.Post,
-                            $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/leave?user_id={Uri.EscapeDataString(strayMxid)}")
+                        try
                         {
-                            Content = new StringContent("{}", Encoding.UTF8, "application/json")
-                        };
-                        leaveReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
-                        leaveReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
-                        using var _ = await SharedMatrixHttp.SendAsync(leaveReq, ct);
-                    }
-                    catch {}
-                }
+                            using var leaveReq = new HttpRequestMessage(
+                                HttpMethod.Post,
+                                $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/leave?user_id={Uri.EscapeDataString(strayMxid)}")
+                            {
+                                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                            };
+                            leaveReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", asToken);
+                            leaveReq.Headers.UserAgent.ParseAdd("Agent360-RoomOrchestrator/1.0");
+                            using var _ = await SharedMatrixHttp.SendAsync(leaveReq, ct);
+                        }
+                        catch {}
+                    }));
             }
         }
         catch (Exception ex)
@@ -2181,9 +2323,51 @@ public sealed partial class SessionRoomOrchestrator(
 
         private async Task PostTurnToRealMatrixRoomAsync(SessionCollaborationRoom room, SessionRoomTurn turn)
     {
-        if (room.MatrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase)) return;
-        var asToken = ResolveMatrixAppServiceToken();
+        var asToken = await ResolveMatrixAppServiceTokenAsync(CancellationToken.None);
         if (string.IsNullOrWhiteSpace(asToken)) return;
+
+        // Self-healing auto-upgrade: if a multi-agent room still holds a placeholder !room_* ID, promote it to a real Matrix room and backfill prior turns
+        if (room.MatrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!SessionRoomStore.IsMultiAgentRoom(room)) return;
+            var upgradedRoomId = await EnsureRealMatrixRoomOnAgentTeamsAsync(null, room.HostAgentId, room.HostChatId, room.Participants, CancellationToken.None);
+            if (string.IsNullOrWhiteSpace(upgradedRoomId)) return;
+
+            var oldPlaceholderId = room.MatrixRoomId;
+            var upgradedTurns = room.Turns
+                .Select(t => t with
+                {
+                    Text = (t.Text ?? "").Replace(oldPlaceholderId, upgradedRoomId, StringComparison.OrdinalIgnoreCase),
+                    Reasoning = t.Reasoning?.Replace(oldPlaceholderId, upgradedRoomId, StringComparison.OrdinalIgnoreCase)
+                })
+                .ToList();
+            room = await roomStore.SaveAsync(room with
+            {
+                MatrixRoomId = upgradedRoomId,
+                ElementRoomUrl = $"{ElementBaseUrl}{Uri.EscapeDataString(upgradedRoomId)}",
+                Turns = upgradedTurns,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+            if (!string.IsNullOrWhiteSpace(room.RoomTitle))
+            {
+                _ = SyncRoomTitleAsync(room.HostAgentId, room.HostChatId, room.RoomTitle, CancellationToken.None);
+            }
+            foreach (var prevTurn in upgradedTurns.Where(t => !string.Equals(t.Id, turn.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                await SendSingleTurnToMatrixAsync(room.MatrixRoomId, prevTurn, asToken);
+            }
+            turn = turn with
+            {
+                Text = (turn.Text ?? "").Replace(oldPlaceholderId, upgradedRoomId, StringComparison.OrdinalIgnoreCase)
+            };
+        }
+
+        await SendSingleTurnToMatrixAsync(room.MatrixRoomId, turn, asToken);
+    }
+
+    private async Task SendSingleTurnToMatrixAsync(string matrixRoomId, SessionRoomTurn turn, string asToken)
+    {
+        if (matrixRoomId.StartsWith("!room_", StringComparison.OrdinalIgnoreCase)) return;
 
         const int maxAttempts = 3;
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -2191,7 +2375,7 @@ public sealed partial class SessionRoomOrchestrator(
             try
             {
                 var senderMxid = MatrixId(turn.AuthorId);
-                var encodedRoom = Uri.EscapeDataString(room.MatrixRoomId);
+                var encodedRoom = Uri.EscapeDataString(matrixRoomId);
                 var txnId = Uri.EscapeDataString(turn.Id);
                 var url = $"{MatrixHomeserverUrl}/_matrix/client/v3/rooms/{encodedRoom}/send/m.room.message/{txnId}?user_id={Uri.EscapeDataString(senderMxid)}";
                 using var req = new HttpRequestMessage(HttpMethod.Put, url)
@@ -2217,7 +2401,7 @@ public sealed partial class SessionRoomOrchestrator(
             }
             catch (Exception ex) when (attempt < maxAttempts)
             {
-                logger.LogDebug(ex, "Transient error posting turn {TurnId} to Matrix room {RoomId}, retry attempt {Attempt}", turn.Id, room.MatrixRoomId, attempt);
+                logger.LogDebug(ex, "Transient error posting turn {TurnId} to Matrix room {RoomId}, retry attempt {Attempt}", turn.Id, matrixRoomId, attempt);
                 await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
             }
             catch

@@ -72,6 +72,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 }
 
                 int lastKnownCount = -1;
+                long syncSeq = 0;
                 string? lastKnownMessageId = null;
                 string? lastKnownMsgStatus = null;
                 string? lastKnownChatStatus = null;
@@ -115,7 +116,9 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     session_id = canonicalSessionId ?? chatId,
                     channel = detectedChannel,
                     is_running = isInitiallyRunning,
-                    is_unread = isInitiallyUnread
+                    is_unread = isInitiallyUnread,
+                    sync_seq = syncSeq,
+                    revision_ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 });
                 await httpContext.Response.WriteAsync($"event: connected\ndata: {connectMeta}\n\n", ct);
                 await httpContext.Response.Body.FlushAsync(ct);
@@ -252,6 +255,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                     // this turn in real-time; never pollute it as unread.
                                     var isUnreadTurn = false;
 
+                                    syncSeq++;
+                                    var revisionTs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                                     var payload = JsonSerializer.Serialize(new
                                     {
                                         type = "session_sync",
@@ -259,6 +264,8 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                                         session_id = canonicalSessionId ?? chatId,
                                         agent_id = agentId,
                                         channel = detectedChannel,
+                                        sync_seq = syncSeq,
+                                        revision_ts = revisionTs,
                                         message_count = currentCount,
                                         is_running = isTurnRunning,
                                         is_unread = isUnreadTurn,
