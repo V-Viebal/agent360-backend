@@ -110,6 +110,36 @@ public sealed class BrowserProfileMapParsingTests
     }
 
     [Fact]
+    public void ResolveFromAgentProfileJsonExtractsExplicitBrowserProfileNameForNewDynamicAgents()
+    {
+        const string profileJson = """
+        {
+          "id": "future-agent",
+          "mcp": {
+            "clients": {
+              "chrome-devtools": {
+                "name": "chrome-devtools",
+                "enabled": true,
+                "command": "node",
+                "args": ["/app/working.secret/.agent/mcps/chrome-devtools-wrapper.js"],
+                "env": {
+                  "BROWSER_CDP_URL": "http://100.76.185.111:19222",
+                  "BROWSER_PROFILE_NAME": "Profile 9"
+                }
+              }
+            }
+          }
+        }
+        """;
+        var res = Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.ResolveFromAgentProfileJson(profileJson, "core", "future-agent");
+        res.Should().NotBeNull();
+        res!.HasBrowserMcp.Should().BeTrue();
+        res.InstanceKey.Should().Be("core");
+        res.Service.Should().Be("chromium-browser-q4yu");
+        res.Profile.Should().Be("Profile 9");
+    }
+
+    [Fact]
     public void BuildAnchorUrlIncludesStyledDarkThemeBodyAndProfileMarker()
     {
         var url = Agent360.API.Features.Agents.Browser.AgentBrowserDirectory.BuildAnchorUrl("Default", "mons");

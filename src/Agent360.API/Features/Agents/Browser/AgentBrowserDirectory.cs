@@ -58,7 +58,7 @@ public sealed class AgentBrowserDirectory(
         ["core"] = new("chromium-browser-q4yu", "https://browser.hmz.one", "http://100.76.185.111:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Profile 4", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 5", ["AgentCore_QA_Agent_0.2"] = "Profile 5", ["app360"] = "Profile 6", ["mons-app360"] = "Profile 6" }),
         ["gm"] = new("browser-gm-21er", "https://browser-gm.antares.vn", "http://100.81.66.42:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4", ["AgentCore_QA_Agent_0.2"] = "Profile 4" }),
         // Planthy runs its own browser service (not the shared 5th climax browser); tailnet proxy on :19224.
         ["planthy"] = new("planthy-browser-rff7", "https://browser-planthy.hmz.one", "http://100.70.201.83:19224",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
@@ -72,7 +72,7 @@ public sealed class AgentBrowserDirectory(
                 ["marketing_publisher"] = "Profile 6"
             }),
         ["climax"] = new("climax-browser", "https://browser-climax.antares.vn", "http://100.70.201.83:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 2", ["QwenPaw_QA_Agent_0.2"] = "Profile 3", ["AgentCore_QA_Agent_0.2"] = "Profile 3" }),
         ["its"] = new("browser-its", "https://browser-its.antares.vn", "http://100.66.243.55:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["QwenPaw_QA_Agent_0.2"] = "Profile 1", ["AgentCore_QA_Agent_0.2"] = "Profile 1" }),
         ["gl"] = new("browser-gl-2o45ucsrp9rp9yepsrnvs1mk", "https://browser-gl.antares.vn", "http://100.66.243.55:19224",
@@ -169,7 +169,8 @@ public sealed class AgentBrowserDirectory(
         string agentId,
         CancellationToken ct = default)
     {
-        if (!TryResolve(agentId, out var target, out var service, out var viewerUrl, out var cdpUrl, out var profile) || profile is null || target.Instance is null)
+        var hasService = TryResolve(agentId, out var target, out var service, out var viewerUrl, out var cdpUrl, out var profile);
+        if (!hasService || target.Instance is null)
         {
             return (false, target, service, viewerUrl, cdpUrl, profile);
         }
@@ -199,6 +200,11 @@ public sealed class AgentBrowserDirectory(
                 cdpUrl = InternalCdpUrl(effectiveKey, mcpRes.CdpUrl!);
             }
             if (!string.IsNullOrWhiteSpace(mcpRes.Profile)) profile = mcpRes.Profile!;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile))
+        {
+            return (false, target, service, viewerUrl, cdpUrl, null);
         }
 
         return (true, target, service, viewerUrl, cdpUrl, profile);
