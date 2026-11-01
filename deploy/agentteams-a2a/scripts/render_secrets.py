@@ -58,6 +58,7 @@ if A.role == "control-plane":
     remote = "python3 -c \"import hashlib,sys;d=dict(l.strip().split('=',1) for l in open('%s') if '=' in l);print(' '.join(k+':'+hashlib.sha256(v.encode()).hexdigest()[:12] for k,v in sorted(d.items())))\"" % target
 elif A.role == "backend":
     vals = {"ConnectionStrings__DefaultConnection": get(PROJECTS["core"], "/agent360-backend/app/backend", "ConnectionStrings__DefaultConnection"),
+            "AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN": get(PROJECTS["core"], "/agent360-backend/app/backend", "AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN"),
             # Same operator credential as the A2A control plane; guards mutating sub-agent/delegation routes.
             "Agent360__Security__OperatorToken": get(PROJECTS["core"], "/agent360-a2a/app/runtime", "A2A_OPERATOR_TOKEN")}
     for key, (proj, path) in FLEET.items():
