@@ -394,7 +394,9 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
         var coreProfile = id switch
         {
             "default-core" => "default",
+            "mons-app360" or "app360" or "core-app360" => "app360",
             "mons-qwenpaw_qa_agent_0.2" or "mons-agentcore_qa_agent_0.2" or "core-qa" => "AgentCore_QA_Agent_0.2",
+            var s when s.StartsWith("mons-", StringComparison.OrdinalIgnoreCase) && s.Length > 5 => raw[5..],
             _ => raw
         };
         return Target(Instance("core"), raw, coreProfile);

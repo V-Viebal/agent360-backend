@@ -56,7 +56,7 @@ public sealed class AgentBrowserDirectory(
     private static readonly IReadOnlyDictionary<string, BrowserService> Services = new Dictionary<string, BrowserService>(StringComparer.OrdinalIgnoreCase)
     {
         ["core"] = new("chromium-browser-q4yu", "https://browser.hmz.one", "http://100.76.185.111:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Default", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 5" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Profile 4", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 5", ["AgentCore_QA_Agent_0.2"] = "Profile 5", ["app360"] = "Profile 6", ["mons-app360"] = "Profile 6" }),
         ["gm"] = new("browser-gm-21er", "https://browser-gm.antares.vn", "http://100.81.66.42:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4" }),
         // Planthy runs its own browser service (not the shared 5th climax browser); tailnet proxy on :19224.

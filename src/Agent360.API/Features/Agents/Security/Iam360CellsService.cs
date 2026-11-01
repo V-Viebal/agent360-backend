@@ -1839,7 +1839,7 @@ public sealed class Iam360CellsService : IIam360CellsService
         {
             return ("gl", low.Contains("qa_agent") ? "QwenPaw_QA_Agent_0.2" : "default");
         }
-        var coreProf = low == "default-core" ? "default" : low == "mons-qwenpaw_qa_agent_0.2" ? "QwenPaw_QA_Agent_0.2" : slug;
+        var coreProf = low == "default-core" ? "default" : low is "mons-app360" or "app360" or "core-app360" ? "app360" : low == "mons-qwenpaw_qa_agent_0.2" ? "QwenPaw_QA_Agent_0.2" : slug;
         return ("core", coreProf);
     }
 
@@ -1852,6 +1852,7 @@ public sealed class Iam360CellsService : IIam360CellsService
             "ken" => ("Ken (Product Owner)", "Operations", "manager"),
             "zen" => ("Zen (Sales & Delivery)", "Operations", "manager"),
             "mkai" => ("Mkai (Generalist Core)", "Engineering", "employee"),
+            "app360" or "mons-app360" => ("Mons (App360 Infra Assistant)", "Operations", "employee"),
             "default-core" => ("Core Skyer Default", "Operations", "manager"),
             "gm-boc" => ("GM Bốc (Executive Coordinator)", "Operations", "owner"),
             "gm-team" => ("GM Team Leader", "Operations", "manager"),

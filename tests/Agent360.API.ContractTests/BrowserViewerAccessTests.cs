@@ -82,6 +82,33 @@ public sealed class BrowserViewerAccessTests
 
 public sealed class BrowserProfileMapParsingTests
 {
+    [Theory]
+    [InlineData("mons-app360", "app360", "Profile 6")]
+    [InlineData("app360", "app360", "Profile 6")]
+    [InlineData("ken", "ken", "Profile 1")]
+    public void ResolvesDedicatedCoreBrowserProfileForApp360AndPeers(string slug, string expectedTargetProfile, string expectedBrowserProfile)
+    {
+        var routing = new Agent360.API.Features.Agents.Services.FleetInstanceRoutingService(
+            new System.Net.Http.HttpClient(),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Services.FleetInstanceRoutingService>.Instance);
+        var dir = new Agent360.API.Features.Agents.Browser.AgentBrowserDirectory(
+            routing,
+            new StubHttpClientFactory(),
+            new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>.Instance);
+
+        dir.TryResolve(slug, out var target, out var service, out var viewerUrl, out _, out var profile).Should().BeTrue();
+        target.TargetAgentProfile.Should().Be(expectedTargetProfile);
+        service.Should().Be("chromium-browser-q4yu");
+        viewerUrl.Should().Be("https://browser.hmz.one");
+        profile.Should().Be(expectedBrowserProfile);
+    }
+
+    private sealed class StubHttpClientFactory : System.Net.Http.IHttpClientFactory
+    {
+        public System.Net.Http.HttpClient CreateClient(string name) => new();
+    }
+
     [Fact]
     public void BuildAnchorUrlIncludesStyledDarkThemeBodyAndProfileMarker()
     {
