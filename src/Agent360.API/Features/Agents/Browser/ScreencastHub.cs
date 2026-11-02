@@ -234,6 +234,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         }
     }
 
+    internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
+
     internal static byte[] Frame(string base64Jpeg) =>
         JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = base64Jpeg } });
 
@@ -335,6 +337,53 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             return ((int)Math.Round(w), (int)Math.Round(h));
         }
         public bool MatchesViewport(int rawW, int rawH) { var (w, h) = NormalizeViewport(rawW, rawH); return Math.Abs(_viewportW - w) <= 8 && Math.Abs(_viewportH - h) <= 8; }
+
+        internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes)
+        {
+            if (bytes.Length < 11 || bytes[0] != 0xFF || bytes[1] != 0xD8) return (0, 0);
+            int i = 2;
+            while (i + 9 < bytes.Length)
+            {
+                if (bytes[i] != 0xFF)
+                {
+                    i++;
+                    continue;
+                }
+                byte marker = bytes[i + 1];
+                while (marker == 0xFF && i + 2 < bytes.Length)
+                {
+                    i++;
+                    marker = bytes[i + 1];
+                }
+                if (marker is 0xC0 or 0xC1 or 0xC2)
+                {
+                    int h = (bytes[i + 5] << 8) | bytes[i + 6];
+                    int w = (bytes[i + 7] << 8) | bytes[i + 8];
+                    return (w, h);
+                }
+                if (marker is 0xD8 or 0xD9 || (marker >= 0xD0 && marker <= 0xD7))
+                {
+                    i += 2;
+                }
+                else
+                {
+                    int segLen = (bytes[i + 2] << 8) | bytes[i + 3];
+                    if (segLen < 2) break;
+                    i += 2 + segLen;
+                }
+            }
+            return (0, 0);
+        }
+
+        private bool MatchesTargetFrameDimensions(ReadOnlySpan<byte> jpegBytes)
+        {
+            if (!_hasTargetViewport) return true;
+            var (jw, jh) = ReadJpegDimensions(jpegBytes);
+            if (jw <= 0 || jh <= 0) return true;
+            var targetAspect = _viewportW / Math.Max(1.0, _viewportH);
+            var frameAspect = (double)jw / Math.Max(1, jh);
+            return Math.Abs(jw - _viewportW) <= 16 && Math.Abs(jh - _viewportH) <= 16 && Math.Abs(frameAspect - targetAspect) <= 0.03;
+        }
         public int ViewerCount { get { lock (_viewers) return _viewers.Count; } }
 
         public void Add(Channel<StreamPacket> v, Channel<StreamPacket> ctrl, bool binary, int reqW = 0, int reqH = 0)
@@ -471,7 +520,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
                 else if (action == "mousedown")
                 {
-                    TriggerMotionSmoothBoost(ws, ct);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none", buttons = 0 } }, ct);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, ct);
                     ProbeScrollMetrics(ws, ct, force: true);
@@ -627,6 +675,19 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         }
                     }, ct);
                     await RestartScreencastAsync(ws, w, h, ct);
+                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(120, ct);
+                            if (ws.State == WebSocketState.Open)
+                            {
+                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                            }
+                        }
+                        catch { }
+                    }, ct);
                 }
                 return true;
             }
@@ -641,24 +702,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             var now = Environment.TickCount64;
             Interlocked.Exchange(ref _activeMotionUntilTick, now + 380);
             PumpHighSpeedFrameIfNeeded(ws, ct, now);
-        }
-
-        private object ScreenshotParams(int quality)
-        {
-            // CDP captureScreenshot otherwise uses the current surface size, which can
-            // differ from the screencast cap for one frame during a resize. A fixed
-            // viewport clip keeps click/motion frames pixel-compatible with the stream.
-            var width = Math.Max(1, Math.Round(_viewportW));
-            var height = Math.Max(1, Math.Round(_viewportH));
-            return new
-            {
-                format = "jpeg",
-                quality,
-                fromSurface = true,
-                optimizeForSpeed = true,
-                captureBeyondViewport = false,
-                clip = new { x = 0, y = 0, width, height, scale = 1 }
-            };
         }
 
         private async Task RestartScreencastAsync(ClientWebSocket ws, int width, int height, CancellationToken ct)
@@ -684,7 +727,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     id = 889,
                     method = "Page.captureScreenshot",
-                    @params = ScreenshotParams(pumpQuality)
+                    @params = new { format = "jpeg", quality = pumpQuality, fromSurface = true, optimizeForSpeed = true }
                 }, ct);
             }
         }
@@ -738,18 +781,25 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
         }
 
-        private void Broadcast(string base64Jpeg, bool forcePacing = false)
+        private bool Broadcast(string base64Jpeg, bool forcePacing = false)
         {
-            if (string.IsNullOrEmpty(base64Jpeg)) return;
+            if (string.IsNullOrEmpty(base64Jpeg)) return true;
             var now = Environment.TickCount64;
             var isActiveMotion = now <= Interlocked.Read(ref _activeMotionUntilTick);
             if (!forcePacing && !isActiveMotion && string.Equals(base64Jpeg, LastFrameBase64, StringComparison.Ordinal) && (LastBinaryFrame is not null || LastFrame is not null))
             {
-                return;
+                return true;
+            }
+            byte[] binBytes;
+            try { binBytes = Convert.FromBase64String(base64Jpeg); } catch { return true; }
+            if (binBytes.Length == 0) return true;
+            if (!MatchesTargetFrameDimensions(binBytes))
+            {
+                return false;
             }
             Interlocked.Exchange(ref _lastBroadcastTick, now);
             LastFrameBase64 = base64Jpeg;
-            byte[]? binBytes = null;
+            LastBinaryFrame = binBytes;
             byte[]? txtBytes = null;
             lock (_viewers)
             {
@@ -757,11 +807,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     if (isBin)
                     {
-                        if (binBytes is null)
-                        {
-                            try { binBytes = Convert.FromBase64String(base64Jpeg); } catch { binBytes = []; }
-                            LastBinaryFrame = binBytes;
-                        }
                         if (binBytes.Length > 0)
                         {
                             frameCh.Writer.TryWrite(new StreamPacket(binBytes, WebSocketMessageType.Binary));
@@ -775,6 +820,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     }
                 }
             }
+            return true;
         }
 
         private async Task RunAsync(string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight)
@@ -830,7 +876,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     }
                     await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = w, maxHeight = h, everyNthFrame = 1 } }, ct);
                     // Fire an immediate fast snapshot (id=888) + follow-up at 180ms so newly created Google tabs broadcast their first live frame in <50ms!
-                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = ScreenshotParams(_currentQuality) }, ct);
+                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                     _ = Task.Run(async () =>
                     {
                         try
@@ -838,7 +884,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             await Task.Delay(180, ct);
                             if (ws.State == WebSocketState.Open)
                             {
-                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = ScreenshotParams(_currentQuality) }, ct);
+                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                             }
                         }
                         catch { }
@@ -996,7 +1042,13 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     var frameSessionId = p.GetProperty("sessionId").GetInt32();
                     _ = SafeSendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = frameSessionId } }, ct);
                     var data = p.GetProperty("data").GetString() ?? "";
-                    Broadcast(data);
+                    if (!Broadcast(data) && _hasTargetViewport)
+                    {
+                        var w = (int)Math.Round(_viewportW);
+                        var h = (int)Math.Round(_viewportH);
+                        await RestartScreencastAsync(ws, w, h, ct);
+                        _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                    }
                     if (Environment.TickCount64 - Interlocked.Read(ref _lastScrollMetricsTick) >= 240)
                     {
                         ProbeScrollMetrics(ws, ct, force: false);

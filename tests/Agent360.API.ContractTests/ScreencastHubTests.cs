@@ -18,6 +18,7 @@ public sealed class ScreencastHubTests : IAsyncLifetime
 {
     private WebApplication _cdp = null!;
     private WebApplication _api = null!;
+    private ScreencastHub _hub = null!;
     private Uri _cdpBase = null!;
     private Uri _apiBase = null!;
     private int _cdpSessions;
@@ -52,7 +53,8 @@ public sealed class ScreencastHubTests : IAsyncLifetime
 
         var a = WebApplication.CreateBuilder();
         a.WebHost.UseUrls("http://127.0.0.1:0");
-        a.Services.AddSingleton(new ScreencastHub(NullLogger<ScreencastHub>.Instance));
+        _hub = new ScreencastHub(NullLogger<ScreencastHub>.Instance);
+        a.Services.AddSingleton(_hub);
         _api = a.Build();
         _api.UseWebSockets();
         _api.Map("/watch", async (HttpContext ctx, ScreencastHub hub) =>
@@ -66,6 +68,7 @@ public sealed class ScreencastHubTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
+        _hub.RetireTarget(_cdpBase.ToString().TrimEnd('/'), "T1");
         await _api.StopAsync();
         await _cdp.StopAsync();
         await _api.DisposeAsync();
@@ -107,5 +110,21 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         using var active = await ViewerAsync();
         for (var i = 0; i < 20; i++) (await NextFrameAsync(active)).Should().Contain("screencastFrame");
         _cdpSessions.Should().Be(1);
+    }
+
+    [Fact]
+    public void ReadJpegDimensionsParsesSof0FrameSize()
+    {
+        // Minimal valid JPEG header with APP0 (0xE0) followed by SOF0 (0xC0) encoding width=1200 (0x04B0), height=650 (0x028A)
+        byte[] sampleJpeg =
+        [
+            0xFF, 0xD8,
+            0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00,
+            0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0x8A, 0x04, 0xB0, 0x03,
+            0xFF, 0xD9
+        ];
+        var (w, h) = ScreencastHub.ReadJpegDimensions(sampleJpeg);
+        w.Should().Be(1200);
+        h.Should().Be(650);
     }
 }
