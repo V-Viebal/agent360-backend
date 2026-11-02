@@ -626,7 +626,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             screenHeight = h
                         }
                     }, ct);
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = w, maxHeight = h, everyNthFrame = 1 } }, ct);
+                    await RestartScreencastAsync(ws, w, h, ct);
                 }
                 return true;
             }
@@ -643,6 +643,35 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             PumpHighSpeedFrameIfNeeded(ws, ct, now);
         }
 
+        private object ScreenshotParams(int quality)
+        {
+            // CDP captureScreenshot otherwise uses the current surface size, which can
+            // differ from the screencast cap for one frame during a resize. A fixed
+            // viewport clip keeps click/motion frames pixel-compatible with the stream.
+            var width = Math.Max(1, Math.Round(_viewportW));
+            var height = Math.Max(1, Math.Round(_viewportH));
+            return new
+            {
+                format = "jpeg",
+                quality,
+                fromSurface = true,
+                optimizeForSpeed = true,
+                captureBeyondViewport = false,
+                clip = new { x = 0, y = 0, width, height, scale = 1 }
+            };
+        }
+
+        private async Task RestartScreencastAsync(ClientWebSocket ws, int width, int height, CancellationToken ct)
+        {
+            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.stopScreencast", @params = new { } }, ct);
+            await SafeSendAsync(ws, new
+            {
+                id = Interlocked.Increment(ref _cmdId),
+                method = "Page.startScreencast",
+                @params = new { format = "jpeg", quality = Volatile.Read(ref _currentQuality), maxWidth = width, maxHeight = height, everyNthFrame = 1 }
+            }, ct);
+        }
+
         private void PumpHighSpeedFrameIfNeeded(ClientWebSocket ws, CancellationToken ct, long nowTick)
         {
             if (ws.State != WebSocketState.Open || ct.IsCancellationRequested) return;
@@ -655,7 +684,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     id = 889,
                     method = "Page.captureScreenshot",
-                    @params = new { format = "jpeg", quality = pumpQuality, optimizeForSpeed = true }
+                    @params = ScreenshotParams(pumpQuality)
                 }, ct);
             }
         }
@@ -801,7 +830,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     }
                     await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = w, maxHeight = h, everyNthFrame = 1 } }, ct);
                     // Fire an immediate fast snapshot (id=888) + follow-up at 180ms so newly created Google tabs broadcast their first live frame in <50ms!
-                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = ScreenshotParams(_currentQuality) }, ct);
                     _ = Task.Run(async () =>
                     {
                         try
@@ -809,7 +838,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             await Task.Delay(180, ct);
                             if (ws.State == WebSocketState.Open)
                             {
-                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = ScreenshotParams(_currentQuality) }, ct);
                             }
                         }
                         catch { }
@@ -954,6 +983,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                     screenHeight = h
                                 }
                             }, ct);
+                            await RestartScreencastAsync(ws, w, h, ct);
                             continue;
                         }
                     }
