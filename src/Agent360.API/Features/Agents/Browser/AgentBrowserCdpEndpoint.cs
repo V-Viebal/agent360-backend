@@ -118,16 +118,73 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 {
                     return denied;
                 }
-                var (page, cdp, _, error) = await PickPageAsync(directory, agentId, null, ct);
+                var (page, cdp, contextId, error) = await PickPageAsync(directory, agentId, req.PageId, ct);
                 if (page is null)
                 {
                     return TypedResults.Conflict(new { message = error });
                 }
-                var ok = await DispatchCdpInputAsync(cdp!, page.TargetId, req, ct);
-                // Invalidate 1s screenshot cache so the immediate follow-up frame poll reflects the tap/scroll
+                var hub = http.RequestServices.GetService<ScreencastHub>();
+                var act = (req.Action ?? "click").Trim().ToLowerInvariant();
+                var safeReq = act is "new_tab" or "navigate"
+                    ? req with { Text = SanitizeNavigationUrl(req.Text) }
+                    : req;
+
+                bool ok = false;
+                string? createdTargetId = null;
+                if (hub is not null)
+                {
+                    if (act is "new_tab" or "close_tab" or "activate_tab")
+                    {
+                        (ok, createdTargetId) = await hub.TryManageTabOverWarmSessionAsync(cdp!, page.TargetId, contextId, safeReq, ct);
+                    }
+                    else
+                    {
+                        ok = await hub.TryDispatchOverWarmSessionAsync(cdp!, page.TargetId, safeReq, ct);
+                    }
+                }
+                if (!ok)
+                {
+                    (ok, createdTargetId) = await DispatchCdpInputAsync(cdp!, page.TargetId, contextId, safeReq, ct);
+                }
+                var effectiveTargetId = createdTargetId ?? page.TargetId;
+                // Invalidate screenshot cache so immediate follow-up frame reflects the action
                 cache.Remove($"agent360:browser:shot:{cdp}:{page.TargetId}");
+                if (createdTargetId is not null)
+                {
+                    cache.Remove($"agent360:browser:shot:{cdp}:{createdTargetId}");
+                }
+
+                IReadOnlyList<AgentBrowserTab>? updatedTabs = null;
+                if (act == "new_tab" && !string.IsNullOrEmpty(createdTargetId))
+                {
+                    var targetUrl = safeReq.Text ?? "https://www.google.com";
+                    var targetTitle = targetUrl.Contains("google.com", StringComparison.OrdinalIgnoreCase) ? "Google" : targetUrl;
+                    var createdTab = new AgentBrowserTab(createdTargetId, targetTitle, targetUrl, false);
+                    directory.RecordTabCreated(createdTargetId, createdTab);
+                    updatedTabs = await directory.MutateCachedTabsAsync(agentId, list =>
+                    {
+                        if (list.All(t => t.TargetId != createdTargetId))
+                        {
+                            list.Add(createdTab);
+                        }
+                        return list;
+                    }, ct);
+                }
+                else if (act == "close_tab")
+                {
+                    var closedId = !string.IsNullOrWhiteSpace(safeReq.PageId) ? safeReq.PageId : page.TargetId;
+                    directory.RecordTabClosed(closedId);
+                    updatedTabs = await directory.MutateCachedTabsAsync(agentId, list =>
+                        list.Where(t => t.TargetId != closedId).ToList(), ct);
+                }
+                else if (act == "navigate" && !string.IsNullOrEmpty(safeReq.Text))
+                {
+                    var navUrl = safeReq.Text!;
+                    updatedTabs = await directory.MutateCachedTabsAsync(agentId, list =>
+                        list.Select(t => t.TargetId == page.TargetId ? t with { Url = navUrl, Title = navUrl } : t).ToList(), ct);
+                }
                 return ok
-                    ? TypedResults.Ok(new { agentId, targetId = page.TargetId, action = req.Action })
+                    ? TypedResults.Ok(new { agentId, targetId = effectiveTargetId, createdTargetId, action = req.Action, tabs = updatedTabs })
                     : TypedResults.Problem("Failed to dispatch input to agent browser tab", statusCode: StatusCodes.Status502BadGateway);
             })
             .MapToApiVersion(ApiVersion.Default)
@@ -173,6 +230,72 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .AllowAnonymous();
 
         routeBuilder.MapGet(
+            "agents/{agentId}/browser/history",
+            async Task<IResult> (string agentId, [FromQuery] string? pageId, HttpContext http, AgentBrowserDirectory directory, CancellationToken ct) =>
+            {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
+                var (page, cdp, _, error) = await PickPageAsync(directory, agentId, pageId, ct);
+                if (page is null)
+                {
+                    return TypedResults.Ok(Array.Empty<object>());
+                }
+                var entries = await GetNavigationHistoryAsync(cdp!, page.TargetId, ct);
+                return TypedResults.Ok(entries);
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("GetAgentBrowserHistory")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Get navigation history entries of the agent's browser tab")
+            .RequireRateLimiting(RateLimitPolicy)
+            .AllowAnonymous();
+
+        routeBuilder.MapGet(
+            "agents/{agentId}/browser/suggest",
+            async Task<IResult> (string agentId, [FromQuery] string? q, IHttpClientFactory httpFactory, CancellationToken ct) =>
+            {
+                var query = (q ?? "").Trim();
+                if (string.IsNullOrEmpty(query) || query.Length > 160)
+                {
+                    return TypedResults.Ok(Array.Empty<string>());
+                }
+                try
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromMilliseconds(1200));
+                    var client = httpFactory.CreateClient();
+                    var url = $"https://suggestqueries.google.com/complete/search?client=firefox&hl=vi&q={Uri.EscapeDataString(query)}";
+                    var json = await client.GetStringAsync(url, cts.Token);
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 1)
+                    {
+                        var items = doc.RootElement[1];
+                        if (items.ValueKind == JsonValueKind.Array)
+                        {
+                            var results = items.EnumerateArray()
+                                .Where(x => x.ValueKind == JsonValueKind.String)
+                                .Select(x => x.GetString() ?? "")
+                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                .Take(6)
+                                .ToList();
+                            return TypedResults.Ok(results);
+                        }
+                    }
+                }
+                catch { }
+                return TypedResults.Ok(Array.Empty<string>());
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("GetAgentBrowserSuggestions")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Get search autocomplete suggestions for the agent browser omnibox")
+            .RequireRateLimiting(RateLimitPolicy)
+            .AllowAnonymous();
+
+        routeBuilder.MapGet(
             "agents/{agentId}/browser/screenshot",
             async Task<IResult> (string agentId, [FromQuery] string? pageId, HttpContext http, AgentBrowserDirectory directory, AgentBrowserGate gate, IMemoryCache cache, CancellationToken ct) =>
             {
@@ -214,7 +337,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 }
                 http.Response.Headers.CacheControl = "no-store";
                 var key = $"agent360:browser-shot:{page.TargetId}";
-                var data = await CachedScreenshotAsync(gate, cache, cdp!, page.TargetId);
+                var data = http.RequestServices.GetService<ScreencastHub>()?.LatestFrame(cdp!, page.TargetId)
+                    ?? await CachedScreenshotAsync(gate, cache, cdp!, page.TargetId);
                 if (data is not null)
                 {
                     cache.Set(key, data, TimeSpan.FromMinutes(5));
@@ -284,12 +408,24 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 {
                     using var clientWs = await context.WebSockets.AcceptWebSocketAsync();
                     // Fixed size/quality buckets so concurrent viewers of one tab share a single CDP screencast.
-                    var maxWidth = int.TryParse(context.Request.Query["maxWidth"], out var w) && w <= 800 ? 640 : 1280;
-                    var quality = 55;
-                    // Screencast only emits on repaint; an idle tab would leave a new viewer black until it changes.
-                    var seed = await CachedScreenshotAsync(gate, context.RequestServices.GetRequiredService<IMemoryCache>(), cdp!, page.TargetId);
+                    var maxWidth = int.TryParse(context.Request.Query["maxWidth"], out var w) && w <= 800 ? 1280 : 1920;
+                    var initVw = int.TryParse(context.Request.Query["vw"], out var parsedVw) ? parsedVw : 0;
+                    var initVh = int.TryParse(context.Request.Query["vh"], out var parsedVh) ? parsedVh : 0;
+                    var quality = int.TryParse(context.Request.Query["q"], out var parsedQ) ? Math.Clamp(parsedQ, 52, 92) : 88;
                     var hub = context.RequestServices.GetRequiredService<ScreencastHub>();
-                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct);
+                    // Only use warm LatestFrame from an already-resized session; never push an unscaled 1440x813 CachedScreenshotAsync seed when vw/vh are requested!
+                    var seed = hub.LatestFrame(cdp!, page.TargetId, initVw, initVh);
+                    if (seed is null && (initVw < 320 || initVh < 240))
+                    {
+                        seed = await CachedScreenshotAsync(gate, context.RequestServices.GetRequiredService<IMemoryCache>(), cdp!, page.TargetId);
+                    }
+                    if (info?.Tabs is { Count: > 1 } allTabs && initVw >= 320 && initVh >= 240)
+                    {
+                        var otherIds = allTabs.Where(t => !t.Anchor && t.TargetId != page.TargetId).Select(t => t.TargetId).ToList();
+                        hub.WarmTabsInBackground(cdp!, otherIds, maxWidth, quality, initVw, initVh);
+                    }
+                    var useBinary = context.Request.Query["bin"] == "1";
+                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct, initVw, initVh, useBinary);
                 }
                 finally
                 {
@@ -310,6 +446,37 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         ?? tabs.FirstOrDefault(t => !t.Anchor && IsCapturable(t.Url))
         ?? tabs.FirstOrDefault(t => t.Anchor)
         ?? tabs.LastOrDefault(t => IsCapturable(t.Url));
+
+    internal static string SanitizeNavigationUrl(string? raw)
+    {
+        var trimmed = (raw ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed)) return "https://www.google.com";
+        if (trimmed.StartsWith("file:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("chrome:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("chrome-extension:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("devtools:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("vbscript:", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "https://www.google.com";
+        }
+        if (!trimmed.Contains("://") && !trimmed.StartsWith("about:"))
+        {
+            trimmed = trimmed.Contains(".") && !trimmed.Contains(" ")
+                ? $"https://{trimmed}"
+                : $"https://www.google.com/search?q={Uri.EscapeDataString(trimmed)}";
+        }
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var u))
+        {
+            if (u.Host.Equals("169.254.169.254", StringComparison.OrdinalIgnoreCase) ||
+                u.Host.Equals("metadata.google.internal", StringComparison.OrdinalIgnoreCase))
+            {
+                return "https://www.google.com";
+            }
+        }
+        return trimmed;
+    }
 
     internal static bool IsCapturable(string url) =>
         !url.StartsWith("chrome://", StringComparison.OrdinalIgnoreCase)
@@ -490,16 +657,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                             await ReceiveByIdAsync(ws, closeId, cts.Token);
                         }
 
-                        foreach (var wid in targetWids)
-                        {
-                            var normId = ++reqId;
-                            await SendAsync(ws, new { id = normId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, cts.Token);
-                            await ReceiveByIdAsync(ws, normId, cts.Token);
-
-                            var maxId = ++reqId;
-                            await SendAsync(ws, new { id = maxId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "maximized" } } }, cts.Token);
-                            await ReceiveByIdAsync(ws, maxId, cts.Token);
-                        }
+                        // Never toggle normal -> maximized on an already open window, because Chromium resets Emulation.setDeviceMetricsOverride on every X11/Wayland window configure event!
                     }
                 }
 
@@ -519,7 +677,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         return res.IsSuccessStatusCode;
     }
 
-    private static async Task<bool> DispatchCdpInputAsync(string cdpUrl, string targetId, BrowserInputRequest req, CancellationToken ct)
+    private static async Task<(bool Ok, string? CreatedTargetId)> DispatchCdpInputAsync(string cdpUrl, string targetId, string? browserContextId, BrowserInputRequest req, CancellationToken ct)
     {
         try
         {
@@ -528,47 +686,83 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             using var ws = new ClientWebSocket();
             await ws.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
 
+            // Ensure target page has active lifecycle and focus emulation so mouse/wheel/keyboard events take effect immediately
+            await SendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, cts.Token);
+            await SendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, cts.Token);
+
             int id = 200;
-            // Read live viewport dimensions of the page so normalized ratios map 1:1 to CSS pixels
+            string? createdTargetId = null;
+            var action = (req.Action ?? "click").Trim().ToLowerInvariant();
             double vw = 1440, vh = 813;
-            var layoutId = ++id;
-            await SendAsync(ws, new { id = layoutId, method = "Page.getLayoutMetrics" }, cts.Token);
-            var layoutBytes = await ReceiveByIdAsync(ws, layoutId, cts.Token);
-            if (layoutBytes is not null)
+
+            if (action is "click" or "scroll" or "mousedown" or "mousemove_drag" or "mouseup")
             {
-                using var doc = JsonDocument.Parse(layoutBytes);
-                if (doc.RootElement.TryGetProperty("result", out var res) &&
-                    res.TryGetProperty("cssVisualViewport", out var vp))
+                var layoutId = ++id;
+                await SendAsync(ws, new { id = layoutId, method = "Page.getLayoutMetrics" }, cts.Token);
+                var layoutBytes = await ReceiveByIdAsync(ws, layoutId, cts.Token);
+                if (layoutBytes is not null)
                 {
-                    if (vp.TryGetProperty("clientWidth", out var cw) && cw.GetDouble() > 0) vw = cw.GetDouble();
-                    if (vp.TryGetProperty("clientHeight", out var ch) && ch.GetDouble() > 0) vh = ch.GetDouble();
+                    using var doc = JsonDocument.Parse(layoutBytes);
+                    if (doc.RootElement.TryGetProperty("result", out var res) &&
+                        res.TryGetProperty("cssVisualViewport", out var vp))
+                    {
+                        if (vp.TryGetProperty("clientWidth", out var cw) && cw.GetDouble() > 0) vw = cw.GetDouble();
+                        if (vp.TryGetProperty("clientHeight", out var ch) && ch.GetDouble() > 0) vh = ch.GetDouble();
+                    }
                 }
             }
 
             var x = Math.Round(Math.Clamp(req.XRatio ?? 0.5, 0.0, 1.0) * vw);
             var y = Math.Round(Math.Clamp(req.YRatio ?? 0.5, 0.0, 1.0) * vh);
-            var action = (req.Action ?? "click").Trim().ToLowerInvariant();
 
             if (action == "click")
             {
-                var moveId = ++id;
-                await SendAsync(ws, new { id = moveId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none" } }, cts.Token);
-                await ReceiveByIdAsync(ws, moveId, cts.Token);
-
-                var downId = ++id;
-                await SendAsync(ws, new { id = downId, method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, cts.Token);
-                await ReceiveByIdAsync(ws, downId, cts.Token);
-
+                // Pipeline mouseMoved + mousePressed + mouseReleased and await only the final ack for 3x faster click response
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none" } }, cts.Token);
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, cts.Token);
                 var upId = ++id;
                 await SendAsync(ws, new { id = upId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 } }, cts.Token);
                 await ReceiveByIdAsync(ws, upId, cts.Token);
+            }
+            else if (action == "mousedown")
+            {
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none", buttons = 0 } }, cts.Token);
+                var downId = ++id;
+                await SendAsync(ws, new { id = downId, method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, cts.Token);
+                await ReceiveByIdAsync(ws, downId, cts.Token);
+            }
+            else if (action == "mousemove_drag")
+            {
+                var dragId = ++id;
+                await SendAsync(ws, new { id = dragId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "left", buttons = 1 } }, cts.Token);
+                await ReceiveByIdAsync(ws, dragId, cts.Token);
+            }
+            else if (action == "mouseup")
+            {
+                var relId = ++id;
+                await SendAsync(ws, new { id = relId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 } }, cts.Token);
+                await ReceiveByIdAsync(ws, relId, cts.Token);
+            }
+            else if (action == "scroll_to")
+            {
+                var ratio = Math.Clamp(req.YRatio ?? 0.0, 0.0, 1.0);
+                var ratioStr = ratio.ToString("F5", System.Globalization.CultureInfo.InvariantCulture);
+                var jsScroll = $$"""(() => { try { const docEl = document.scrollingElement || document.documentElement || document.body; if (docEl && docEl.scrollHeight > docEl.clientHeight) { window.scrollTo({ top: Math.round((docEl.scrollHeight - docEl.clientHeight) * {{ratioStr}}), behavior: 'instant' }); } } catch {} })()""";
+                var scId = ++id;
+                await SendAsync(ws, new { id = scId, method = "Runtime.evaluate", @params = new { expression = jsScroll } }, cts.Token);
+                await ReceiveByIdAsync(ws, scId, cts.Token);
             }
             else if (action == "scroll")
             {
                 var wheelId = ++id;
                 var dx = Math.Clamp(req.DeltaX ?? 0, -2400, 2400);
                 var dy = Math.Clamp(req.DeltaY ?? 0, -2400, 2400);
-                await SendAsync(ws, new { id = wheelId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseWheel", x, y, deltaX = dx, deltaY = dy } }, cts.Token);
+                var ix = (int)x;
+                var iy = (int)y;
+                var dxStr = dx.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                var dyStr = dy.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                var jsScrollBy = $$"""(() => { try { const dx = {{dxStr}}, dy = {{dyStr}}; let el = document.elementFromPoint({{ix}}, {{iy}}); let scrolled = false; while (el && el !== document.body && el !== document.documentElement) { const cs = window.getComputedStyle(el); const canY = Math.abs(dy) > 0.05 && (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') && el.scrollHeight > el.clientHeight + 1; const canX = Math.abs(dx) > 0.05 && (cs.overflowX === 'auto' || cs.overflowX === 'scroll' || cs.overflowX === 'overlay') && el.scrollWidth > el.clientWidth + 1; if (canY || canX) { const prevTop = el.scrollTop, prevLeft = el.scrollLeft; if (canY) el.scrollTop += dy; if (canX) el.scrollLeft += dx; if (Math.abs(el.scrollTop - prevTop) > 0.2 || Math.abs(el.scrollLeft - prevLeft) > 0.2) { scrolled = true; break; } } el = el.parentElement; } if (!scrolled) { window.scrollBy({ left: dx, top: dy, behavior: 'instant' }); } } catch {} })()""";
+                await SendAsync(ws, new { id = wheelId, method = "Runtime.evaluate", @params = new { expression = jsScrollBy } }, cts.Token);
                 await ReceiveByIdAsync(ws, wheelId, cts.Token);
             }
             else if (action == "type" && !string.IsNullOrEmpty(req.Text))
@@ -585,21 +779,168 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     : k.Equals("Escape", StringComparison.OrdinalIgnoreCase) ? 27
                     : k.Equals("Tab", StringComparison.OrdinalIgnoreCase) ? 9 : 0;
 
-                var kdId = ++id;
-                await SendAsync(ws, new { id = kdId, method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
-                await ReceiveByIdAsync(ws, kdId, cts.Token);
-
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
                 var kuId = ++id;
                 await SendAsync(ws, new { id = kuId, method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
                 await ReceiveByIdAsync(ws, kuId, cts.Token);
             }
+            else if (action == "navigate" && !string.IsNullOrWhiteSpace(req.Text))
+            {
+                var navUrl = req.Text.Trim();
+                if (!navUrl.Contains("://") && !navUrl.StartsWith("about:"))
+                {
+                    navUrl = navUrl.Contains(".") && !navUrl.Contains(" ") ? $"https://{navUrl}" : $"https://www.google.com/search?q={Uri.EscapeDataString(navUrl)}";
+                }
+                var navId = ++id;
+                await SendAsync(ws, new { id = navId, method = "Page.navigate", @params = new { url = navUrl } }, cts.Token);
+                await ReceiveByIdAsync(ws, navId, cts.Token);
+            }
+            else if (action == "reload")
+            {
+                var relId = ++id;
+                await SendAsync(ws, new { id = relId, method = "Page.reload", @params = new { ignoreCache = false } }, cts.Token);
+                await ReceiveByIdAsync(ws, relId, cts.Token);
+            }
+            else if (action == "back" || action == "forward")
+            {
+                var evalId = ++id;
+                var js = action == "back" ? "window.history.back()" : "window.history.forward()";
+                await SendAsync(ws, new { id = evalId, method = "Runtime.evaluate", @params = new { expression = js } }, cts.Token);
+                await ReceiveByIdAsync(ws, evalId, cts.Token);
+            }
+            else if (action == "find")
+            {
+                var qText = (req.Text ?? "").Trim();
+                var findId = ++id;
+                if (string.IsNullOrEmpty(qText))
+                {
+                    await SendAsync(ws, new { id = findId, method = "Runtime.evaluate", @params = new { expression = "try { window.getSelection()?.removeAllRanges(); } catch {}" } }, cts.Token);
+                }
+                else
+                {
+                    var backwards = string.Equals(req.Key, "prev", StringComparison.OrdinalIgnoreCase) ? "true" : "false";
+                    var qJson = JsonSerializer.Serialize(qText);
+                    var jsFind = $$"""(() => { try { const found = window.find({{qJson}}, false, {{backwards}}, true, false, true, false); const sel = window.getSelection(); if (sel && sel.rangeCount > 0) { const el = sel.anchorNode?.parentElement; if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' }); } return found; } catch { return false; } })()""";
+                    await SendAsync(ws, new { id = findId, method = "Runtime.evaluate", @params = new { expression = jsFind } }, cts.Token);
+                }
+                await ReceiveByIdAsync(ws, findId, cts.Token);
+            }
+            else if (action == "new_tab")
+            {
+                var newUrl = !string.IsNullOrWhiteSpace(req.Text) ? req.Text.Trim() : "https://www.google.com";
+                if (!newUrl.Contains("://") && !newUrl.StartsWith("about:"))
+                {
+                    newUrl = newUrl.Contains(".") && !newUrl.Contains(" ") ? $"https://{newUrl}" : $"https://www.google.com/search?q={Uri.EscapeDataString(newUrl)}";
+                }
+                var createId = ++id;
+                object createParams = !string.IsNullOrEmpty(browserContextId)
+                    ? new { url = newUrl, browserContextId }
+                    : new { url = newUrl };
+                await SendAsync(ws, new { id = createId, method = "Target.createTarget", @params = createParams }, cts.Token);
+                var createBytes = await ReceiveByIdAsync(ws, createId, cts.Token);
+                if (createBytes is not null)
+                {
+                    using var doc = JsonDocument.Parse(createBytes);
+                    if (doc.RootElement.TryGetProperty("result", out var res) &&
+                        res.TryGetProperty("targetId", out var tid))
+                    {
+                        createdTargetId = tid.GetString();
+                    }
+                }
+                if (!string.IsNullOrEmpty(createdTargetId))
+                {
+                    var actId = ++id;
+                    _ = SendAsync(ws, new { id = actId, method = "Target.activateTarget", @params = new { targetId = createdTargetId } }, CancellationToken.None);
+                }
+            }
+            else if (action == "close_tab")
+            {
+                var closeTargetId = !string.IsNullOrWhiteSpace(req.PageId) ? req.PageId : targetId;
+                var closeId = ++id;
+                await SendAsync(ws, new { id = closeId, method = "Target.closeTarget", @params = new { targetId = closeTargetId } }, cts.Token);
+                await ReceiveByIdAsync(ws, closeId, cts.Token);
+            }
+            else if (action == "activate_tab")
+            {
+                var actTargetId = !string.IsNullOrWhiteSpace(req.PageId) ? req.PageId : targetId;
+                var actId = ++id;
+                await SendAsync(ws, new { id = actId, method = "Target.activateTarget", @params = new { targetId = actTargetId } }, cts.Token);
+                await ReceiveByIdAsync(ws, actId, cts.Token);
+            }
+            else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
+            {
+                var w = Math.Clamp(req.Width.Value, 320, 1920);
+                var h = Math.Clamp(req.Height.Value, 240, 1080);
+                if (w < 560)
+                {
+                    var scale = 640.0 / w;
+                    w = 640;
+                    h = Math.Clamp((int)Math.Round(h * scale), 240, 1080);
+                }
+                var rId = ++id;
+                await SendAsync(ws, new
+                {
+                    id = rId,
+                    method = "Emulation.setDeviceMetricsOverride",
+                    @params = new
+                    {
+                        width = w,
+                        height = h,
+                        deviceScaleFactor = 1,
+                        mobile = false,
+                        screenWidth = w,
+                        screenHeight = h
+                    }
+                }, cts.Token);
+                await ReceiveByIdAsync(ws, rId, cts.Token);
+            }
 
-            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-            return true;
+            return (true, createdTargetId);
         }
         catch
         {
-            return false;
+            return (false, null);
+        }
+    }
+
+    public sealed record BrowserHistoryItem(int Id, string Title, string Url, bool IsCurrent);
+
+    private static async Task<IReadOnlyList<BrowserHistoryItem>> GetNavigationHistoryAsync(string cdpUrl, string targetId, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(3));
+            using var ws = new ClientWebSocket();
+            await ws.ConnectAsync(PageSocket(cdpUrl, targetId), cts.Token);
+            await SendAsync(ws, new { id = 77, method = "Page.getNavigationHistory" }, cts.Token);
+            var bytes = await ReceiveByIdAsync(ws, 77, cts.Token);
+            if (bytes is null) return [];
+            using var doc = JsonDocument.Parse(bytes);
+            if (!doc.RootElement.TryGetProperty("result", out var res)) return [];
+            var currentIdx = res.TryGetProperty("currentIndex", out var ci) ? ci.GetInt32() : -1;
+            var list = new List<BrowserHistoryItem>();
+            if (res.TryGetProperty("entries", out var entries) && entries.ValueKind == JsonValueKind.Array)
+            {
+                int idx = 0;
+                foreach (var el in entries.EnumerateArray())
+                {
+                    var id = el.TryGetProperty("id", out var idProp) ? idProp.GetInt32() : idx;
+                    var url = el.TryGetProperty("url", out var uProp) ? uProp.GetString() ?? "" : "";
+                    var title = el.TryGetProperty("title", out var tProp) ? tProp.GetString() ?? "" : "";
+                    if (!string.IsNullOrWhiteSpace(url) && !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && !url.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        list.Add(new BrowserHistoryItem(id, string.IsNullOrWhiteSpace(title) ? url : title, url, idx == currentIdx));
+                    }
+                    idx++;
+                }
+            }
+            list.Reverse();
+            return list;
+        }
+        catch
+        {
+            return [];
         }
     }
 
@@ -621,7 +962,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         await SendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, cts.Token);
         await SendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, cts.Token);
         // fromSurface + optimizeForSpeed: take the composited surface instead of waiting for a fresh frame.
-        await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 60, fromSurface = true, optimizeForSpeed = true } }, cts.Token);
+        await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 92, fromSurface = true, optimizeForSpeed = true } }, cts.Token);
         while (ws.State == WebSocketState.Open)
         {
             var bytes = await ReceiveAsync(ws, cts.Token);

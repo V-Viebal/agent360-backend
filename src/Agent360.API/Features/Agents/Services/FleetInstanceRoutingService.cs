@@ -517,9 +517,9 @@ public sealed class FleetInstanceRoutingService : IFleetInstanceRoutingService
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                var effectiveTimeout = (baseUrl == instance.InternalUrl && instance.InternalUrl != instance.PublicUrl)
-                    ? (timeout is { TotalSeconds: < 8 } ? timeout.Value : TimeSpan.FromSeconds(8))
-                    : (timeout ?? DefaultTimeout);
+                var effectiveTimeout = timeout ?? ((baseUrl == instance.InternalUrl && instance.InternalUrl != instance.PublicUrl)
+                    ? TimeSpan.FromSeconds(8)
+                    : DefaultTimeout);
                 cts.CancelAfter(effectiveTimeout);
                 using var request = new HttpRequestMessage(method, new Uri(new Uri(baseUrl + "/"), path))
                 {

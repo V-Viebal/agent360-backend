@@ -21,4 +21,7 @@ public sealed record BrowserInputRequest(
     double? DeltaX = null,
     double? DeltaY = null,
     string? Text = null,
-    string? Key = null);
+    string? Key = null,
+    string? PageId = null,
+    int? Width = null,
+    int? Height = null);

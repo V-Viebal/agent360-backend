@@ -49,6 +49,8 @@ public sealed class AgentBrowserDirectory(
     public const string HttpClientName = "agent360-browser-cdp";
     private readonly QwenPawOptions _options = options?.Value ?? new QwenPawOptions();
     private readonly AgentBrowserGate _gate = gate ?? new AgentBrowserGate();
+    private readonly ConcurrentDictionary<string, long> _recentlyClosedTargets = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (AgentBrowserTab Tab, long Tick)> _recentlyCreatedTargets = new(StringComparer.Ordinal);
 
     private sealed record BrowserService(string Service, string ViewerUrl, string CdpUrl, IReadOnlyDictionary<string, string> Profiles);
 
@@ -327,7 +329,48 @@ public sealed class AgentBrowserDirectory(
         return null;
     }
 
-    public async Task<AgentBrowserInfo?> GetAsync(string agentId, CancellationToken ct)
+    public async Task InvalidateCacheAsync(string agentId, CancellationToken ct = default)
+    {
+        var (ok, _, service, _, _, profile) = await ResolveDynamicAsync(agentId, ct);
+        if (ok && profile is not null)
+        {
+            cache.Remove($"agent360:browser:{service}:{profile}");
+        }
+    }
+
+    public void RecordTabCreated(string targetId, AgentBrowserTab tab)
+    {
+        if (string.IsNullOrEmpty(targetId)) return;
+        _recentlyClosedTargets.TryRemove(targetId, out _);
+        _recentlyCreatedTargets[targetId] = (tab, Environment.TickCount64);
+    }
+
+    public void RecordTabClosed(string targetId)
+    {
+        if (string.IsNullOrEmpty(targetId)) return;
+        _recentlyCreatedTargets.TryRemove(targetId, out _);
+        _recentlyClosedTargets[targetId] = Environment.TickCount64;
+    }
+
+    public async Task<IReadOnlyList<AgentBrowserTab>?> MutateCachedTabsAsync(
+        string agentId,
+        Func<List<AgentBrowserTab>, List<AgentBrowserTab>> mutator,
+        CancellationToken ct = default)
+    {
+        var (ok, _, service, _, _, profile) = await ResolveDynamicAsync(agentId, ct);
+        if (!ok || profile is null) return null;
+        var key = $"agent360:browser:{service}:{profile}";
+        if (cache.TryGetValue(key, out AgentBrowserInfo? cached) && cached is not null)
+        {
+            var nextTabs = mutator(cached.Tabs.ToList());
+            var updated = cached with { Tabs = nextTabs };
+            cache.Set(key, updated, TimeSpan.FromSeconds(5));
+            return updated.Tabs;
+        }
+        return null;
+    }
+
+    public async Task<AgentBrowserInfo?> GetAsync(string agentId, CancellationToken ct, bool forceRefresh = false)
     {
         var (ok, target, service, viewer, cdp, profile) = await ResolveDynamicAsync(agentId, ct);
         if (!ok || profile is null)
@@ -335,7 +378,11 @@ public sealed class AgentBrowserDirectory(
             return null;
         }
         var key = $"agent360:browser:{service}:{profile}";
-        if (cache.TryGetValue(key, out AgentBrowserInfo? cached) && cached is not null)
+        if (forceRefresh)
+        {
+            cache.Remove(key);
+        }
+        else if (cache.TryGetValue(key, out AgentBrowserInfo? cached) && cached is not null)
         {
             return cached with { AgentId = agentId };
         }
@@ -395,8 +442,34 @@ public sealed class AgentBrowserDirectory(
 
             if (ctx is not null)
             {
-                tabs.AddRange(all.Where(t => t.Type == "page" && t.BrowserContextId == ctx)
-                    .Select(t => new AgentBrowserTab(t.TargetId, t.Title, t.Url, ProfileOf(t.Url) is not null)));
+                var nowTick = Environment.TickCount64;
+                foreach (var (cid, cTick) in _recentlyClosedTargets)
+                {
+                    if (nowTick - cTick > 10000) _recentlyClosedTargets.TryRemove(cid, out _);
+                }
+                foreach (var (nid, entry) in _recentlyCreatedTargets)
+                {
+                    if (nowTick - entry.Tick > 6000) _recentlyCreatedTargets.TryRemove(nid, out _);
+                }
+
+                tabs.AddRange(all.Where(t =>
+                        t.Type == "page" &&
+                        t.BrowserContextId == ctx &&
+                        !_recentlyClosedTargets.ContainsKey(t.TargetId) &&
+                        AgentBrowserCdpEndpoint.IsCapturable(t.Url))
+                    .Select(t => new AgentBrowserTab(
+                        t.TargetId,
+                        string.IsNullOrWhiteSpace(t.Title) && _recentlyCreatedTargets.TryGetValue(t.TargetId, out var pend) ? pend.Tab.Title : t.Title,
+                        (string.IsNullOrWhiteSpace(t.Url) || t.Url == "about:blank") && _recentlyCreatedTargets.TryGetValue(t.TargetId, out var pendUrl) ? pendUrl.Tab.Url : t.Url,
+                        ProfileOf(t.Url) is not null)));
+
+                foreach (var (nid, entry) in _recentlyCreatedTargets)
+                {
+                    if (nowTick - entry.Tick <= 6000 && !_recentlyClosedTargets.ContainsKey(nid) && tabs.All(x => x.TargetId != nid))
+                    {
+                        tabs.Add(entry.Tab);
+                    }
+                }
             }
         }
         catch (Exception ex)
