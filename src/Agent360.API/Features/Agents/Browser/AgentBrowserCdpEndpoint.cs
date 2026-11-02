@@ -724,6 +724,22 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 await SendAsync(ws, new { id = upId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 } }, cts.Token);
                 await ReceiveByIdAsync(ws, upId, cts.Token);
             }
+            else if (action == "dblclick")
+            {
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none" } }, cts.Token);
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 2 } }, cts.Token);
+                var upId = ++id;
+                await SendAsync(ws, new { id = upId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 2 } }, cts.Token);
+                await ReceiveByIdAsync(ws, upId, cts.Token);
+            }
+            else if (action == "rightclick")
+            {
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none" } }, cts.Token);
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "right", buttons = 2, clickCount = 1 } }, cts.Token);
+                var upId = ++id;
+                await SendAsync(ws, new { id = upId, method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "right", buttons = 0, clickCount = 1 } }, cts.Token);
+                await ReceiveByIdAsync(ws, upId, cts.Token);
+            }
             else if (action == "mousedown")
             {
                 await SendAsync(ws, new { id = ++id, method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none", buttons = 0 } }, cts.Token);
@@ -777,12 +793,35 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 int keyCode = k.Equals("Enter", StringComparison.OrdinalIgnoreCase) ? 13
                     : k.Equals("Backspace", StringComparison.OrdinalIgnoreCase) ? 8
                     : k.Equals("Escape", StringComparison.OrdinalIgnoreCase) ? 27
-                    : k.Equals("Tab", StringComparison.OrdinalIgnoreCase) ? 9 : 0;
+                    : k.Equals("Tab", StringComparison.OrdinalIgnoreCase) ? 9
+                    : k.Equals("ArrowLeft", StringComparison.OrdinalIgnoreCase) ? 37
+                    : k.Equals("ArrowUp", StringComparison.OrdinalIgnoreCase) ? 38
+                    : k.Equals("ArrowRight", StringComparison.OrdinalIgnoreCase) ? 39
+                    : k.Equals("ArrowDown", StringComparison.OrdinalIgnoreCase) ? 40
+                    : k.Equals("Delete", StringComparison.OrdinalIgnoreCase) ? 46
+                    : k.Equals("Home", StringComparison.OrdinalIgnoreCase) ? 36
+                    : k.Equals("End", StringComparison.OrdinalIgnoreCase) ? 35
+                    : (k.Length == 1 ? (int)char.ToUpperInvariant(k[0]) : 0);
+                var mods = req.Modifiers ?? 0;
+                var codeStr = k.Length == 1 && char.IsLetter(k[0]) ? $"Key{char.ToUpperInvariant(k[0])}" : k;
 
-                await SendAsync(ws, new { id = ++id, method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
+                await SendAsync(ws, new { id = ++id, method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, cts.Token);
                 var kuId = ++id;
-                await SendAsync(ws, new { id = kuId, method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, cts.Token);
+                await SendAsync(ws, new { id = kuId, method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, cts.Token);
                 await ReceiveByIdAsync(ws, kuId, cts.Token);
+            }
+            else if (action == "clipboard_copy")
+            {
+                var jsCopy = "(() => { try { document.execCommand('copy'); } catch {} })()";
+                var cId = ++id;
+                await SendAsync(ws, new { id = cId, method = "Runtime.evaluate", @params = new { expression = jsCopy, returnByValue = true } }, cts.Token);
+                await ReceiveByIdAsync(ws, cId, cts.Token);
+            }
+            else if (action == "clipboard_paste" && req.Text != null)
+            {
+                var txtId = ++id;
+                await SendAsync(ws, new { id = txtId, method = "Input.insertText", @params = new { text = req.Text } }, cts.Token);
+                await ReceiveByIdAsync(ws, txtId, cts.Token);
             }
             else if (action == "navigate" && !string.IsNullOrWhiteSpace(req.Text))
             {

@@ -405,8 +405,12 @@ public sealed class AgentBrowserDirectory(
             reachable = true;
             ctx = ResolveContext(key, profile, all);
 
-            // Auto-open anchor tab if missing for the requested profile so window is never lost
-            if (ctx is null && !string.IsNullOrWhiteSpace(profile))
+            // Auto-open anchor tab ONLY for the Default profile if missing.
+            // Never call PUT /json/new for non-Default profiles (Profile 1..6) because CDP /json/new
+            // has no --profile-directory parameter and injects the anchor tab into the Default/last-active
+            // browserContextId, polluting profile context resolution! Non-Default profile windows are
+            // opened exclusively by chromium-profile-agent.py with --profile-directory=<profile>.
+            if (ctx is null && string.Equals(profile, "Default", StringComparison.OrdinalIgnoreCase))
             {
                 try
                 {
@@ -490,7 +494,14 @@ public sealed class AgentBrowserDirectory(
 
     internal static string? ResolveContext(string key, string profile, IReadOnlyCollection<CdpTarget> all)
     {
-        var anchored = all.FirstOrDefault(t => t.Type == "page" && ProfileOf(t.Url) == profile)?.BrowserContextId;
+        var defaultAnchoredCtx = all.FirstOrDefault(t =>
+            t.Type == "page" && string.Equals(ProfileOf(t.Url), "Default", StringComparison.OrdinalIgnoreCase))?.BrowserContextId;
+        var anchored = all.FirstOrDefault(t =>
+            t.Type == "page"
+            && string.Equals(ProfileOf(t.Url), profile, StringComparison.OrdinalIgnoreCase)
+            && (string.Equals(profile, "Default", StringComparison.OrdinalIgnoreCase)
+                || defaultAnchoredCtx is null
+                || !string.Equals(t.BrowserContextId, defaultAnchoredCtx, StringComparison.Ordinal)))?.BrowserContextId;
         if (anchored is not null)
         {
             KnownContexts[key] = anchored;

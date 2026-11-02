@@ -538,9 +538,23 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         : k.Equals("ArrowDown", StringComparison.OrdinalIgnoreCase) ? 40
                         : k.Equals("Delete", StringComparison.OrdinalIgnoreCase) ? 46
                         : k.Equals("Home", StringComparison.OrdinalIgnoreCase) ? 36
-                        : k.Equals("End", StringComparison.OrdinalIgnoreCase) ? 35 : 0;
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, ct);
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = k, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode } }, ct);
+                        : k.Equals("End", StringComparison.OrdinalIgnoreCase) ? 35
+                        : (k.Length == 1 ? (int)char.ToUpperInvariant(k[0]) : 0);
+                    var mods = req.Modifiers ?? 0;
+                    var codeStr = k.Length == 1 && char.IsLetter(k[0]) ? $"Key{char.ToUpperInvariant(k[0])}" : k;
+                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, ct);
+                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, ct);
+                }
+                else if (action == "clipboard_copy")
+                {
+                    // Copy focused/selected text from DOM and return via Runtime.evaluate
+                    var jsCopy = "(() => { try { document.execCommand('copy'); return window.getSelection()?.toString() || ''; } catch { return ''; } })()";
+                    _ = SafeSendAsync(ws, new { id = 780, method = "Runtime.evaluate", @params = new { expression = jsCopy, returnByValue = true } }, ct);
+                }
+                else if (action == "clipboard_paste" && req.Text != null)
+                {
+                    // Clean paste text directly into active element or dispatch insertText
+                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.insertText", @params = new { text = req.Text } }, ct);
                 }
                 else if (action == "navigate" && !string.IsNullOrWhiteSpace(req.Text))
                 {

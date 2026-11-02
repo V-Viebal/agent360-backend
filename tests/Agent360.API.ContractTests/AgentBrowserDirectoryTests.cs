@@ -250,4 +250,26 @@ public sealed class AgentBrowserContextMemoryTests
     [Fact]
     public void NeverSeenProfileWithoutAnchorIsUnmapped() =>
         AgentBrowserDirectory.ResolveContext("test:" + Guid.NewGuid(), "Profile 8", [Page("b", "https://x", "C1")]).Should().BeNull();
+
+    [Fact]
+    public void NonDefaultProfileIgnoresOrphanedAnchorInsideDefaultContext()
+    {
+        var key = "test:" + Guid.NewGuid();
+        var defaultAnchor = AgentBrowserDirectory.AnchorPrefix + "Default--><title>mons</title>";
+        var orphanProfile3Anchor = AgentBrowserDirectory.AnchorPrefix + "Profile%203--><title>mkai</title>";
+        var realProfile3Anchor = AgentBrowserDirectory.AnchorPrefix + "Profile%203--><title>mkai</title>";
+
+        // When only an orphaned Profile 3 anchor exists inside Default context C_DEF, ResolveContext rejects it
+        AgentBrowserDirectory.ResolveContext(key, "Profile 3", [
+            Page("d1", defaultAnchor, "C_DEF"),
+            Page("o3", orphanProfile3Anchor, "C_DEF")
+        ]).Should().BeNull();
+
+        // When both an orphaned anchor in C_DEF and a real window in C_P3 exist, ResolveContext picks C_P3
+        AgentBrowserDirectory.ResolveContext(key, "Profile 3", [
+            Page("d1", defaultAnchor, "C_DEF"),
+            Page("o3", orphanProfile3Anchor, "C_DEF"),
+            Page("p3", realProfile3Anchor, "C_P3")
+        ]).Should().Be("C_P3");
+    }
 }

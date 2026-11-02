@@ -24,4 +24,5 @@ public sealed record BrowserInputRequest(
     string? Key = null,
     string? PageId = null,
     int? Width = null,
-    int? Height = null);
+    int? Height = null,
+    int? Modifiers = null);
