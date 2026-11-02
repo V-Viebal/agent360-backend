@@ -287,7 +287,15 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private string _lastScrollJson = "";
         private long _activeMotionUntilTick;
         private int _inFlightPumpedCaptures;
+        private long _lastPumpedSentTick;
+        private int _latestPumpedRespId;
         private long _lastBroadcastTick;
+        private readonly object _scrollLock = new();
+        private int _scrollEvalInFlight;
+        private double _pendingScrollDx;
+        private double _pendingScrollDy;
+        private int _pendingScrollX;
+        private int _pendingScrollY;
         private readonly ConcurrentDictionary<int, TaskCompletionSource<string?>> _pendingTargetCreates = new();
 
         private readonly string _cdpUrl;
@@ -561,13 +569,14 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     TriggerMotionSmoothBoost(ws, ct);
                     var dx = Math.Clamp(req.DeltaX ?? 0, -2400, 2400);
                     var dy = Math.Clamp(req.DeltaY ?? 0, -2400, 2400);
-                    var ix = (int)x;
-                    var iy = (int)y;
-                    var dxStr = dx.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
-                    var dyStr = dy.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
-                    // Direct DOM scroll engine: never stalls on Chromium compositor GestureScrollBegin lockups!
-                    var jsScrollBy = $$"""(() => { try { const dx = {{dxStr}}, dy = {{dyStr}}; let el = document.elementFromPoint({{ix}}, {{iy}}); let scrolledEl = null; while (el && el !== document.body && el !== document.documentElement) { const cs = window.getComputedStyle(el); const canY = Math.abs(dy) > 0.05 && (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') && el.scrollHeight > el.clientHeight + 1; const canX = Math.abs(dx) > 0.05 && (cs.overflowX === 'auto' || cs.overflowX === 'scroll' || cs.overflowX === 'overlay') && el.scrollWidth > el.clientWidth + 1; if (canY || canX) { const prevTop = el.scrollTop, prevLeft = el.scrollLeft; if (canY) el.scrollTop += dy; if (canX) el.scrollLeft += dx; if (Math.abs(el.scrollTop - prevTop) > 0.2 || Math.abs(el.scrollLeft - prevLeft) > 0.2) { scrolledEl = el; break; } } el = el.parentElement; } if (!scrolledEl) { const docEl = document.scrollingElement || document.documentElement || document.body; const prevY = window.scrollY || (docEl ? docEl.scrollTop : 0); window.scrollBy({ left: dx, top: dy, behavior: 'instant' }); const afterY = window.scrollY || (docEl ? docEl.scrollTop : 0); if (Math.abs(afterY - prevY) > 0.2 || (docEl && docEl.scrollHeight > docEl.clientHeight + 2)) { scrolledEl = docEl; } else { let best = null, bestArea = 0; for (const cand of document.querySelectorAll('*')) { if (cand.scrollHeight > cand.clientHeight + 8) { const cs = window.getComputedStyle(cand); if (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') { const r = cand.getBoundingClientRect(); const area = r.width * r.height; if (area > bestArea) { bestArea = area; best = cand; } } } } if (best) { best.scrollTop += dy; best.scrollLeft += dx; scrolledEl = best; } } } const mEl = scrolledEl || document.scrollingElement || document.documentElement || document.body; return mEl ? { scrollTop: Math.round(mEl === document.scrollingElement || mEl === document.documentElement || mEl === document.body ? (window.scrollY || mEl.scrollTop || 0) : mEl.scrollTop), scrollHeight: Math.round(mEl.scrollHeight || 0), clientHeight: Math.round(mEl === document.scrollingElement || mEl === document.documentElement || mEl === document.body ? (window.innerHeight || mEl.clientHeight || 0) : mEl.clientHeight) } : null; } catch { return null; } })()""";
-                    await SafeSendAsync(ws, new { id = 778, method = "Runtime.evaluate", @params = new { expression = jsScrollBy, returnByValue = true } }, ct);
+                    lock (_scrollLock)
+                    {
+                        _pendingScrollDx = Math.Clamp(_pendingScrollDx + dx, -4800, 4800);
+                        _pendingScrollDy = Math.Clamp(_pendingScrollDy + dy, -4800, 4800);
+                        _pendingScrollX = (int)x;
+                        _pendingScrollY = (int)y;
+                    }
+                    await FlushPendingScrollIfIdleAsync(ws, ct);
                 }
                 else if (action == "type" && !string.IsNullOrEmpty(req.Text))
                 {
@@ -697,10 +706,47 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
         }
 
+        private async Task FlushPendingScrollIfIdleAsync(ClientWebSocket ws, CancellationToken ct)
+        {
+            if (ws.State != WebSocketState.Open || ct.IsCancellationRequested) return;
+            if (Interlocked.CompareExchange(ref _scrollEvalInFlight, 1, 0) != 0) return;
+
+            double dx, dy;
+            int ix, iy;
+            lock (_scrollLock)
+            {
+                dx = _pendingScrollDx;
+                dy = _pendingScrollDy;
+                ix = _pendingScrollX;
+                iy = _pendingScrollY;
+                _pendingScrollDx = 0;
+                _pendingScrollDy = 0;
+            }
+
+            if (Math.Abs(dx) < 0.05 && Math.Abs(dy) < 0.05)
+            {
+                Interlocked.Exchange(ref _scrollEvalInFlight, 0);
+                return;
+            }
+
+            try
+            {
+                var dxStr = dx.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                var dyStr = dy.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                // Direct DOM scroll engine with cached scrollable target: O(1) per scroll step without full DOM querySelectorAll("*") scan
+                var jsScrollBy = $$"""(() => { try { const dx = {{dxStr}}, dy = {{dyStr}}; let scrolledEl = window.__ag360ScrollEl; if (scrolledEl && !document.contains(scrolledEl)) scrolledEl = null; if (!scrolledEl) { let el = document.elementFromPoint({{ix}}, {{iy}}); while (el && el !== document.body && el !== document.documentElement) { const cs = window.getComputedStyle(el); const canY = Math.abs(dy) > 0.05 && (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') && el.scrollHeight > el.clientHeight + 1; const canX = Math.abs(dx) > 0.05 && (cs.overflowX === 'auto' || cs.overflowX === 'scroll' || cs.overflowX === 'overlay') && el.scrollWidth > el.clientWidth + 1; if (canY || canX) { scrolledEl = el; break; } el = el.parentElement; } } if (scrolledEl && scrolledEl !== document.body && scrolledEl !== document.documentElement && scrolledEl !== document.scrollingElement) { const prevTop = scrolledEl.scrollTop, prevLeft = scrolledEl.scrollLeft; if (Math.abs(dy) > 0.05) scrolledEl.scrollTop += dy; if (Math.abs(dx) > 0.05) scrolledEl.scrollLeft += dx; if (Math.abs(scrolledEl.scrollTop - prevTop) <= 0.2 && Math.abs(scrolledEl.scrollLeft - prevLeft) <= 0.2) scrolledEl = null; } if (!scrolledEl) { const docEl = document.scrollingElement || document.documentElement || document.body; const prevY = window.scrollY || (docEl ? docEl.scrollTop : 0); window.scrollBy({ left: dx, top: dy, behavior: 'instant' }); const afterY = window.scrollY || (docEl ? docEl.scrollTop : 0); if (Math.abs(afterY - prevY) > 0.2 || (docEl && docEl.scrollHeight > docEl.clientHeight + 2)) { scrolledEl = docEl; } else if (!window.__ag360FallbackEl || !document.contains(window.__ag360FallbackEl)) { let best = null, bestArea = 0; for (const cand of document.querySelectorAll('main,section,article,div,[role="main"]')) { if (cand.scrollHeight > cand.clientHeight + 8) { const cs = window.getComputedStyle(cand); if (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') { const r = cand.getBoundingClientRect(); const area = r.width * r.height; if (area > bestArea) { bestArea = area; best = cand; } } } } window.__ag360FallbackEl = best; if (best) { best.scrollTop += dy; best.scrollLeft += dx; scrolledEl = best; } } else { const best = window.__ag360FallbackEl; best.scrollTop += dy; best.scrollLeft += dx; scrolledEl = best; } } window.__ag360ScrollEl = scrolledEl; const mEl = scrolledEl || document.scrollingElement || document.documentElement || document.body; return mEl ? { scrollTop: Math.round(mEl === document.scrollingElement || mEl === document.documentElement || mEl === document.body ? (window.scrollY || mEl.scrollTop || 0) : mEl.scrollTop), scrollHeight: Math.round(mEl.scrollHeight || 0), clientHeight: Math.round(mEl === document.scrollingElement || mEl === document.documentElement || mEl === document.body ? (window.innerHeight || mEl.clientHeight || 0) : mEl.clientHeight) } : null; } catch { return null; } })()""";
+                await SafeSendAsync(ws, new { id = 779, method = "Runtime.evaluate", @params = new { expression = jsScrollBy, returnByValue = true } }, ct);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _scrollEvalInFlight, 0);
+            }
+        }
+
         private void TriggerMotionSmoothBoost(ClientWebSocket ws, CancellationToken ct)
         {
             var now = Environment.TickCount64;
-            Interlocked.Exchange(ref _activeMotionUntilTick, now + 380);
+            Interlocked.Exchange(ref _activeMotionUntilTick, now + 260);
             PumpHighSpeedFrameIfNeeded(ws, ct, now);
         }
 
@@ -719,17 +765,17 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             if (ws.State != WebSocketState.Open || ct.IsCancellationRequested) return;
             if (nowTick > Interlocked.Read(ref _activeMotionUntilTick)) return;
+            if (nowTick - Interlocked.Read(ref _lastPumpedSentTick) < 15) return;
+            if (Interlocked.CompareExchange(ref _inFlightPumpedCaptures, 1, 0) != 0) return;
+            Interlocked.Exchange(ref _lastPumpedSentTick, nowTick);
             var pumpQuality = Math.Clamp(Volatile.Read(ref _currentQuality), 55, 75);
-            while (Volatile.Read(ref _inFlightPumpedCaptures) < 5)
+            var pumpId = 100000 + (Interlocked.Increment(ref _cmdId) & 0xFFFFF);
+            _ = SafeSendAsync(ws, new
             {
-                Interlocked.Increment(ref _inFlightPumpedCaptures);
-                _ = SafeSendAsync(ws, new
-                {
-                    id = 889,
-                    method = "Page.captureScreenshot",
-                    @params = new { format = "jpeg", quality = pumpQuality, fromSurface = true, optimizeForSpeed = true }
-                }, ct);
-            }
+                id = pumpId,
+                method = "Page.captureScreenshot",
+                @params = new { format = "jpeg", quality = pumpQuality, fromSurface = true, optimizeForSpeed = true }
+            }, ct);
         }
 
         private void ProbeScrollMetrics(ClientWebSocket ws, CancellationToken ct, bool force)
@@ -785,8 +831,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             if (string.IsNullOrEmpty(base64Jpeg)) return true;
             var now = Environment.TickCount64;
-            var isActiveMotion = now <= Interlocked.Read(ref _activeMotionUntilTick);
-            if (!forcePacing && !isActiveMotion && string.Equals(base64Jpeg, LastFrameBase64, StringComparison.Ordinal) && (LastBinaryFrame is not null || LastFrame is not null))
+            if (string.Equals(base64Jpeg, LastFrameBase64, StringComparison.Ordinal) && (LastBinaryFrame is not null || LastFrame is not null))
             {
                 return true;
             }
@@ -907,10 +952,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             if (now <= Interlocked.Read(ref _activeMotionUntilTick))
                             {
                                 PumpHighSpeedFrameIfNeeded(ws, ct, now);
-                                if (now - Interlocked.Read(ref _lastBroadcastTick) >= 14 && LastFrameBase64 is { Length: > 0 } cachedB64)
-                                {
-                                    Broadcast(cachedB64, forcePacing: true);
-                                }
                             }
                         }
                     }
@@ -959,31 +1000,36 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             }
                             continue;
                         }
-                        if (rId == 778 &&
+                        if ((rId == 778 || rId == 779) &&
                             doc.RootElement.TryGetProperty("result", out var scrRes) &&
-                            scrRes.TryGetProperty("result", out var innerScr) &&
-                            innerScr.TryGetProperty("value", out var scrVal) &&
-                            scrVal.ValueKind == JsonValueKind.Object)
+                            scrRes.TryGetProperty("result", out var innerScr))
                         {
-                            var st = scrVal.TryGetProperty("scrollTop", out var stP) && stP.TryGetInt32(out var stV) ? stV : 0;
-                            var sh = scrVal.TryGetProperty("scrollHeight", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
-                            var ch = scrVal.TryGetProperty("clientHeight", out var chP) && chP.TryGetInt32(out var chV) ? chV : 0;
-                            BroadcastScrollMetrics(st, sh, ch);
+                            if (innerScr.TryGetProperty("value", out var scrVal) &&
+                                scrVal.ValueKind == JsonValueKind.Object)
+                            {
+                                var st = scrVal.TryGetProperty("scrollTop", out var stP) && stP.TryGetInt32(out var stV) ? stV : 0;
+                                var sh = scrVal.TryGetProperty("scrollHeight", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
+                                var ch = scrVal.TryGetProperty("clientHeight", out var chP) && chP.TryGetInt32(out var chV) ? chV : 0;
+                                BroadcastScrollMetrics(st, sh, ch);
+                            }
+                            if (rId == 779)
+                            {
+                                Interlocked.Exchange(ref _scrollEvalInFlight, 0);
+                                _ = FlushPendingScrollIfIdleAsync(ws, ct);
+                                PumpHighSpeedFrameIfNeeded(ws, ct, Environment.TickCount64);
+                            }
                             continue;
                         }
-                        if ((rId == 888 || rId == 889) &&
+                        if ((rId == 888 || rId >= 100000) &&
                             doc.RootElement.TryGetProperty("result", out var snapRes) &&
                             snapRes.TryGetProperty("data", out var snapDataProp))
                         {
-                            if (rId == 889)
+                            if (rId >= 100000)
                             {
-                                var dec = Interlocked.Decrement(ref _inFlightPumpedCaptures);
-                                if (dec < 0) Interlocked.Exchange(ref _inFlightPumpedCaptures, 0);
-                                var now = Environment.TickCount64;
-                                if (now <= Interlocked.Read(ref _activeMotionUntilTick))
-                                {
-                                    PumpHighSpeedFrameIfNeeded(ws, ct, now);
-                                }
+                                Interlocked.Exchange(ref _inFlightPumpedCaptures, 0);
+                                var prevMax = Volatile.Read(ref _latestPumpedRespId);
+                                if (rId < prevMax) continue;
+                                Volatile.Write(ref _latestPumpedRespId, rId);
                             }
                             var snapB64 = snapDataProp.GetString();
                             if (!string.IsNullOrEmpty(snapB64))
