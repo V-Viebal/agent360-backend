@@ -766,7 +766,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             var now = Environment.TickCount64;
             Interlocked.Exchange(ref _activeMotionUntilTick, now + 320);
-            PumpHighSpeedFrameIfNeeded(ws, ct, now);
         }
 
         private async Task RestartScreencastAsync(ClientWebSocket ws, int width, int height, CancellationToken ct)
@@ -972,23 +971,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = _currentQuality, maxWidth = capDim, maxHeight = capDim, everyNthFrame = 1 } }, ct);
                 }
 
-                _ = Task.Run(async () =>
-                {
-                    using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
-                    try
-                    {
-                        while (await timer.WaitForNextTickAsync(ct))
-                        {
-                            if (ws.State != WebSocketState.Open) break;
-                            var now = Environment.TickCount64;
-                            if (now <= Interlocked.Read(ref _activeMotionUntilTick))
-                            {
-                                PumpHighSpeedFrameIfNeeded(ws, ct, now);
-                            }
-                        }
-                    }
-                    catch { }
-                }, ct);
+
 
                 var buffer = new byte[64 * 1024];
                 using var ms = new MemoryStream();
@@ -1053,7 +1036,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                 {
                                     Interlocked.Exchange(ref _scrollEvalInFlight, 0);
                                     _ = FlushPendingScrollIfIdleAsync(ws, ct);
-                                    PumpHighSpeedFrameIfNeeded(ws, ct, Environment.TickCount64);
                                 }
                             }
                             continue;
@@ -1135,13 +1117,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     // ACK immediately BEFORE Base64 conversion & broadcast so Chromium starts encoding the next 60fps frame with 0ms delay!
                     var frameSessionId = p.GetProperty("sessionId").GetInt32();
                     _ = SafeSendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = frameSessionId } }, ct);
-                    var frameNow = Environment.TickCount64;
-                    Interlocked.Exchange(ref _lastScreencastFrameTick, frameNow);
-                    // Temporal monotonicity guard: if a fallback pumped capture was sent after this screencast frame began encoding, skip broadcasting stale payload
-                    if (frameNow - Interlocked.Read(ref _lastPumpedSentTick) < 18 && Volatile.Read(ref _inFlightPumpedCaptures) != 0)
-                    {
-                        continue;
-                    }
+                    Interlocked.Exchange(ref _lastScreencastFrameTick, Environment.TickCount64);
                     var data = p.GetProperty("data").GetString() ?? "";
                     if (!Broadcast(data) && _hasTargetViewport)
                     {
