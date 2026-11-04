@@ -32,7 +32,7 @@ public static class SseRelay
         }
         await output.FlushAsync(ct);
         Task<int>? pending = null;
-        var effectiveIdleTimeout = maxIdleTimeout ?? TimeSpan.FromMinutes(10);
+        var effectiveIdleTimeout = maxIdleTimeout ?? TimeSpan.FromMinutes(15);
         var lastPayloadTime = DateTime.UtcNow;
 
         while (true)

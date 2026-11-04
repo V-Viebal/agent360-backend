@@ -284,10 +284,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             var sessionLock = queueManager.GetOrCreateSessionLock(effectiveSessionId);
             await sessionLock.WaitAsync(ct);
             queueManager.SetSessionTurnActive(effectiveSessionId, true, targetAgent);
+            bool backgrounded = false;
 
             try
             {
-                var backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
+                backgrounded = await ExecuteConsoleChatStreamWithRoomSupportAsync(
                     consoleReq,
                     targetAgent,
                     effectiveSessionId,
@@ -302,8 +303,11 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
             finally
             {
-                queueManager.SetSessionTurnActive(effectiveSessionId, false, targetAgent);
-                sessionLock.Release();
+                if (!backgrounded)
+                {
+                    queueManager.SetSessionTurnActive(effectiveSessionId, false, targetAgent);
+                    sessionLock.Release();
+                }
             }
         })
         .WithName("SubmitChatMessageReaction")
@@ -672,7 +676,18 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             catch {}
 
             var sessionLock = queueManager.GetOrCreateSessionLock(qwenPawSessionId);
-            await sessionLock.WaitAsync(ct);
+            if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(2), ct))
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status409Conflict;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "SESSION_TURN_ALREADY_RUNNING",
+                    detail = "A task is already running for this chat",
+                    session_id = qwenPawSessionId,
+                    chat_id = effectiveSessionId
+                }, ct);
+                return;
+            }
             bool backgrounded = false;
             try
             {
@@ -834,7 +849,18 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             catch {}
 
             var sessionLock = queueManager.GetOrCreateSessionLock(qwenPawSessionId);
-            await sessionLock.WaitAsync(ct);
+            if (!await sessionLock.WaitAsync(TimeSpan.FromSeconds(2), ct))
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status409Conflict;
+                await httpContext.Response.WriteAsJsonAsync(new
+                {
+                    error = "SESSION_TURN_ALREADY_RUNNING",
+                    detail = "A task is already running for this chat",
+                    session_id = qwenPawSessionId,
+                    chat_id = effectiveSessionId
+                }, ct);
+                return;
+            }
             bool backgrounded = false;
             try
             {
@@ -1288,6 +1314,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                         if (!string.IsNullOrEmpty(rawChatName))
                         {
                             var ctxMarkerIdx = rawChatName.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                            var skyerMarkerIdx = rawChatName.IndexOf("[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]", StringComparison.OrdinalIgnoreCase);
+                            if (skyerMarkerIdx >= 0 && (ctxMarkerIdx < 0 || skyerMarkerIdx < ctxMarkerIdx)) ctxMarkerIdx = skyerMarkerIdx;
                             if (ctxMarkerIdx >= 0) rawChatName = rawChatName[..ctxMarkerIdx].TrimEnd();
                             rawChatName = System.Text.RegularExpressions.Regex.Replace(rawChatName, @"^\[Replying to [^:\]]+:\s*""[^""]*""\]\s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
                             node["name"] = rawChatName;
@@ -1960,7 +1988,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         SemaphoreSlim sessionLock,
         CancellationToken ct)
     {
-        var upstreamCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        var upstreamCts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var rawUserText = effectiveRequest.Message;
         if (string.IsNullOrWhiteSpace(rawUserText) && effectiveRequest.Input is { Count: > 0 })
         {
@@ -2392,6 +2420,24 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         try
         {
             response = await client.StreamConsoleChatAsync(effectiveRequest, upstreamCts.Token);
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                var reconnected = await client.ReconnectConsoleChatAsync(
+                    agentTarget,
+                    qwenPawSessionId,
+                    effectiveRequest.UserId,
+                    effectiveRequest.Channel,
+                    upstreamCts.Token);
+                if (reconnected.IsSuccessStatusCode)
+                {
+                    response.Dispose();
+                    response = reconnected;
+                }
+                else
+                {
+                    reconnected.Dispose();
+                }
+            }
             if (!httpContext.Response.HasStarted)
             {
                 httpContext.Response.ContentType = response.Content.Headers.ContentType?.ToString() ?? "text/event-stream";

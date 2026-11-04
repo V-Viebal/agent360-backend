@@ -123,8 +123,21 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                 await httpContext.Response.WriteAsync($"event: connected\ndata: {connectMeta}\n\n", ct);
                 await httpContext.Response.Body.FlushAsync(ct);
 
+                var wasActiveInQueue = isInitiallyRunning;
                 while (!ct.IsCancellationRequested)
                 {
+                    var isActiveInQueue = queueManager.IsSessionTurnActive(effectiveChatId) ||
+                        (!string.IsNullOrWhiteSpace(canonicalSessionId) && queueManager.IsSessionTurnActive(canonicalSessionId));
+                    if (isActiveInQueue && lastKnownCount != -1)
+                    {
+                        wasActiveInQueue = true;
+                        await httpContext.Response.WriteAsync(": keepalive\n\n", ct);
+                        await httpContext.Response.Body.FlushAsync(ct);
+                        await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                        continue;
+                    }
+                    wasActiveInQueue = false;
+
                     var isTurnRunning = false;
                     try
                     {
@@ -310,7 +323,7 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     await httpContext.Response.WriteAsync(": keepalive\n\n", ct);
                     await httpContext.Response.Body.FlushAsync(ct);
 
-                    var pollDelay = isTurnRunning ? TimeSpan.FromMilliseconds(500) : TimeSpan.FromSeconds(2);
+                    var pollDelay = isTurnRunning ? TimeSpan.FromSeconds(4) : TimeSpan.FromSeconds(5);
                     await Task.Delay(pollDelay, ct);
                 }
             })
@@ -368,11 +381,20 @@ public sealed class AgentChatSyncStreamEndpoint : IEndpoint
                     }
                 }
 
-                if (!foundChat)
+                if (!foundChat && !chatId.StartsWith("session-", StringComparison.OrdinalIgnoreCase))
                 {
                     httpContext.Response.ContentType = "text/event-stream";
                     await httpContext.Response.WriteAsync(": idle\n\n", ct);
                     return Results.Empty;
+                }
+                if (!foundChat)
+                {
+                    var currentUser = httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>();
+                    var ownerScope = await ChatVisibilityGuard.ResolveScopeAsync(agentId, httpContext, ct);
+                    userId = !string.IsNullOrWhiteSpace(ownerScope)
+                        ? ownerScope
+                        : ChatVisibilityGuard.OwnerKeyFor(currentUser) ?? "default";
+                    channel = "console";
                 }
 
                 httpContext.Response.ContentType = "text/event-stream";

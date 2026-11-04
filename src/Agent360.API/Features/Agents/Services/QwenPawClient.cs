@@ -1138,6 +1138,9 @@ public sealed class QwenPawClient : IQwenPawClient
         return null;
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> ChatHistoryGates = new();
+    private static readonly TimeSpan ChatHistoryCacheTtl = TimeSpan.FromMilliseconds(1500);
+
     public async Task<string> GetChatHistoryRawAsync(string chatId, string? agentId = null, CancellationToken cancellationToken = default)
     {
         var targetChatId = chatId;
@@ -1150,18 +1153,50 @@ public sealed class QwenPawClient : IQwenPawClient
             }
         }
 
+        var normalizedAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+        var cacheKey = $"agent360:chat-history:{normalizedAgent}:{targetChatId.ToLowerInvariant()}";
+        if (_cache.TryGetValue(cacheKey, out string? freshHistory) && freshHistory is not null)
+        {
+            return freshHistory;
+        }
+
+        var gate = ChatHistoryGates.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
         try
         {
-            return await GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(targetChatId)}", SlowReadTimeout, ct: cancellationToken);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound && string.Equals(targetChatId, chatId, StringComparison.OrdinalIgnoreCase))
-        {
-            var resolved = await ResolveChatUuidAsync(chatId, agentId, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(resolved) && !string.Equals(resolved, chatId, StringComparison.OrdinalIgnoreCase))
+            if (_cache.TryGetValue(cacheKey, out freshHistory) && freshHistory is not null)
             {
-                return await GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(resolved)}", SlowReadTimeout, ct: cancellationToken);
+                return freshHistory;
             }
-            throw;
+
+            try
+            {
+                var raw = await GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(targetChatId)}", SlowReadTimeout, ct: cancellationToken);
+                _cache.Set(cacheKey, raw, ChatHistoryCacheTtl);
+                _cache.Set(cacheKey + ":last-good", raw, TimeSpan.FromMinutes(30));
+                return raw;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound && string.Equals(targetChatId, chatId, StringComparison.OrdinalIgnoreCase))
+            {
+                var resolved = await ResolveChatUuidAsync(chatId, agentId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(resolved) && !string.Equals(resolved, chatId, StringComparison.OrdinalIgnoreCase))
+                {
+                    var raw = await GetStringAsync(agentId, $"chats/{Uri.EscapeDataString(resolved)}", SlowReadTimeout, ct: cancellationToken);
+                    _cache.Set(cacheKey, raw, ChatHistoryCacheTtl);
+                    _cache.Set(cacheKey + ":last-good", raw, TimeSpan.FromMinutes(30));
+                    return raw;
+                }
+                throw;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested && _cache.TryGetValue(cacheKey + ":last-good", out string? staleHistory) && staleHistory is not null)
+            {
+                _logger.LogWarning("Serving last-good chat history for {Agent}/{ChatId}: {Error}", normalizedAgent, targetChatId, ex.Message);
+                return staleHistory;
+            }
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 
@@ -1197,7 +1232,7 @@ public sealed class QwenPawClient : IQwenPawClient
     // Approvals (global router, resolved by session tree)
     // ------------------------------------------------------------------
 
-    private static readonly TimeSpan ApprovalsCacheTtl = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ApprovalsCacheTtl = TimeSpan.FromSeconds(15);
 
     /// <summary>
     /// Fleet-wide pending approvals. Every open approvals SSE stream and page poll shares one cached snapshot
@@ -1301,6 +1336,49 @@ public sealed class QwenPawClient : IQwenPawClient
     // Console
     // ------------------------------------------------------------------
 
+    private static readonly System.Text.RegularExpressions.Regex ChannelOrAppIntentRegex = new(
+        @"(?:\bzalo\b|chat\.zalo\.me|zalo\s*web|zalo\s*oa|\btelegram\b|@botfather|botfather|bot\s*token|bot_token|\bdiscord\b|\bslack\b|\bfeishu\b|\bdingtalk\b|\bmatrix\b|\bwhatsapp\b|kết\s*nối\s*(?:kênh|tài\s*khoản|zalo|telegram|discord|slack|app|ứng\s*dụng)|tích\s*hợp\s*(?:kênh|zalo|telegram|discord|slack|app|ứng\s*dụng)|thiết\s*lập\s*(?:kênh|zalo|telegram|discord|slack)|cấu\s*hình\s*(?:kênh|zalo|telegram|discord|slack)|bật\s*kênh|connect\s*(?:channel|app|zalo|telegram|discord|slack)|setup\s*(?:channel|zalo|telegram))",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    internal static string EnrichWithSkyerChannelAwarenessIfRelevant(string? rawText, string? agentId)
+    {
+        if (string.IsNullOrWhiteSpace(rawText)) return rawText ?? "";
+        if (rawText.Contains("[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]", StringComparison.OrdinalIgnoreCase))
+        {
+            return rawText;
+        }
+        if (!ChannelOrAppIntentRegex.IsMatch(rawText))
+        {
+            return rawText;
+        }
+
+        var cleanAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId ?? "default");
+        var awarenessBlock =
+            "\n\n[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]\n" +
+            $"Chỉ dẫn kiến trúc bắt buộc của nền tảng Skyer (Agent360) dành cho Agent '@{cleanAgent}' khi người dùng hỏi hoặc yêu cầu kết nối/thiết lập kênh giao tiếp (Channels) hoặc ứng dụng (Apps):\n" +
+            "1. KÊNH ZALO TRÊN SKYER — MẶC ĐỊNH LÀ ZALO WEB (mode=\"web\", KHÔNG CẦN ZALO OA / ZNS / WEBHOOK):\n" +
+            "   - Skyer hỗ trợ sẵn kênh Zalo tích hợp trực tiếp (builtin channel `zalo`, mặc định `mode: \"web\"`).\n" +
+            "   - Cách kết nối chuẩn và duy nhất cần hướng dẫn mặc định cho người dùng (chỉ 2 bước ngay trên giao diện Skyer):\n" +
+            "     • Bước 1: Bấm nút **\"Bật Zalo Web\"** ngay trên **Thẻ Kết nối Kênh (Channel Connection Card)** hiển thị bên dưới tin nhắn này (hoặc trong **Cài đặt Agent -> Kênh & Lịch chạy**).\n" +
+            "     • Bước 2: Cửa sổ **Trình duyệt riêng (Computer/Browser) của Agent** sẽ mở trang `https://chat.zalo.me` -> Người dùng chỉ cần dùng điện thoại **quét mã QR đăng nhập tài khoản Zalo cá nhân** (hoặc tài khoản Zalo phụ dành cho Agent).\n" +
+            "   - Sau khi quét QR đăng nhập trên Browser của Agent, hệ thống Skyer (Zalo Passive & Active Bridge) tự động đồng bộ tin nhắn riêng (DM) và nhóm (Group), mặc định bật `Require @Mention` (`silent` monitor: đọc ngữ cảnh nhóm và chỉ phản hồi khi được tag `@tên` hoặc nhắn riêng).\n" +
+            "   - TUYỆT ĐỐI KHÔNG nói rằng bạn không có quyền truy cập Zalo cá nhân, KHÔNG hướng dẫn người dùng phải đi đăng ký Zalo Official Account (Zalo OA), Zalo ZNS, Mini App hay thuê dịch vụ trung gian (Make/Zapier/n8n/Webhook) trừ khi người dùng chủ động yêu cầu chế độ phụ `Bot Token / Webhook` (`mode: \"webhook\"`).\n" +
+            "2. KÊNH TELEGRAM TRÊN SKYER (`telegram`, mode=\"bot\"):\n" +
+            "   - Tạo bot qua `@BotFather` trên Telegram để lấy `Bot Token` (`123456:ABC-DEF...`), sau đó dán trực tiếp `Bot Token` vào ô nhập trên **Thẻ Kết nối Kênh (Channel Connection Card)** bên dưới và bấm **\"Thiết lập & Bật\"** (mặc định bật `Require @Mention` trong nhóm).\n" +
+            "3. CÁC KÊNH KHÁC & ỨNG DỤNG MCP TRÊN SKYER:\n" +
+            "   - Các kênh khác Skyer hỗ trợ sẵn: `discord`, `slack`, `feishu`, `dingtalk`, `matrix` (nhập Bot/Access Token trực tiếp trên thẻ Kết nối Kênh hoặc trong mục **Cài đặt Agent -> Kênh & Lịch chạy**).\n" +
+            "   - Với các ứng dụng ngoại vi (Gmail, Google Calendar, Google Drive, GitHub, Notion, Jira, Linear...): kết nối OAuth 1-click qua **Thẻ Kết nối Ứng dụng (`connect_app`)** ngay trong chat hoặc nút **Connect Apps** ở thanh công cụ bên phải.\n" +
+            "4. QUY TẮC HIỂN THỊ THẺ TƯƠNG TÁC TRONG CHAT (`skyer-interaction/v1`):\n" +
+            "   - Khi người dùng muốn kết nối Zalo/Telegram/Discord/Slack, TUYỆT ĐỐI KHÔNG sinh thẻ `choice` hỏi lựa chọn giữa 'Zalo OA', 'Webhook trung gian' hay 'ZNS'.\n" +
+            "   - Hãy trả lời ngắn gọn, rõ ràng theo đúng quy trình chuẩn Skyer ở trên (với Zalo: mặc định là bật **Zalo Web** và quét mã QR trên Browser của Agent) và xuất kèm 1 khối ```skyer-interaction/v1 chuẩn `connect_channel` ở cuối câu trả lời:\n" +
+            "```skyer-interaction/v1\n" +
+            "{\"version\":\"1\",\"kind\":\"connect_channel\",\"id\":\"connect-channel-card\",\"title\":\"Thiết lập kênh kết nối\",\"channels\":[{\"type\":\"zalo\",\"mode\":\"web\"}]}\n" +
+            "```\n" +
+            "[/SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]";
+
+        return rawText + awarenessBlock;
+    }
+
     public async Task<HttpResponseMessage> StreamConsoleChatAsync(ConsoleChatSendRequestDto request, CancellationToken cancellationToken = default)
     {
         var textContent = request.Message;
@@ -1308,6 +1386,7 @@ public sealed class QwenPawClient : IQwenPawClient
         {
             textContent = request.Input[0].Content?.FirstOrDefault()?.Text ?? "";
         }
+        textContent = EnrichWithSkyerChannelAwarenessIfRelevant(textContent, request.AgentId);
 
         var sess = request.SessionId ?? "";
         var effectiveChannel = !string.IsNullOrWhiteSpace(request.Channel)
@@ -1341,7 +1420,7 @@ public sealed class QwenPawClient : IQwenPawClient
             HttpMethod.Post,
             "console/chat",
             () => JsonContent.Create(payload),
-            timeout: TimeSpan.FromMinutes(10),
+            timeout: TimeSpan.FromMinutes(15),
             completion: HttpCompletionOption.ResponseHeadersRead,
             ct: cancellationToken);
     }
@@ -1530,21 +1609,171 @@ public sealed class QwenPawClient : IQwenPawClient
             TotalCount: enrichedAll.Count);
     }
 
-    public async Task<HttpResponseMessage> DownloadWorkspaceFileAsync(string path, string? agentId = null, CancellationToken cancellationToken = default)
+    public static (string? EmbeddedProfile, string RelativePath) NormalizeWorkspaceRequestPath(string? rawPath)
     {
-        var target = Resolve(agentId);
+        var normalized = Uri.UnescapeDataString((rawPath ?? "").Replace('\\', '/')).Trim();
+        if (normalized.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized["file://".Length..];
+        }
+
+        // 1. Check /app/working/workspaces/<profile>/<relPath> or workspaces/<profile>/<relPath>
+        var wsMatch = System.Text.RegularExpressions.Regex.Match(
+            normalized,
+            @"^(?:/?app/working)?/?workspaces/([^/]+)/(.+)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (wsMatch.Success)
+        {
+            var profile = wsMatch.Groups[1].Value.Trim();
+            var rel = wsMatch.Groups[2].Value.Trim('/');
+            return (string.IsNullOrWhiteSpace(profile) ? null : profile, rel);
+        }
+
+        // 2. Check /app/working.secret/generated-images/<relPath>
+        var secretImgMatch = System.Text.RegularExpressions.Regex.Match(
+            normalized,
+            @"^/?app/working\.secret/(generated-images/.+)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (secretImgMatch.Success)
+        {
+            return (null, secretImgMatch.Groups[1].Value.Trim('/'));
+        }
+
+        // 3. Check /app/working/<relPath>
+        var workingMatch = System.Text.RegularExpressions.Regex.Match(
+            normalized,
+            @"^/?app/working/(.+)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (workingMatch.Success)
+        {
+            return (null, workingMatch.Groups[1].Value.Trim('/'));
+        }
+
+        return (null, normalized.Trim('/'));
+    }
+
+    private async Task<IReadOnlyList<string>> GetSiblingProfilesForInstanceAsync(
+        QwenPawInstance instance,
+        string primaryProfile,
+        string? embeddedProfile,
+        CancellationToken ct)
+    {
+        var ordered = new List<string>();
+        void AddUnique(string? prof)
+        {
+            if (string.IsNullOrWhiteSpace(prof)) return;
+            var p = prof.Trim();
+            if (!ordered.Contains(p, StringComparer.OrdinalIgnoreCase))
+            {
+                ordered.Add(p);
+            }
+        }
+
+        // If path explicitly specified a sibling workspace on the same instance, try that profile first!
+        AddUnique(embeddedProfile);
+        AddUnique(primaryProfile);
+
+        // Include live profiles discovered from QwenPaw /api/agents on this instance (cached)
+        try
+        {
+            var cacheKey = $"agent360:runtime-agents:{instance.Key}:last-good";
+            if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<QwenPawAgentDto>? runtimeAgents) || runtimeAgents is null || runtimeAgents.Count == 0)
+            {
+                runtimeAgents = await LoadRuntimeAgentsAsync(instance, ct);
+            }
+            if (runtimeAgents is not null)
+            {
+                foreach (var a in runtimeAgents)
+                {
+                    AddUnique(a.Id);
+                }
+            }
+        }
+        catch
+        {
+            // Ignore discovery error and fall back to static/known sibling profiles
+        }
+
+        // Include common instance profiles
+        foreach (var fallbackProfile in instance.Key.ToLowerInvariant() switch
+        {
+            "planthy" => new[] { "default", "team", "marketing_creator", "marketing_publisher", "marketing_scout", "Planthy_Dev_Agent_0.1" },
+            "gm" => new[] { "default", "team", "customer", "supplier" },
+            "climax" => new[] { "default", "team" },
+            "core" => new[] { "mons", "ken", "zen", "mkai", "default", "app360" },
+            "monosbase" => new[] { "default", "agentcore-mgr", "agentcore-acc", "agentcore-catalog", "agentcore-commerce", "agentcore-import", "agentcore-product-dev" },
+            _ => new[] { "default", "team" }
+        })
+        {
+            AddUnique(fallbackProfile);
+        }
+
+        return ordered;
+    }
+
+    private static IReadOnlyList<string> BuildRelativePathCandidates(string relativePath)
+    {
+        var rel = (relativePath ?? "").Replace('\\', '/').Trim('/');
+        if (string.IsNullOrWhiteSpace(rel)) return [];
+
+        var list = new List<string>();
+        void AddCandidate(string? c)
+        {
+            if (string.IsNullOrWhiteSpace(c)) return;
+            var clean = c.Replace('\\', '/').Trim('/');
+            if (!string.IsNullOrWhiteSpace(clean) && !list.Contains(clean, StringComparer.OrdinalIgnoreCase))
+            {
+                list.Add(clean);
+            }
+        }
+
+        AddCandidate(rel);
+        var bareName = Path.GetFileName(rel);
+        if (!rel.StartsWith("media/", StringComparison.OrdinalIgnoreCase))
+        {
+            AddCandidate($"media/{rel}");
+        }
+        else
+        {
+            AddCandidate(rel["media/".Length..]);
+        }
+
+        if (!rel.StartsWith("generated-images/", StringComparison.OrdinalIgnoreCase))
+        {
+            AddCandidate($"generated-images/{rel}");
+        }
+        else
+        {
+            AddCandidate(rel["generated-images/".Length..]);
+        }
+
+        if (!string.IsNullOrWhiteSpace(bareName))
+        {
+            AddCandidate(bareName);
+            AddCandidate($"media/{bareName}");
+            AddCandidate($"generated-images/{bareName}");
+        }
+
+        return list;
+    }
+
+    private async Task<HttpResponseMessage> DownloadSingleProfileFileAsync(
+        ResolvedInstanceTarget target,
+        string relativePath,
+        CancellationToken cancellationToken)
+    {
         var response = await SendAsync(
             target,
             HttpMethod.Get,
-            $"workspace/file-download?path={Uri.EscapeDataString(path)}",
+            $"workspace/file-download?path={Uri.EscapeDataString(relativePath)}",
             timeout: TimeSpan.FromMinutes(2),
             completion: HttpCompletionOption.ResponseHeadersRead,
             ct: cancellationToken);
 
-        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed or HttpStatusCode.BadRequest)
         {
             response.Dispose();
-            var encoded = string.Join('/', path.Trim('/').Split('/').Select(Uri.EscapeDataString));
+            var encoded = string.Join('/', relativePath.Trim('/').Split('/').Select(Uri.EscapeDataString));
             return await SendAsync(
                 target,
                 HttpMethod.Get,
@@ -1557,25 +1786,137 @@ public sealed class QwenPawClient : IQwenPawClient
         return response;
     }
 
-    public async Task<string?> GetFileContentAsync(string path, string? agentId = null, CancellationToken cancellationToken = default)
+    public async Task<HttpResponseMessage> DownloadWorkspaceFileAsync(string path, string? agentId = null, CancellationToken cancellationToken = default)
     {
-        var target = Resolve(agentId);
-        using var response = await SendAsync(target, HttpMethod.Get, $"workspace/file-content?path={Uri.EscapeDataString(path)}", ct: cancellationToken);
-        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+        var primaryTarget = Resolve(agentId);
+        var (embeddedProfile, normalizedRel) = NormalizeWorkspaceRequestPath(path);
+        var pathCandidates = BuildRelativePathCandidates(string.IsNullOrWhiteSpace(normalizedRel) ? path : normalizedRel);
+        if (pathCandidates.Count == 0)
         {
-            var encoded = string.Join('/', path.Trim('/').Split('/').Select(Uri.EscapeDataString));
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        if (primaryTarget.Instance is null)
+        {
+            return await DownloadSingleProfileFileAsync(primaryTarget, pathCandidates[0], cancellationToken);
+        }
+
+        var profiles = await GetSiblingProfilesForInstanceAsync(
+            primaryTarget.Instance,
+            primaryTarget.TargetAgentProfile,
+            embeddedProfile,
+            cancellationToken);
+
+        HttpResponseMessage? lastResponse = null;
+
+        // Pass 1: Check primary (or embedded) profile across all candidate relative paths first
+        var firstProfile = profiles.FirstOrDefault() ?? primaryTarget.TargetAgentProfile;
+        var firstTarget = primaryTarget with { TargetAgentProfile = firstProfile };
+        foreach (var candidatePath in pathCandidates)
+        {
+            var resp = await DownloadSingleProfileFileAsync(firstTarget, candidatePath, cancellationToken);
+            if (resp.IsSuccessStatusCode)
+            {
+                lastResponse?.Dispose();
+                return resp;
+            }
+            lastResponse?.Dispose();
+            lastResponse = resp;
+        }
+
+        // Pass 2: Same-instance sibling agent fallback via QwenPaw HTTP API
+        foreach (var siblingProfile in profiles.Skip(1))
+        {
+            var siblingTarget = primaryTarget with { TargetAgentProfile = siblingProfile };
+            foreach (var candidatePath in pathCandidates)
+            {
+                try
+                {
+                    var resp = await DownloadSingleProfileFileAsync(siblingTarget, candidatePath, cancellationToken);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        lastResponse?.Dispose();
+                        return resp;
+                    }
+                    resp.Dispose();
+                }
+                catch when (!cancellationToken.IsCancellationRequested)
+                {
+                    // Continue checking remaining sibling profiles
+                }
+            }
+        }
+
+        return lastResponse ?? new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+
+    private async Task<string?> GetSingleProfileFileContentAsync(
+        ResolvedInstanceTarget target,
+        string relativePath,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(target, HttpMethod.Get, $"workspace/file-content?path={Uri.EscapeDataString(relativePath)}", ct: cancellationToken);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed or HttpStatusCode.BadRequest)
+        {
+            var encoded = string.Join('/', relativePath.Trim('/').Split('/').Select(Uri.EscapeDataString));
             using var legacy = await SendAsync(target, HttpMethod.Get, $"workspace/code-files/{encoded}", ct: cancellationToken);
-            if (legacy.StatusCode == HttpStatusCode.NotFound)
+            if (!legacy.IsSuccessStatusCode)
             {
                 return null;
             }
-            legacy.EnsureSuccessStatusCode();
             var legacyResult = await legacy.Content.ReadFromJsonAsync<WorkspaceFileContentDto>(cancellationToken);
             return legacyResult?.Content;
         }
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
         var result = await response.Content.ReadFromJsonAsync<WorkspaceFileContentDto>(cancellationToken);
         return result?.Content;
+    }
+
+    public async Task<string?> GetFileContentAsync(string path, string? agentId = null, CancellationToken cancellationToken = default)
+    {
+        var primaryTarget = Resolve(agentId);
+        var (embeddedProfile, normalizedRel) = NormalizeWorkspaceRequestPath(path);
+        var pathCandidates = BuildRelativePathCandidates(string.IsNullOrWhiteSpace(normalizedRel) ? path : normalizedRel);
+        if (pathCandidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (primaryTarget.Instance is null)
+        {
+            return await GetSingleProfileFileContentAsync(primaryTarget, pathCandidates[0], cancellationToken);
+        }
+
+        var profiles = await GetSiblingProfilesForInstanceAsync(
+            primaryTarget.Instance,
+            primaryTarget.TargetAgentProfile,
+            embeddedProfile,
+            cancellationToken);
+
+        foreach (var profile in profiles)
+        {
+            var target = primaryTarget with { TargetAgentProfile = profile };
+            foreach (var candidatePath in pathCandidates)
+            {
+                try
+                {
+                    var content = await GetSingleProfileFileContentAsync(target, candidatePath, cancellationToken);
+                    if (content is not null)
+                    {
+                        return content;
+                    }
+                }
+                catch when (!cancellationToken.IsCancellationRequested)
+                {
+                    // Try next candidate or sibling profile
+                }
+            }
+        }
+
+        return null;
     }
 
     public async Task<bool> SaveFileContentAsync(string path, string content, string? agentId = null, CancellationToken cancellationToken = default)

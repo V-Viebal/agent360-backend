@@ -106,13 +106,61 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         {
             zaloObj["enabled"] = false;
         }
+        if (zaloObj["bot_prefix"] is null)
+        {
+            zaloObj["bot_prefix"] = "";
+        }
+        if (zaloObj["show_tool_calls"] is null)
+        {
+            zaloObj["show_tool_calls"] = false;
+        }
+        if (zaloObj["show_tool_results"] is null)
+        {
+            zaloObj["show_tool_results"] = false;
+        }
+        if (zaloObj["show_thinking"] is null)
+        {
+            zaloObj["show_thinking"] = false;
+        }
         if (string.IsNullOrWhiteSpace(zaloObj["mode"]?.ToString()))
         {
             zaloObj["mode"] = string.IsNullOrWhiteSpace(zaloObj["bot_token"]?.ToString()) ? "web" : "webhook";
         }
+        if (zaloObj["bot_token"] is null)
+        {
+            zaloObj["bot_token"] = "";
+        }
+        if (zaloObj["secret_token"] is null)
+        {
+            zaloObj["secret_token"] = "";
+        }
+        if (zaloObj["poll_interval"] is null)
+        {
+            zaloObj["poll_interval"] = 30;
+        }
+        if (zaloObj["max_retries"] is null)
+        {
+            zaloObj["max_retries"] = 3;
+        }
+        if (zaloObj["max_message_len"] is null)
+        {
+            zaloObj["max_message_len"] = 1500;
+        }
         if (zaloObj["show_typing"] is null)
         {
             zaloObj["show_typing"] = true;
+        }
+        if (zaloObj["auto_reconnect"] is null)
+        {
+            zaloObj["auto_reconnect"] = true;
+        }
+        if (zaloObj["health_check_interval"] is null)
+        {
+            zaloObj["health_check_interval"] = 300;
+        }
+        if (zaloObj["rate_limit_max"] is null)
+        {
+            zaloObj["rate_limit_max"] = 30;
         }
         if (zaloObj["access_control_dm"] is null)
         {
@@ -130,6 +178,10 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         {
             zaloObj["group_policy"] = zaloObj["access_control_group"]?.GetValue<bool>() == true ? "allowlist" : "open";
         }
+        if (zaloObj["allow_from"] is null)
+        {
+            zaloObj["allow_from"] = new System.Text.Json.Nodes.JsonArray();
+        }
         if (zaloObj["no_text_debounce"] is null)
         {
             zaloObj["no_text_debounce"] = true;
@@ -141,6 +193,10 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         if (string.IsNullOrWhiteSpace(zaloObj["group_monitor_mode"]?.ToString()))
         {
             zaloObj["group_monitor_mode"] = zaloObj["require_mention"]?.GetValue<bool>() == false ? "loud" : "silent";
+        }
+        if (!isWrite && zaloObj["isBuiltin"] is null)
+        {
+            zaloObj["isBuiltin"] = true;
         }
     }
 
@@ -172,16 +228,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     }
                     if (rootObj["zalo"] is not System.Text.Json.Nodes.JsonObject zaloChild)
                     {
-                        if (!string.IsNullOrEmpty(agentKey) &&
-                            _zaloChannelOverrides.TryGetValue(agentKey, out var savedZalo) &&
-                            System.Text.Json.Nodes.JsonNode.Parse(savedZalo) is System.Text.Json.Nodes.JsonObject savedZaloObj)
-                        {
-                            zaloChild = savedZaloObj;
-                        }
-                        else
-                        {
-                            zaloChild = new System.Text.Json.Nodes.JsonObject();
-                        }
+                        zaloChild = new System.Text.Json.Nodes.JsonObject();
                         rootObj["zalo"] = zaloChild;
                     }
                     ApplyZaloChannelDefaults(zaloChild, isWrite: false);
@@ -266,7 +313,6 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         }
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _zaloChannelOverrides = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan WarmedFreshTtl = TimeSpan.FromSeconds(90);
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
@@ -422,7 +468,6 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                         {
                             ApplyZaloChannelDefaults(zaloWriteObj, isWrite: true);
                             body = System.Text.Encoding.UTF8.GetBytes(zaloWriteObj.ToJsonString());
-                            _zaloChannelOverrides[agentKey] = body;
                             cache.Remove($"agent360:proxy:{agentKey}:config/channels");
                             cache.Remove($"agent360:browser-mcp-bind:{agentKey}");
                             if (zaloWriteObj["enabled"]?.GetValue<bool>() == true)
@@ -492,26 +537,99 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     if (clean.Equals("config/channels/zalo", StringComparison.OrdinalIgnoreCase) &&
                         !response.IsSuccessStatusCode)
                     {
-                        byte[] fallbackZalo;
-                        if (body is not null && !HttpMethods.IsGet(context.Request.Method))
+                        var zaloNode = (body is not null && !HttpMethods.IsGet(context.Request.Method) &&
+                                        System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject parsedWrite)
+                            ? parsedWrite
+                            : new System.Text.Json.Nodes.JsonObject();
+                        ApplyZaloChannelDefaults(zaloNode, isWrite: !HttpMethods.IsGet(context.Request.Method));
+
+                        // Durable write-through: seed `zalo` directly into the agent's upstream `config/channels` map (agent.json)
+                        try
                         {
-                            fallbackZalo = NormalizeChannelResponseDefaults(clean, body, agentKey);
-                            _zaloChannelOverrides[agentKey] = fallbackZalo;
+                            using var allChGet = await routing.SendAsync(
+                                target.Instance!,
+                                HttpMethod.Get,
+                                $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/config/channels",
+                                agentProfileHeader: target.TargetAgentProfile,
+                                timeout: TimeSpan.FromSeconds(15),
+                                ct: ct);
+                            if (allChGet.IsSuccessStatusCode &&
+                                System.Text.Json.Nodes.JsonNode.Parse(await allChGet.Content.ReadAsByteArrayAsync(ct)) is System.Text.Json.Nodes.JsonObject allChObj)
+                            {
+                                if (HttpMethods.IsGet(context.Request.Method) &&
+                                    allChObj["zalo"] is System.Text.Json.Nodes.JsonObject existingUpstreamZalo)
+                                {
+                                    ApplyZaloChannelDefaults(existingUpstreamZalo, isWrite: false);
+                                    zaloNode = existingUpstreamZalo;
+                                }
+                                else
+                                {
+                                    allChObj["zalo"] = System.Text.Json.Nodes.JsonNode.Parse(zaloNode.ToJsonString());
+                                    var mergedBytes = System.Text.Encoding.UTF8.GetBytes(allChObj.ToJsonString());
+                                    using var allChPut = await routing.SendAsync(
+                                        target.Instance!,
+                                        HttpMethod.Put,
+                                        $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/config/channels",
+                                        () =>
+                                        {
+                                            var c = new ByteArrayContent(mergedBytes);
+                                            c.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                                            return c;
+                                        },
+                                        target.TargetAgentProfile,
+                                        TimeSpan.FromSeconds(15),
+                                        ct: ct);
+                                    cache.Remove($"agent360:proxy:{agentKey}:config/channels");
+                                }
+                            }
                         }
-                        else if (_zaloChannelOverrides.TryGetValue(agentKey, out var existingZalo))
-                        {
-                            fallbackZalo = NormalizeChannelResponseDefaults(clean, existingZalo, agentKey);
-                        }
-                        else
-                        {
-                            fallbackZalo = NormalizeChannelResponseDefaults(clean, System.Text.Encoding.UTF8.GetBytes("{}"), agentKey);
-                        }
-                        return Results.Bytes(SecretRedaction.RedactJson(fallbackZalo), "application/json");
+                        catch { }
+
+                        ApplyZaloChannelDefaults(zaloNode, isWrite: false);
+                        var seededBytes = System.Text.Encoding.UTF8.GetBytes(zaloNode.ToJsonString());
+                        return Results.Bytes(SecretRedaction.RedactJson(seededBytes), "application/json");
                     }
 
                     if (cacheable && response.IsSuccessStatusCode)
                     {
-                        var payload = NormalizeChannelResponseDefaults(clean, await response.Content.ReadAsByteArrayAsync(ct), agentKey);
+                        var rawRead = await response.Content.ReadAsByteArrayAsync(ct);
+                        if (clean.Equals("config/channels", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                if (System.Text.Json.Nodes.JsonNode.Parse(rawRead) is System.Text.Json.Nodes.JsonObject chMap &&
+                                    chMap["zalo"] is not System.Text.Json.Nodes.JsonObject)
+                                {
+                                    var seedZalo = new System.Text.Json.Nodes.JsonObject();
+                                    ApplyZaloChannelDefaults(seedZalo, isWrite: true);
+                                    chMap["zalo"] = seedZalo;
+                                    var seedBody = System.Text.Encoding.UTF8.GetBytes(chMap.ToJsonString());
+                                    _ = Task.Run(async () =>
+                                    {
+                                        try
+                                        {
+                                            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                                            using var _ = await routing.SendAsync(
+                                                target.Instance!,
+                                                HttpMethod.Put,
+                                                $"agents/{Uri.EscapeDataString(target.TargetAgentProfile)}/config/channels",
+                                                () =>
+                                                {
+                                                    var c = new ByteArrayContent(seedBody);
+                                                    c.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                                                    return c;
+                                                },
+                                                target.TargetAgentProfile,
+                                                TimeSpan.FromSeconds(10),
+                                                ct: cts.Token);
+                                        }
+                                        catch { }
+                                    });
+                                }
+                            }
+                            catch { }
+                        }
+                        var payload = NormalizeChannelResponseDefaults(clean, rawRead, agentKey);
                         var type = response.Content.Headers.ContentType?.ToString() ?? "application/json";
                         cache.Set(cacheKey, new CachedResponse(payload, type), TimeSpan.FromSeconds(30));
                         cache.Set(lastGoodKey, new CachedResponse(payload, type), TimeSpan.FromMinutes(30));

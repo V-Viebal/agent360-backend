@@ -100,4 +100,61 @@ public class AgentChatSyncStreamEndpointTests
         manager.IsSessionTurnActive(sid).Should().BeFalse();
         manager.GetActiveSessionIds().Should().NotContain(sid);
     }
+
+    [Fact]
+    public async Task GetChatHistoryRawAsync_CoalescesConcurrentReads_AndServesLastGoodOnTransientTimeout()
+    {
+        var calls = 0;
+        var shouldFail = false;
+        var chatId = Guid.NewGuid().ToString();
+        var mockHandler = new DelegatingMockHandler(req =>
+        {
+            if (req.RequestUri?.AbsolutePath.Contains("chats/" + chatId) == true)
+            {
+                Interlocked.Increment(ref calls);
+                if (shouldFail)
+                {
+                    throw new TaskCanceledException("simulated single-worker saturation");
+                }
+                Thread.Sleep(40);
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new System.Net.Http.StringContent("{\"messages\":[{\"id\":\"m1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":\"ok\"}],\"status\":\"idle\"}", System.Text.Encoding.UTF8, "application/json")
+                };
+            }
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent("[]", System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+
+        var httpClient = new System.Net.Http.HttpClient(mockHandler);
+        var routing = new FleetInstanceRoutingService(httpClient, Microsoft.Extensions.Logging.Abstractions.NullLogger<FleetInstanceRoutingService>.Instance);
+        var cache = new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        var client = new QwenPawClient(
+            httpClient,
+            routing,
+            Microsoft.Extensions.Options.Options.Create(new Agent360.API.Options.QwenPawOptions()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<QwenPawClient>.Instance,
+            cache);
+        var ct = TestContext.Current.CancellationToken;
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ => client.GetChatHistoryRawAsync(chatId, "mons", ct)));
+        calls.Should().Be(1, "concurrent reads within 1.5s TTL must share one upstream request");
+        results.Should().AllSatisfy(r => r.Should().Contain("\"m1\""));
+
+        // Expire short fresh cache and simulate transient upstream timeout -> should serve last-good snapshot
+        cache.Remove($"agent360:chat-history:mons:{chatId.ToLowerInvariant()}");
+        shouldFail = true;
+        var fallback = await client.GetChatHistoryRawAsync(chatId, "mons", ct);
+        fallback.Should().Contain("\"m1\"");
+    }
+
+    private sealed class DelegatingMockHandler(Func<System.Net.Http.HttpRequestMessage, System.Net.Http.HttpResponseMessage> handler) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(handler(request));
+        }
+    }
 }

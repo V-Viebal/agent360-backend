@@ -1141,6 +1141,8 @@ public sealed class SessionRoomStore
         if (string.IsNullOrEmpty(rawStr)) return rawStr;
         var idx = rawStr.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
         if (idx < 0) idx = rawStr.IndexOf("[AGENTTEAMS COLLABORATION ROOM", StringComparison.OrdinalIgnoreCase);
+        var skyerAwareIdx = rawStr.IndexOf("[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]", StringComparison.OrdinalIgnoreCase);
+        if (skyerAwareIdx >= 0 && (idx < 0 || skyerAwareIdx < idx)) idx = skyerAwareIdx;
         if (idx < 0) return rawStr;
 
         var head = rawStr[..idx].TrimEnd();

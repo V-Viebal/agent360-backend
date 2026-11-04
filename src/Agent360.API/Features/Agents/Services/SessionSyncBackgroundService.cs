@@ -15,7 +15,7 @@ public sealed class SessionSyncBackgroundService(
     SessionMultiplexerHub multiplexerHub,
     ILogger<SessionSyncBackgroundService> logger) : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3.0);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5.0);
     private readonly ConcurrentDictionary<string, string> _activeTrackedSessions = new(StringComparer.OrdinalIgnoreCase);
 
     // Per-agent known session fingerprints: agentKey -> (chatId -> (Name, UpdatedAt, Status))
@@ -47,6 +47,13 @@ public sealed class SessionSyncBackgroundService(
         using var scope = scopeFactory.CreateScope();
         var client = scope.ServiceProvider.GetRequiredService<IQwenPawClient>();
         var routing = scope.ServiceProvider.GetRequiredService<IFleetInstanceRoutingService>();
+
+        bool hasConnectedClients = multiplexerHub.ConnectedWebSocketsCount > 0 || multiplexerHub.ConnectedSseCount > 0;
+        var activeAgentKeys = queueManager.GetActiveAgentSessions().Keys;
+        if (!hasConnectedClients && !activeAgentKeys.Any() && _activeTrackedSessions.IsEmpty && _cycleCounter % 6 != 0)
+        {
+            return;
+        }
 
         // 1. Hot agents: primary agents, agents with active turns, and agents recently viewed by connected clients
         var agentsToCheck = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "mons", "default" };
@@ -156,6 +163,8 @@ public sealed class SessionSyncBackgroundService(
 
                 var cleanName = rawName ?? "";
                 var ctxIdx = cleanName.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                var skyerIdx = cleanName.IndexOf("[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]", StringComparison.OrdinalIgnoreCase);
+                if (skyerIdx >= 0 && (ctxIdx < 0 || skyerIdx < ctxIdx)) ctxIdx = skyerIdx;
                 if (ctxIdx >= 0) cleanName = cleanName[..ctxIdx].TrimEnd();
 
                 var isRunning = string.Equals(status, "running", StringComparison.OrdinalIgnoreCase) ||

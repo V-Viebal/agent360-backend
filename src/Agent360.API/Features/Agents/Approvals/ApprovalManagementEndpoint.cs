@@ -52,7 +52,7 @@ public sealed class ApprovalManagementEndpoint : IEndpoint
                             await context.Response.WriteAsync(": ping\n\n", cancellationToken);
                         }
                         await context.Response.Body.FlushAsync(cancellationToken);
-                        await Task.Delay(3000, cancellationToken);
+                        await Task.Delay(10000, cancellationToken);
                     }
                     catch (OperationCanceledException)
                     {
