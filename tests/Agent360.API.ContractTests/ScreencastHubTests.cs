@@ -131,22 +131,22 @@ public sealed class ScreencastHubTests : IAsyncLifetime
     [Fact]
     public void NormalizeViewportFitsWithinNativeSurfaceWithoutTiling()
     {
-        // Desktop FullHD logical viewport: 1920x1080 stays 1920x1080 while ComputeBackingScale maps it inside the 1408x771 surface without tiling
+        // Desktop viewport fits proportionally inside the 1408x771 native surface at 1:1 scale so 100% of the frame is filled without right/bottom padding
         var (fhdW, fhdH) = ScreencastHub.NormalizeViewport(1920, 1080, 1408, 771, isMobileDevice: false);
-        fhdW.Should().Be(1920);
-        fhdH.Should().Be(1080);
+        fhdW.Should().Be(1371);
+        fhdH.Should().Be(771);
         var fhdScale = ScreencastHub.ComputeBackingScale(fhdW, fhdH, 1408, 771, isMobileDevice: false);
+        fhdScale.Should().Be(1.0);
         ((int)Math.Round(fhdW * fhdScale)).Should().BeLessThanOrEqualTo(1408);
         ((int)Math.Round(fhdH * fhdScale)).Should().BeLessThanOrEqualTo(771);
 
-        // When frontend requests 1312x960 (aspect 1.3667), Desktop FullHD logical viewport scales proportionally to 1476x1080
+        // When frontend requests 1312x960 (aspect 1.3667) on 1440x813 surface, it fits to 1111x813 at 1:1 scale
         var (w1, h1) = ScreencastHub.NormalizeViewport(1312, 960, 1440, 813, isMobileDevice: false);
-        w1.Should().Be(1476);
-        h1.Should().Be(1080);
+        w1.Should().Be(1111);
+        h1.Should().Be(813);
         Math.Abs(((double)w1 / h1) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
         var s1 = ScreencastHub.ComputeBackingScale(w1, h1, 1440, 813, isMobileDevice: false);
-        ((int)Math.Round(w1 * s1)).Should().Be(1111);
-        ((int)Math.Round(h1 * s1)).Should().Be(813);
+        s1.Should().Be(1.0);
 
         // Mobile device viewport (390x660) preserves genuine mobile width (< 640) at 1:1 scale
         var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);

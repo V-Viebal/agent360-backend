@@ -369,29 +369,19 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 return (Math.Max(320, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
             }
 
-            // Desktop FullHD Scale: Always normalize the logical CSS viewport up to FullHD (1920px wide, or 1080px tall)
-            // while preserving the exact aspect ratio of the client's browser panel!
-            if (w < 1920)
-            {
-                var up = 1920.0 / w;
-                w = 1920.0;
-                h *= up;
-            }
-            var fhdCap = Math.Min(1.0, Math.Min(1920.0 / w, 1080.0 / h));
-            if (fhdCap < 1.0)
-            {
-                w *= fhdCap;
-                h *= fhdCap;
-            }
+            // Desktop Full-Surface Scale: Fit the logical CSS viewport proportionally up to the full native surface bounds
+            // (maxSurfaceW x maxSurfaceH, e.g. 1440x813 or up to 1920x1080) at 1:1 scale so the webpage fills 100% of the frame with zero white bars!
+            double deskBoundW = Math.Clamp(maxSurfaceW, 640, 1920);
+            double deskBoundH = Math.Clamp(maxSurfaceH, 480, 1080);
+            var fitScale = Math.Min(deskBoundW / Math.Max(1.0, w), deskBoundH / Math.Max(1.0, h));
+            w *= fitScale;
+            h *= fitScale;
             return (Math.Max(640, (int)Math.Round(w)), Math.Max(360, (int)Math.Round(h)));
         }
 
         internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false)
         {
-            double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
-            double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
-            var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
-            return Math.Round(Math.Clamp(scale, 0.35, 1.0), 4);
+            return 1.0;
         }
 
         public bool MatchesViewport(int rawW, int rawH, bool? isMobileDevice = null)
