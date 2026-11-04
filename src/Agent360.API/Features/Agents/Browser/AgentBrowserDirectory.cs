@@ -643,6 +643,124 @@ public sealed class AgentBrowserDirectory(
 
     internal sealed record CdpTarget(string TargetId, string Type, string Title, string Url, string? BrowserContextId);
 
+    private async Task<(ClientWebSocket? Socket, SemaphoreSlim Lock)> AcquireBrowserSocketAsync(string cdpUrl, CancellationToken ct)
+    {
+        var entry = _browserSockets.GetOrAdd(cdpUrl, _ => (new ClientWebSocket(), new SemaphoreSlim(1, 1)));
+        await entry.Lock.WaitAsync(ct);
+        var ws = entry.Socket;
+        if (ws.State != WebSocketState.Open)
+        {
+            try { ws.Dispose(); } catch { }
+            ws = new ClientWebSocket();
+            ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+            var http = httpClientFactory.CreateClient(HttpClientName);
+            var version = await http.GetFromJsonAsync<JsonObject>($"{cdpUrl.TrimEnd('/')}/json/version", ct);
+            var browserWs = version?["webSocketDebuggerUrl"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("CDP did not return a browser websocket");
+            var wsUri = new UriBuilder(browserWs) { Host = new Uri(cdpUrl).Host, Port = new Uri(cdpUrl).Port }.Uri;
+            await ws.ConnectAsync(wsUri, ct);
+            entry = (ws, entry.Lock);
+            _browserSockets[cdpUrl] = entry;
+        }
+        return entry;
+    }
+
+    public async Task<(bool Ok, string? CreatedTargetId)> ManageTabOverBrowserSocketAsync(
+        string cdpUrl,
+        string fallbackTargetId,
+        string? browserContextId,
+        BrowserInputRequest req,
+        CancellationToken ct)
+    {
+        var action = (req.Action ?? "").Trim().ToLowerInvariant();
+        if (action is not ("new_tab" or "close_tab" or "activate_tab")) return (false, null);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(2200));
+        SemaphoreSlim? heldLock = null;
+        try
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                var entry = await AcquireBrowserSocketAsync(cdpUrl, cts.Token);
+                heldLock = entry.Lock;
+                var ws = entry.Socket!;
+                try
+                {
+                    if (action == "new_tab")
+                    {
+                        var newUrl = !string.IsNullOrWhiteSpace(req.Text) ? req.Text.Trim() : "https://www.google.com";
+                        object createParams = !string.IsNullOrEmpty(browserContextId)
+                            ? new { url = newUrl, browserContextId }
+                            : new { url = newUrl };
+                        var msg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9001, method = "Target.createTarget", @params = createParams });
+                        await ws.SendAsync(msg, WebSocketMessageType.Text, true, cts.Token);
+                        var buffer = new byte[64 * 1024];
+                        using var ms = new MemoryStream();
+                        string? createdId = null;
+                        while (true)
+                        {
+                            ms.SetLength(0);
+                            WebSocketReceiveResult r;
+                            do
+                            {
+                                r = await ws.ReceiveAsync(buffer, cts.Token);
+                                if (r.MessageType == WebSocketMessageType.Close) throw new WebSocketException("Browser CDP socket closed");
+                                ms.Write(buffer, 0, r.Count);
+                            } while (!r.EndOfMessage);
+                            using var doc = JsonDocument.Parse(ms.GetBuffer().AsMemory(0, (int)ms.Length));
+                            if (doc.RootElement.TryGetProperty("id", out var idProp) && idProp.GetInt32() == 9001)
+                            {
+                                if (doc.RootElement.TryGetProperty("result", out var res) && res.TryGetProperty("targetId", out var tidProp))
+                                {
+                                    createdId = tidProp.GetString();
+                                }
+                                break;
+                            }
+                        }
+                        if (!string.IsNullOrEmpty(createdId))
+                        {
+                            var actMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9002, method = "Target.activateTarget", @params = new { targetId = createdId } });
+                            await ws.SendAsync(actMsg, WebSocketMessageType.Text, true, cts.Token);
+                            return (true, createdId);
+                        }
+                        return (false, null);
+                    }
+                    if (action == "close_tab")
+                    {
+                        var closeId = !string.IsNullOrWhiteSpace(req.PageId) ? req.PageId : fallbackTargetId;
+                        var closeMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9003, method = "Target.closeTarget", @params = new { targetId = closeId } });
+                        await ws.SendAsync(closeMsg, WebSocketMessageType.Text, true, cts.Token);
+                        return (true, null);
+                    }
+                    if (action == "activate_tab")
+                    {
+                        var actId = !string.IsNullOrWhiteSpace(req.PageId) ? req.PageId : fallbackTargetId;
+                        var actMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9004, method = "Target.activateTarget", @params = new { targetId = actId } });
+                        await ws.SendAsync(actMsg, WebSocketMessageType.Text, true, cts.Token);
+                        return (true, actId);
+                    }
+                }
+                catch when (attempt == 0)
+                {
+                    try { ws.Dispose(); } catch { }
+                    _browserSockets[cdpUrl] = (new ClientWebSocket(), heldLock);
+                    heldLock.Release();
+                    heldLock = null;
+                }
+            }
+            return (false, null);
+        }
+        catch
+        {
+            return (false, null);
+        }
+        finally
+        {
+            heldLock?.Release();
+        }
+    }
+
     private async Task<IReadOnlyList<CdpTarget>> ListTargetsAsync(string cdpUrl, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);

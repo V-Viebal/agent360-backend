@@ -14,7 +14,28 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 {
     private static readonly TimeSpan IdleLinger = TimeSpan.FromMinutes(3);
     private readonly ConcurrentDictionary<string, Session> _sessions = new();
+    private readonly ConcurrentDictionary<string, (int W, int H)> _knownNativeSurfaces = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
+
+    public void PrewarmSession(string cdpUrl, string targetId, int maxWidth = 1920, int quality = 88, int initialWidth = 0, int initialHeight = 0, bool isMobileDevice = false)
+    {
+        if (string.IsNullOrEmpty(cdpUrl) || string.IsNullOrEmpty(targetId)) return;
+        var cappedMaxW = Math.Clamp(maxWidth, 800, 1920);
+        var key = Key(cdpUrl, targetId, cappedMaxW);
+        lock (_gate)
+        {
+            if (!_sessions.TryGetValue(key, out var existing))
+            {
+                var s = new Session(key, cdpUrl, targetId, cappedMaxW, quality, initialWidth, initialHeight, this, logger, isMobileDevice);
+                _sessions[key] = s;
+                s.StartWarmLinger();
+            }
+            else if (initialWidth >= 320 && initialHeight >= 240 && !existing.MatchesViewport(initialWidth, initialHeight, isMobileDevice))
+            {
+                _ = existing.TryDispatchInputAsync(new BrowserInputRequest("resize", Width: initialWidth, Height: initialHeight, IsMobile: isMobileDevice, DeviceType: isMobileDevice ? "phone" : "desktop"), CancellationToken.None);
+            }
+        }
+    }
 
     public int ActiveSessions => _sessions.Count;
 
@@ -330,6 +351,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             _logger = logger;
             _currentQuality = Math.Clamp(quality, 52, 92);
             _isMobileViewport = isMobileDevice;
+            if (hub._knownNativeSurfaces.TryGetValue(cdpUrl, out var knownSurf) && knownSurf.W >= 640 && knownSurf.H >= 480)
+            {
+                _nativeSurfaceMaxW = knownSurf.W;
+                _nativeSurfaceMaxH = knownSurf.H;
+            }
             if (initialWidth >= 320 && initialHeight >= 240)
             {
                 var (nw, nh) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH, isMobileDevice);
@@ -671,12 +697,14 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.insertText", @params = new { text = normText } }, ct);
                     }
                     TriggerMotionSmoothBoost(ws, ct);
+                    PumpImmediateKeyFrameIfReady(ws, ct);
                 }
                 else if (action == "type" && !string.IsNullOrEmpty(req.Text))
                 {
                     var normText = req.Text.Normalize(System.Text.NormalizationForm.FormC);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.insertText", @params = new { text = normText } }, ct);
                     TriggerMotionSmoothBoost(ws, ct);
+                    PumpImmediateKeyFrameIfReady(ws, ct);
                 }
                 else if (action == "key" && !string.IsNullOrEmpty(req.Key))
                 {
@@ -809,6 +837,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         var jsCopy = $"(() => {{ try {{ const a = document.activeElement; let txt = ''; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) {{ const s = a.selectionStart || 0, e = a.selectionEnd || 0; if (e > s) txt = a.value.substring(s, e); }} if (!txt) txt = window.getSelection()?.toString() || ''; try {{ document.execCommand({isCut} ? 'cut' : 'copy'); }} catch {{}} return txt; }} catch {{ return ''; }} }})()";
                         _ = SafeSendAsync(ws, new { id = 780, method = "Runtime.evaluate", @params = new { expression = jsCopy, returnByValue = true } }, ct);
                     }
+                    TriggerMotionSmoothBoost(ws, ct);
+                    PumpImmediateKeyFrameIfReady(ws, ct);
                 }
                 else if (action == "clipboard_copy")
                 {
@@ -979,6 +1009,36 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 id = Interlocked.Increment(ref _cmdId),
                 method = "Page.startScreencast",
                 @params = new { format = "jpeg", quality = Volatile.Read(ref _currentQuality), maxWidth = width, maxHeight = height, everyNthFrame = 1 }
+            }, ct);
+        }
+
+        private void PumpImmediateKeyFrameIfReady(ClientWebSocket ws, CancellationToken ct)
+        {
+            var nowTick = Environment.TickCount64;
+            if (ws.State != WebSocketState.Open || ct.IsCancellationRequested) return;
+            if (Math.Abs(_backingScale - 1.0) > 0.01) return;
+            if (nowTick - Interlocked.Read(ref _lastScreencastFrameTick) < 16) return;
+            if (nowTick - Interlocked.Read(ref _lastPumpedSentTick) < 12) return;
+            if (Interlocked.CompareExchange(ref _inFlightPumpedCaptures, 1, 0) != 0)
+            {
+                if (nowTick - Interlocked.Read(ref _lastPumpedSentTick) > 120)
+                {
+                    Interlocked.Exchange(ref _inFlightPumpedCaptures, 0);
+                    if (Interlocked.CompareExchange(ref _inFlightPumpedCaptures, 1, 0) != 0) return;
+                }
+                else
+                {
+                    return;
+                }
+            }
+            Interlocked.Exchange(ref _lastPumpedSentTick, nowTick);
+            var pumpQuality = Math.Clamp(Volatile.Read(ref _currentQuality) - 6, 52, 72);
+            var pumpId = 100000 + (Interlocked.Increment(ref _cmdId) & 0xFFFFF);
+            _ = SafeSendAsync(ws, new
+            {
+                id = pumpId,
+                method = "Page.captureScreenshot",
+                @params = new { format = "jpeg", quality = pumpQuality, fromSurface = true, optimizeForSpeed = true }
             }, ct);
         }
 
@@ -1159,80 +1219,59 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await SafeSendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, ct);
                     await SafeSendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, ct);
                     await SafeSendAsync(ws, new { id = 14, method = "Page.bringToFront" }, ct);
-                    await SafeSendAsync(ws, new { id = 12, method = "Emulation.clearDeviceMetricsOverride" }, ct);
-                    await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
                     var initBuf = new byte[16 * 1024];
                     using var initMs = new MemoryStream();
-                    while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                    if (_hub._knownNativeSurfaces.TryGetValue(cdpUrl, out var cachedSurf) && cachedSurf.W >= 1300 && cachedSurf.H >= 480)
                     {
-                        initMs.SetLength(0);
-                        WebSocketReceiveResult ir;
-                        do
+                        _nativeSurfaceMaxW = cachedSurf.W;
+                        _nativeSurfaceMaxH = cachedSurf.H;
+                    }
+                    else
+                    {
+                        await SafeSendAsync(ws, new { id = 12, method = "Emulation.clearDeviceMetricsOverride" }, ct);
+                        await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
+                        while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
                         {
-                            ir = await ws.ReceiveAsync(initBuf, ct);
-                            if (ir.MessageType == WebSocketMessageType.Close) return;
-                            initMs.Write(initBuf, 0, ir.Count);
-                        } while (!ir.EndOfMessage);
-                        using var initDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
-                        if (initDoc.RootElement.TryGetProperty("id", out var probeId) && probeId.GetInt32() == 15)
+                            initMs.SetLength(0);
+                            WebSocketReceiveResult ir;
+                            do
+                            {
+                                ir = await ws.ReceiveAsync(initBuf, ct);
+                                if (ir.MessageType == WebSocketMessageType.Close) return;
+                                initMs.Write(initBuf, 0, ir.Count);
+                            } while (!ir.EndOfMessage);
+                            using var initDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
+                            if (initDoc.RootElement.TryGetProperty("id", out var probeId) && probeId.GetInt32() == 15)
+                            {
+                                try
+                                {
+                                    if (initDoc.RootElement.TryGetProperty("result", out var rProp) &&
+                                        rProp.TryGetProperty("result", out var innerR) &&
+                                        innerR.TryGetProperty("value", out var valProp) &&
+                                        valProp.ValueKind == JsonValueKind.String)
+                                    {
+                                        using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
+                                        var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
+                                        var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
+                                        if (sw >= 640 && sh >= 480)
+                                        {
+                                            _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
+                                            _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
+                                        }
+                                    }
+                                }
+                                catch { }
+                                break;
+                            }
+                        }
+                        // Self-heal unmaximized Wayland/X11 Chromium window surfaces (<1300px wide):
+                        // toggle normal (1440x900) -> maximized before applying Emulation.setDeviceMetricsOverride so the tab always renders at full 1408x771+ resolution!
+                        if (_nativeSurfaceMaxW < 1300)
                         {
                             try
                             {
-                                if (initDoc.RootElement.TryGetProperty("result", out var rProp) &&
-                                    rProp.TryGetProperty("result", out var innerR) &&
-                                    innerR.TryGetProperty("value", out var valProp) &&
-                                    valProp.ValueKind == JsonValueKind.String)
-                                {
-                                    using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
-                                    var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
-                                    var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
-                                    if (sw >= 640 && sh >= 480)
-                                    {
-                                        _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
-                                        _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
-                                    }
-                                }
-                            }
-                            catch { }
-                            break;
-                        }
-                    }
-                    // Self-heal unmaximized Wayland/X11 Chromium window surfaces (<1300px wide):
-                    // toggle normal (1440x900) -> maximized before applying Emulation.setDeviceMetricsOverride so the tab always renders at full 1408x771+ resolution!
-                    if (_nativeSurfaceMaxW < 1300)
-                    {
-                        try
-                        {
-                            await SafeSendAsync(ws, new { id = 16, method = "Browser.getWindowForTarget", @params = new { targetId } }, ct);
-                            int winId = 0;
-                            while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
-                            {
-                                initMs.SetLength(0);
-                                WebSocketReceiveResult ir;
-                                do
-                                {
-                                    ir = await ws.ReceiveAsync(initBuf, ct);
-                                    if (ir.MessageType == WebSocketMessageType.Close) return;
-                                    initMs.Write(initBuf, 0, ir.Count);
-                                } while (!ir.EndOfMessage);
-                                using var winDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
-                                if (winDoc.RootElement.TryGetProperty("id", out var widAck) && widAck.GetInt32() == 16)
-                                {
-                                    if (winDoc.RootElement.TryGetProperty("result", out var wRes) &&
-                                        wRes.TryGetProperty("windowId", out var widProp) &&
-                                        widProp.TryGetInt32(out var parsedWid))
-                                    {
-                                        winId = parsedWid;
-                                    }
-                                    break;
-                                }
-                            }
-                            if (winId > 0)
-                            {
-                                await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, ct);
-                                await SafeSendAsync(ws, new { id = 18, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { windowState = "maximized" } } }, ct);
-                                await Task.Delay(80, ct);
-                                await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
+                                await SafeSendAsync(ws, new { id = 16, method = "Browser.getWindowForTarget", @params = new { targetId } }, ct);
+                                int winId = 0;
                                 while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
                                 {
                                     initMs.SetLength(0);
@@ -1243,29 +1282,62 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                         if (ir.MessageType == WebSocketMessageType.Close) return;
                                         initMs.Write(initBuf, 0, ir.Count);
                                     } while (!ir.EndOfMessage);
-                                    using var reDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
-                                    if (reDoc.RootElement.TryGetProperty("id", out var reId) && reId.GetInt32() == 19)
+                                    using var winDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
+                                    if (winDoc.RootElement.TryGetProperty("id", out var widAck) && widAck.GetInt32() == 16)
                                     {
-                                        if (reDoc.RootElement.TryGetProperty("result", out var rProp) &&
-                                            rProp.TryGetProperty("result", out var innerR) &&
-                                            innerR.TryGetProperty("value", out var valProp) &&
-                                            valProp.ValueKind == JsonValueKind.String)
+                                        if (winDoc.RootElement.TryGetProperty("result", out var wRes) &&
+                                            wRes.TryGetProperty("windowId", out var widProp) &&
+                                            widProp.TryGetInt32(out var parsedWid))
                                         {
-                                            using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
-                                            var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
-                                            var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
-                                            if (sw >= 640 && sh >= 480)
-                                            {
-                                                _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
-                                                _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
-                                            }
+                                            winId = parsedWid;
                                         }
                                         break;
                                     }
                                 }
+                                if (winId > 0)
+                                {
+                                    await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, ct);
+                                    await SafeSendAsync(ws, new { id = 18, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { windowState = "maximized" } } }, ct);
+                                    await Task.Delay(80, ct);
+                                    await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
+                                    while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                                    {
+                                        initMs.SetLength(0);
+                                        WebSocketReceiveResult ir;
+                                        do
+                                        {
+                                            ir = await ws.ReceiveAsync(initBuf, ct);
+                                            if (ir.MessageType == WebSocketMessageType.Close) return;
+                                            initMs.Write(initBuf, 0, ir.Count);
+                                        } while (!ir.EndOfMessage);
+                                        using var reDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
+                                        if (reDoc.RootElement.TryGetProperty("id", out var reId) && reId.GetInt32() == 19)
+                                        {
+                                            if (reDoc.RootElement.TryGetProperty("result", out var rProp) &&
+                                                rProp.TryGetProperty("result", out var innerR) &&
+                                                innerR.TryGetProperty("value", out var valProp) &&
+                                                valProp.ValueKind == JsonValueKind.String)
+                                            {
+                                                using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
+                                                var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
+                                                var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
+                                                if (sw >= 640 && sh >= 480)
+                                                {
+                                                    _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
+                                                    _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
                             }
+                            catch { }
                         }
-                        catch { }
+                        if (_nativeSurfaceMaxW >= 1300 && _nativeSurfaceMaxH >= 480)
+                        {
+                            _hub._knownNativeSurfaces[cdpUrl] = (_nativeSurfaceMaxW, _nativeSurfaceMaxH);
+                        }
                     }
                     var (w, h) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
                     var initScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);

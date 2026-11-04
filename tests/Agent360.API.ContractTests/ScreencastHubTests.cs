@@ -159,4 +159,20 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         mw2.Should().Be(356);
         mh2.Should().Be(771);
     }
+
+    [Fact]
+    public async Task PrewarmSessionCreatesReadySessionForNewTab()
+    {
+        var hub = _api.Services.GetRequiredService<ScreencastHub>();
+        var cdpUrl = _cdpBase.ToString().TrimEnd('/');
+        hub.PrewarmSession(cdpUrl, "T2", 1920, 88, 0, 0, isMobileDevice: false);
+
+        for (int i = 0; i < 20 && hub.LatestFrame(cdpUrl, "T2") is null; i++)
+        {
+            await Task.Delay(30, Ct);
+        }
+
+        hub.ActiveSessions.Should().BeGreaterThanOrEqualTo(1);
+        hub.RetireTarget(cdpUrl, "T2");
+    }
 }

@@ -131,16 +131,30 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
                 bool ok = false;
                 string? createdTargetId = null;
-                if (hub is not null)
+                if (act is "new_tab" or "close_tab" or "activate_tab")
                 {
-                    if (act is "new_tab" or "close_tab" or "activate_tab")
+                    // Primary fast path: persistent Browser-level CDP WebSocket (~5ms, zero dependency on page main-thread JS)
+                    (ok, createdTargetId) = await directory.ManageTabOverBrowserSocketAsync(cdp!, page.TargetId, contextId, safeReq, ct);
+                    if (ok && act == "close_tab" && hub is not null)
+                    {
+                        var closedTarget = !string.IsNullOrWhiteSpace(safeReq.PageId) ? safeReq.PageId : page.TargetId;
+                        hub.RetireTarget(cdp!, closedTarget);
+                    }
+                    if (!ok && hub is not null)
                     {
                         (ok, createdTargetId) = await hub.TryManageTabOverWarmSessionAsync(cdp!, page.TargetId, contextId, safeReq, ct);
                     }
-                    else
+                    if (ok && act == "new_tab" && !string.IsNullOrEmpty(createdTargetId) && hub is not null)
                     {
-                        ok = await hub.TryDispatchOverWarmSessionAsync(cdp!, page.TargetId, safeReq, ct);
+                        var isMobNew = safeReq.IsMobile == true || string.Equals(safeReq.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                        var initW = safeReq.Width is >= 320 ? safeReq.Width.Value : (isMobNew ? 390 : 1920);
+                        var initH = safeReq.Height is >= 240 ? safeReq.Height.Value : (isMobNew ? 720 : 1080);
+                        hub.PrewarmSession(cdp!, createdTargetId, 1920, 88, initW, initH, isMobNew);
                     }
+                }
+                else if (hub is not null)
+                {
+                    ok = await hub.TryDispatchOverWarmSessionAsync(cdp!, page.TargetId, safeReq, ct);
                 }
                 if (!ok)
                 {
