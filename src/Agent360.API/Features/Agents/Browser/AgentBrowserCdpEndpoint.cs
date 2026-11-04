@@ -421,11 +421,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     {
                         seed = await CachedScreenshotAsync(gate, context.RequestServices.GetRequiredService<IMemoryCache>(), cdp!, page.TargetId);
                     }
-                    if (info?.Tabs is { Count: > 1 } allTabs && initVw >= 320 && initVh >= 240)
-                    {
-                        var otherIds = allTabs.Where(t => !t.Anchor && t.TargetId != page.TargetId).Select(t => t.TargetId).ToList();
-                        hub.WarmTabsInBackground(cdp!, otherIds, maxWidth, quality, initVw, initVh, isMobileDevice);
-                    }
+                    // Do not call WarmTabsInBackground on inactive tabs: background Session startup calls Page.bringToFront + Browser.setWindowBounds across the same window and resets Emulation.setDeviceMetricsOverride on the active tab!
                     var useBinary = context.Request.Query["bin"] == "1";
                     await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct, initVw, initVh, useBinary, isMobileDevice);
                 }

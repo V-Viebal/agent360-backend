@@ -309,6 +309,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private int _latestPumpedRespId;
         private long _lastBroadcastTick;
         private long _lastScreencastFrameTick;
+        private long _lastMetricsHealTick;
         private readonly object _scrollLock = new();
         private int _scrollEvalInFlight;
         private double _pendingScrollDx;
@@ -448,8 +449,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             var targetAspect = _viewportW / Math.Max(1.0, _viewportH);
             var frameAspect = (double)jw / Math.Max(1, jh);
             var matchesBacking = Math.Abs(jw - expectedBackingW) <= 18 && Math.Abs(jh - expectedBackingH) <= 18;
-            var matchesLogical = Math.Abs(jw - _viewportW) <= 18 && Math.Abs(jh - _viewportH) <= 18;
-            return (matchesBacking || matchesLogical) && Math.Abs(frameAspect - targetAspect) <= 0.035;
+            return matchesBacking && Math.Abs(frameAspect - targetAspect) <= 0.035;
         }
         public int ViewerCount { get { lock (_viewers) return _viewers.Count; } }
 
@@ -531,7 +531,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         if (!string.IsNullOrEmpty(createdId))
                         {
                             _ = SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Target.activateTarget", @params = new { targetId = createdId } }, CancellationToken.None);
-                            _hub.WarmTabsInBackground(_cdpUrl, [createdId], _maxWidth, _currentQuality, (int)Math.Round(_viewportW), (int)Math.Round(_viewportH), _isMobileViewport);
                             return (true, createdId);
                         }
                     }
@@ -909,19 +908,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         }
                     }, ct);
                     await RestartScreencastAsync(ws, capW, capH, ct);
-                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
-                    _ = Task.Run(async () =>
+                    if (Math.Abs(nextScale - 1.0) <= 0.01)
                     {
-                        try
-                        {
-                            await Task.Delay(120, ct);
-                            if (ws.State == WebSocketState.Open)
-                            {
-                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
-                            }
-                        }
-                        catch { }
-                    }, ct);
+                        _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                    }
                 }
                 return true;
             }
@@ -1005,6 +995,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private void PumpHighSpeedFrameIfNeeded(ClientWebSocket ws, CancellationToken ct, long nowTick)
         {
             if (ws.State != WebSocketState.Open || ct.IsCancellationRequested) return;
+            if (Math.Abs(_backingScale - 1.0) > 0.01) return;
             if (nowTick > Interlocked.Read(ref _activeMotionUntilTick)) return;
             // Native VSync priority: when Page.startScreencast is actively delivering compositor frames (<24ms), avoid competing Page.captureScreenshot surface readbacks
             if (nowTick - Interlocked.Read(ref _lastScreencastFrameTick) < 24) return;
@@ -1325,20 +1316,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         }
                     }
                     await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = capW, maxHeight = capH, everyNthFrame = 1 } }, ct);
-                    // Fire an immediate fast snapshot (id=888) + follow-up at 160ms so tabs broadcast their first live frame with zero round-trip wait!
-                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
-                    _ = Task.Run(async () =>
+                    if (Math.Abs(initScale - 1.0) <= 0.01)
                     {
-                        try
-                        {
-                            await Task.Delay(160, ct);
-                            if (ws.State == WebSocketState.Open)
-                            {
-                                await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
-                            }
-                        }
-                        catch { }
-                    }, ct);
+                        _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                    }
                 }
                 else
                 {
@@ -1490,33 +1471,41 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     {
                         var dw = meta.TryGetProperty("deviceWidth", out var dwProp) ? dwProp.GetDouble() : _viewportW;
                         var dh = meta.TryGetProperty("deviceHeight", out var dhProp) ? dhProp.GetDouble() : _viewportH;
-                        if (Math.Abs(dw - _viewportW) > 16 || Math.Abs(dh - _viewportH) > 16)
+                        var expectedBackingW = _viewportW * _backingScale;
+                        var expectedBackingH = _viewportH * _backingScale;
+                        var matchesLogicalMeta = Math.Abs(dw - _viewportW) <= 20 && Math.Abs(dh - _viewportH) <= 20;
+                        var matchesBackingMeta = Math.Abs(dw - expectedBackingW) <= 20 && Math.Abs(dh - expectedBackingH) <= 20;
+                        if (!matchesLogicalMeta && !matchesBackingMeta)
                         {
                             var sidDrop = p.GetProperty("sessionId").GetInt32();
                             _ = SafeSendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = sidDrop } }, ct);
-                            var w = (int)Math.Round(_viewportW);
-                            var h = (int)Math.Round(_viewportH);
-                            var healScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
-                            _backingScale = healScale;
-                            var capW = Math.Max(320, (int)Math.Round(w * healScale));
-                            var capH = Math.Max(240, (int)Math.Round(h * healScale));
-                            await SafeSendAsync(ws, new
+                            var nowHeal = Environment.TickCount64;
+                            if (nowHeal - Interlocked.Read(ref _lastMetricsHealTick) >= 1200)
                             {
-                                id = Interlocked.Increment(ref _cmdId),
-                                method = "Emulation.setDeviceMetricsOverride",
-                                @params = new
+                                Interlocked.Exchange(ref _lastMetricsHealTick, nowHeal);
+                                var w = (int)Math.Round(_viewportW);
+                                var h = (int)Math.Round(_viewportH);
+                                var healScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
+                                _backingScale = healScale;
+                                var capW = Math.Max(320, (int)Math.Round(w * healScale));
+                                var capH = Math.Max(240, (int)Math.Round(h * healScale));
+                                await SafeSendAsync(ws, new
                                 {
-                                    width = w,
-                                    height = h,
-                                    deviceScaleFactor = 1,
-                                    scale = healScale,
-                                    mobile = _isMobileViewport,
-                                    screenWidth = w,
-                                    screenHeight = h
-                                }
-                            }, ct);
-                            await RestartScreencastAsync(ws, capW, capH, ct);
-                            _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                                    id = Interlocked.Increment(ref _cmdId),
+                                    method = "Emulation.setDeviceMetricsOverride",
+                                    @params = new
+                                    {
+                                        width = w,
+                                        height = h,
+                                        deviceScaleFactor = 1,
+                                        scale = healScale,
+                                        mobile = _isMobileViewport,
+                                        screenWidth = w,
+                                        screenHeight = h
+                                    }
+                                }, ct);
+                                await RestartScreencastAsync(ws, capW, capH, ct);
+                            }
                             continue;
                         }
                     }
@@ -1530,10 +1519,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     _ = SafeSendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = frameSessionId } }, ct);
                     Interlocked.Exchange(ref _lastScreencastFrameTick, Environment.TickCount64);
                     var data = p.GetProperty("data").GetString() ?? "";
-                    if (!Broadcast(data) && _hasTargetViewport)
-                    {
-                        _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
-                    }
+                    _ = Broadcast(data);
                     if (Environment.TickCount64 - Interlocked.Read(ref _lastScrollMetricsTick) >= 240)
                     {
                         ProbeScrollMetrics(ws, ct, force: false);
