@@ -248,6 +248,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
     internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
     internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH, isMobileDevice);
+    internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.ComputeBackingScale(cssW, cssH, maxSurfaceW, maxSurfaceH, isMobileDevice);
 
     internal static byte[] Frame(string base64Jpeg) =>
         JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = base64Jpeg } });
@@ -294,6 +295,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private double _viewportH = 813;
         private int _nativeSurfaceMaxW = 1440;
         private int _nativeSurfaceMaxH = 813;
+        private double _backingScale = 1.0;
         private bool _isMobileViewport;
         private bool _hasTargetViewport;
         private int _currentQuality = 88;
@@ -332,6 +334,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 var (nw, nh) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH, isMobileDevice);
                 _viewportW = nw;
                 _viewportH = nh;
+                _backingScale = ComputeBackingScale(nw, nh, _nativeSurfaceMaxW, _nativeSurfaceMaxH, isMobileDevice);
                 _hasTargetViewport = true;
             }
             _ = RunAsync(cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, isMobileDevice);
@@ -354,31 +357,48 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     w = 360;
                     h *= up;
                 }
+                double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
+                double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
+                var scaleDown = Math.Min(1.0, Math.Min(boundW / w, boundH / h));
+                if (scaleDown < 1.0)
+                {
+                    w *= scaleDown;
+                    h *= scaleDown;
+                }
+                return (Math.Max(320, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
             }
-            else if (w < 560)
+
+            // Desktop FullHD Scale: Always normalize the logical CSS viewport up to FullHD (1920px wide, or 1080px tall)
+            // while preserving the exact aspect ratio of the client's browser panel!
+            if (w < 1920)
             {
-                var up = 640.0 / w;
-                w = 640;
+                var up = 1920.0 / w;
+                w = 1920.0;
                 h *= up;
             }
-            // Fit proportionally inside the tab's backing surface (default 1440x813, or probed native surface)
-            // so Emulation.setDeviceMetricsOverride never exceeds the X11/compositor texture and never tiles edges!
+            var fhdCap = Math.Min(1.0, Math.Min(1920.0 / w, 1080.0 / h));
+            if (fhdCap < 1.0)
+            {
+                w *= fhdCap;
+                h *= fhdCap;
+            }
+            return (Math.Max(640, (int)Math.Round(w)), Math.Max(360, (int)Math.Round(h)));
+        }
+
+        internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false)
+        {
             double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
             double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
-            var scaleDown = Math.Min(1.0, Math.Min(boundW / w, boundH / h));
-            if (scaleDown < 1.0)
-            {
-                w *= scaleDown;
-                h *= scaleDown;
-            }
-            return (Math.Max(320, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
+            var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
+            return Math.Round(Math.Clamp(scale, 0.35, 1.0), 4);
         }
+
         public bool MatchesViewport(int rawW, int rawH, bool? isMobileDevice = null)
         {
             var wantMobile = isMobileDevice ?? _isMobileViewport;
             if (wantMobile != _isMobileViewport) return false;
             var (w, h) = NormalizeViewport(rawW, rawH, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
-            return Math.Abs(_viewportW - w) <= 8 && Math.Abs(_viewportH - h) <= 8;
+            return Math.Abs(_viewportW - w) <= 12 && Math.Abs(_viewportH - h) <= 12;
         }
 
         internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes)
@@ -423,9 +443,13 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             if (!_hasTargetViewport) return true;
             var (jw, jh) = ReadJpegDimensions(jpegBytes);
             if (jw <= 0 || jh <= 0) return true;
+            var expectedBackingW = _viewportW * _backingScale;
+            var expectedBackingH = _viewportH * _backingScale;
             var targetAspect = _viewportW / Math.Max(1.0, _viewportH);
             var frameAspect = (double)jw / Math.Max(1, jh);
-            return Math.Abs(jw - _viewportW) <= 16 && Math.Abs(jh - _viewportH) <= 16 && Math.Abs(frameAspect - targetAspect) <= 0.03;
+            var matchesBacking = Math.Abs(jw - expectedBackingW) <= 18 && Math.Abs(jh - expectedBackingH) <= 18;
+            var matchesLogical = Math.Abs(jw - _viewportW) <= 18 && Math.Abs(jh - _viewportH) <= 18;
+            return (matchesBacking || matchesLogical) && Math.Abs(frameAspect - targetAspect) <= 0.035;
         }
         public int ViewerCount { get { lock (_viewers) return _viewers.Count; } }
 
@@ -854,17 +878,21 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     var wantMobile = req.IsMobile ?? string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                     var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
-                    if (_isMobileViewport == wantMobile && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4)
+                    var nextScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
+                    if (_isMobileViewport == wantMobile && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4 && Math.Abs(_backingScale - nextScale) <= 0.005)
                     {
                         return true;
                     }
                     _viewportW = w;
                     _viewportH = h;
+                    _backingScale = nextScale;
                     _isMobileViewport = wantMobile;
                     _hasTargetViewport = true;
                     LastFrame = null;
                     LastBinaryFrame = null;
                     LastFrameBase64 = null;
+                    var capW = Math.Max(320, (int)Math.Round(w * nextScale));
+                    var capH = Math.Max(240, (int)Math.Round(h * nextScale));
                     await SafeSendAsync(ws, new
                     {
                         id = Interlocked.Increment(ref _cmdId),
@@ -874,12 +902,13 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             width = w,
                             height = h,
                             deviceScaleFactor = 1,
+                            scale = nextScale,
                             mobile = wantMobile,
                             screenWidth = w,
                             screenHeight = h
                         }
                     }, ct);
-                    await RestartScreencastAsync(ws, w, h, ct);
+                    await RestartScreencastAsync(ws, capW, capH, ct);
                     _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                     _ = Task.Run(async () =>
                     {
@@ -1258,8 +1287,12 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         catch { }
                     }
                     var (w, h) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
+                    var initScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
                     _viewportW = w;
                     _viewportH = h;
+                    _backingScale = initScale;
+                    var capW = Math.Max(320, (int)Math.Round(w * initScale));
+                    var capH = Math.Max(240, (int)Math.Round(h * initScale));
                     await SafeSendAsync(ws, new
                     {
                         id = 13,
@@ -1269,6 +1302,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             width = w,
                             height = h,
                             deviceScaleFactor = 1,
+                            scale = initScale,
                             mobile = _isMobileViewport,
                             screenWidth = w,
                             screenHeight = h
@@ -1290,7 +1324,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             break;
                         }
                     }
-                    await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = w, maxHeight = h, everyNthFrame = 1 } }, ct);
+                    await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = capW, maxHeight = capH, everyNthFrame = 1 } }, ct);
                     // Fire an immediate fast snapshot (id=888) + follow-up at 160ms so tabs broadcast their first live frame with zero round-trip wait!
                     _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                     _ = Task.Run(async () =>
@@ -1462,6 +1496,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             _ = SafeSendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = sidDrop } }, ct);
                             var w = (int)Math.Round(_viewportW);
                             var h = (int)Math.Round(_viewportH);
+                            var healScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
+                            _backingScale = healScale;
+                            var capW = Math.Max(320, (int)Math.Round(w * healScale));
+                            var capH = Math.Max(240, (int)Math.Round(h * healScale));
                             await SafeSendAsync(ws, new
                             {
                                 id = Interlocked.Increment(ref _cmdId),
@@ -1471,12 +1509,13 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                     width = w,
                                     height = h,
                                     deviceScaleFactor = 1,
+                                    scale = healScale,
                                     mobile = _isMobileViewport,
                                     screenWidth = w,
                                     screenHeight = h
                                 }
                             }, ct);
-                            await RestartScreencastAsync(ws, w, h, ct);
+                            await RestartScreencastAsync(ws, capW, capH, ct);
                             _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                             continue;
                         }

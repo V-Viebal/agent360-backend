@@ -131,30 +131,28 @@ public sealed class ScreencastHubTests : IAsyncLifetime
     [Fact]
     public void NormalizeViewportFitsWithinNativeSurfaceWithoutTiling()
     {
-        // When frontend requests 1312x960 (aspect 1.3667) on a 1095x900 native surface, it scales down proportionally to 1095x801
-        var (w1, h1) = ScreencastHub.NormalizeViewport(1312, 960, 1095, 900);
-        w1.Should().Be(1095);
-        h1.Should().Be(801);
+        // Desktop FullHD logical viewport: 1920x1080 stays 1920x1080 while ComputeBackingScale maps it inside the 1408x771 surface without tiling
+        var (fhdW, fhdH) = ScreencastHub.NormalizeViewport(1920, 1080, 1408, 771, isMobileDevice: false);
+        fhdW.Should().Be(1920);
+        fhdH.Should().Be(1080);
+        var fhdScale = ScreencastHub.ComputeBackingScale(fhdW, fhdH, 1408, 771, isMobileDevice: false);
+        ((int)Math.Round(fhdW * fhdScale)).Should().BeLessThanOrEqualTo(1408);
+        ((int)Math.Round(fhdH * fhdScale)).Should().BeLessThanOrEqualTo(771);
+
+        // When frontend requests 1312x960 (aspect 1.3667), Desktop FullHD logical viewport scales proportionally to 1476x1080
+        var (w1, h1) = ScreencastHub.NormalizeViewport(1312, 960, 1440, 813, isMobileDevice: false);
+        w1.Should().Be(1476);
+        h1.Should().Be(1080);
         Math.Abs(((double)w1 / h1) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
+        var s1 = ScreencastHub.ComputeBackingScale(w1, h1, 1440, 813, isMobileDevice: false);
+        ((int)Math.Round(w1 * s1)).Should().Be(1111);
+        ((int)Math.Round(h1 * s1)).Should().Be(813);
 
-        // When frontend requests 1312x960 on a 1440x813 native surface, it scales down proportionally to 1111x813
-        var (w2, h2) = ScreencastHub.NormalizeViewport(1312, 960, 1440, 813);
-        w2.Should().Be(1111);
-        h2.Should().Be(813);
-        Math.Abs(((double)w2 / h2) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
-
-        // Mobile device viewport (390x660) preserves genuine mobile width (< 640) while desktop forces >= 640
+        // Mobile device viewport (390x660) preserves genuine mobile width (< 640) at 1:1 scale
         var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);
         mw1.Should().Be(390);
         mh1.Should().Be(660);
-
-        var (dw1, dh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: false);
-        dw1.Should().Be(456);
-        dh1.Should().Be(771);
-
-        var (dw2, dh2) = ScreencastHub.NormalizeViewport(420, 460, 1408, 771, isMobileDevice: false);
-        dw2.Should().Be(640);
-        dh2.Should().Be(701);
+        ScreencastHub.ComputeBackingScale(mw1, mh1, 1408, 771, isMobileDevice: true).Should().Be(1.0);
 
         // Tall mobile viewport (390x844) clamps height to native surface (771) and preserves aspect ratio (356x771)
         var (mw2, mh2) = ScreencastHub.NormalizeViewport(390, 844, 1408, 771, isMobileDevice: true);

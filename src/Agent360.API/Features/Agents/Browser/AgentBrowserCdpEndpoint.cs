@@ -1052,6 +1052,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             {
                 var isMobileResize = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                 var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileResize);
+                var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileResize);
                 var rId = ++id;
                 await SendAsync(ws, new
                 {
@@ -1062,6 +1063,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         width = w,
                         height = h,
                         deviceScaleFactor = 1,
+                        scale = backingScale,
                         mobile = isMobileResize,
                         screenWidth = w,
                         screenHeight = h
