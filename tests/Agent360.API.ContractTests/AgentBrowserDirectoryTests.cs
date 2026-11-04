@@ -242,6 +242,44 @@ public sealed class AgentBrowserDirectoryTests
         zaloBrowserRes!.HasBrowserMcp.Should().BeTrue();
         zaloBrowserRes.Profile.Should().Be("Default");
         zaloBrowserRes.ViewerUrl.Should().Be("https://browser-test.antares.vn");
+
+        var monsDynamicMcpJson = """
+        {
+          "id": "mons",
+          "mcp": {
+            "clients": {
+              "browser-cdp-mcp-server": {
+                "name": "browser-cdp-mcp-server",
+                "enabled": true,
+                "command": "node",
+                "args": ["/app/working.secret/.agent/mcps/browser-cdp-mcp-server/index.js"],
+                "env": {
+                  "BROWSER_CDP_BINDING_FILE": "/app/working/.tmp/gm-runtime-binding.json",
+                  "BROWSER_CDP_URL": "http://browser-gm-21er:9223",
+                  "BROWSER_PROFILE_NAME": "Default",
+                  "BROWSER_CDP_DYNAMIC": "1"
+                }
+              },
+              "chrome-devtools": {
+                "name": "chrome-devtools",
+                "enabled": true,
+                "command": "node",
+                "args": ["/app/working.secret/.agent/mcps/chrome-devtools-wrapper.js"],
+                "env": {
+                  "BROWSER_CDP_URL": "http://127.0.0.1:9222"
+                }
+              }
+            }
+          }
+        }
+        """;
+        var monsRes = AgentBrowserDirectory.ResolveFromAgentProfileJson(monsDynamicMcpJson, "core", "mons");
+        monsRes.Should().NotBeNull();
+        monsRes!.HasBrowserMcp.Should().BeTrue();
+        monsRes.InstanceKey.Should().Be("core");
+        monsRes.Service.Should().Be("chromium-browser-q4yu");
+        monsRes.CdpUrl.Should().Be("http://100.76.185.111:19222");
+        monsRes.Profile.Should().Be("Default");
     }
 
     private sealed class NoHttpFactory : IHttpClientFactory

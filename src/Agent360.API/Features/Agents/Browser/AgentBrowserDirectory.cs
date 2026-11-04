@@ -253,6 +253,7 @@ public sealed class AgentBrowserDirectory(
                 return null;
             }
 
+            DynamicMcpBrowserResolution? fallbackCrossInstance = null;
             foreach (var kv in clients)
             {
                 if (kv.Value is not JsonObject clientObj) continue;
@@ -269,6 +270,8 @@ public sealed class AgentBrowserDirectory(
                     ?? env?["CHROME_DEVTOOLS_BROWSER_URL"]?.ToString();
                 var bindingFile = env?["BROWSER_CDP_BINDING_FILE"]?.ToString();
                 var explicitProfile = env?["BROWSER_PROFILE_NAME"]?.ToString();
+                var isDynamicMultiTarget = string.Equals(env?["BROWSER_CDP_DYNAMIC"]?.ToString(), "1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(env?["BROWSER_CDP_DYNAMIC"]?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
 
                 var isBrowserMcp = !string.IsNullOrWhiteSpace(cdpUrlRaw)
                     || !string.IsNullOrWhiteSpace(bindingFile)
@@ -282,6 +285,14 @@ public sealed class AgentBrowserDirectory(
                 if (!isBrowserMcp) continue;
 
                 var matchedKey = MatchBrowserInstanceKey(cdpUrlRaw, bindingFile, key, name) ?? defaultInstanceKey;
+                // When a dynamic multi-target browser MCP client (BROWSER_CDP_DYNAMIC=1) carries another instance as its default env,
+                // keep the agent bound to its own home instance browser instead of hijacking its primary browser to a foreign node.
+                if (isDynamicMultiTarget && !string.Equals(matchedKey, defaultInstanceKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchedKey = defaultInstanceKey;
+                    explicitProfile = null;
+                }
+
                 Services.TryGetValue(matchedKey, out var matchedSvc);
                 Services.TryGetValue(defaultInstanceKey, out var defaultSvc);
                 var svc = matchedSvc ?? defaultSvc;
@@ -296,13 +307,23 @@ public sealed class AgentBrowserDirectory(
                     resolvedProfile = p;
                 }
 
-                return new DynamicMcpBrowserResolution(
+                var candidate = new DynamicMcpBrowserResolution(
                     HasBrowserMcp: true,
                     InstanceKey: matchedKey,
                     Service: svc?.Service,
                     ViewerUrl: svc?.ViewerUrl,
                     CdpUrl: svc?.CdpUrl,
                     Profile: resolvedProfile);
+
+                if (string.Equals(matchedKey, defaultInstanceKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+                fallbackCrossInstance ??= candidate;
+            }
+            if (fallbackCrossInstance is not null)
+            {
+                return fallbackCrossInstance;
             }
 
             // If the Zalo channel is enabled on this agent, allow resolving the built-in browser service/profile
