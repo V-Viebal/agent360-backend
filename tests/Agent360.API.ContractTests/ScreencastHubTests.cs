@@ -148,16 +148,20 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         var s1 = ScreencastHub.ComputeBackingScale(w1, h1, 1440, 813, isMobileDevice: false);
         s1.Should().Be(1.0);
 
-        // Mobile device viewport (390x660) preserves genuine mobile width (< 640) and exact aspect ratio at 1:1 scale
+        // Mobile device viewport (390x660) preserves genuine mobile width (390) and exact aspect ratio
         var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);
         mw1.Should().Be(390);
         mh1.Should().Be(660);
         ScreencastHub.ComputeBackingScale(mw1, mh1, 1408, 771, isMobileDevice: true).Should().Be(1.0);
 
-        // Tall mobile viewport (390x844) clamps height to native surface (771) and preserves exact aspect ratio (356x771)
-        var (mw2, mh2) = ScreencastHub.NormalizeViewport(390, 844, 1408, 771, isMobileDevice: true);
-        mw2.Should().Be(356);
-        mh2.Should().Be(771);
+        // Tall mobile viewport (390x844 on 1125x633 or 1408x771 surface) preserves full 390x844 CSS layout and scales backing surface proportionally
+        var (mw2, mh2) = ScreencastHub.NormalizeViewport(390, 844, 1125, 633, isMobileDevice: true);
+        mw2.Should().Be(390);
+        mh2.Should().Be(844);
+        var ms2 = ScreencastHub.ComputeBackingScale(mw2, mh2, 1125, 633, isMobileDevice: true);
+        ms2.Should().BeApproximately(633.0 / 844.0, 0.001);
+        ((int)Math.Round(mw2 * ms2)).Should().Be(292);
+        ((int)Math.Round(mh2 * ms2)).Should().Be(633);
     }
 
     [Fact]
