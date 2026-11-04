@@ -373,7 +373,11 @@ public sealed class AgentBrowserDirectory(
         var (ok, _, service, _, _, profile) = await ResolveDynamicAsync(agentId, ct);
         if (!ok || profile is null) return null;
         var key = $"agent360:browser:{service}:{profile}";
-        if (cache.TryGetValue(key, out AgentBrowserInfo? cached) && cached is not null)
+        if (!cache.TryGetValue(key, out AgentBrowserInfo? cached) || cached is null)
+        {
+            cached = await GetAsync(agentId, ct);
+        }
+        if (cached is not null)
         {
             var nextTabs = mutator(cached.Tabs.ToList());
             var updated = cached with { Tabs = nextTabs };
@@ -441,19 +445,35 @@ public sealed class AgentBrowserDirectory(
             }
             else if (ctx is not null)
             {
-                // Upgrade any legacy bodyless anchor tab (which renders 100% blank white #FFFFFF) to the styled dark-theme anchor
-                var bodylessAnchor = all.FirstOrDefault(t =>
-                    t.Type == "page"
-                    && t.BrowserContextId == ctx
-                    && ProfileOf(t.Url) == profile
-                    && !t.Url.Contains("<body", StringComparison.OrdinalIgnoreCase));
-                if (bodylessAnchor is not null)
+                var ctxPages = all.Where(t => t.Type == "page" && t.BrowserContextId == ctx && !_recentlyClosedTargets.ContainsKey(t.TargetId)).ToList();
+                var uncapturablePage = ctxPages.Count > 0 && ctxPages.All(t => !AgentBrowserCdpEndpoint.IsCapturable(t.Url))
+                    ? ctxPages[0]
+                    : null;
+                if (uncapturablePage is not null)
                 {
                     try
                     {
-                        await NavigateTargetAsync(cdp, bodylessAnchor.TargetId, BuildAnchorUrl(profile, target.TargetAgentProfile), ct);
+                        await NavigateTargetAsync(cdp, uncapturablePage.TargetId, BuildAnchorUrl(profile, target.TargetAgentProfile), ct);
+                        all = await ListTargetsAsync(cdp, ct);
                     }
                     catch { }
+                }
+                else
+                {
+                    // Upgrade any legacy bodyless anchor tab (which renders 100% blank white #FFFFFF) to the styled dark-theme anchor
+                    var bodylessAnchor = all.FirstOrDefault(t =>
+                        t.Type == "page"
+                        && t.BrowserContextId == ctx
+                        && ProfileOf(t.Url) == profile
+                        && !t.Url.Contains("<body", StringComparison.OrdinalIgnoreCase));
+                    if (bodylessAnchor is not null)
+                    {
+                        try
+                        {
+                            await NavigateTargetAsync(cdp, bodylessAnchor.TargetId, BuildAnchorUrl(profile, target.TargetAgentProfile), ct);
+                        }
+                        catch { }
+                    }
                 }
             }
 
@@ -698,6 +718,7 @@ public sealed class AgentBrowserDirectory(
                         var buffer = new byte[64 * 1024];
                         using var ms = new MemoryStream();
                         string? createdId = null;
+                        bool contextRejected = false;
                         while (true)
                         {
                             ms.SetLength(0);
@@ -715,7 +736,79 @@ public sealed class AgentBrowserDirectory(
                                 {
                                     createdId = tidProp.GetString();
                                 }
+                                else if (doc.RootElement.TryGetProperty("error", out _))
+                                {
+                                    contextRejected = true;
+                                }
                                 break;
+                            }
+                        }
+                        // Non-Default disk profiles (--profile-directory=Profile N) reject browserContextId in Target.createTarget.
+                        // Open the new tab inside the exact profile context via Target.attachToTarget + userGesture window.open on fallbackTargetId!
+                        if (string.IsNullOrEmpty(createdId) && contextRejected && !string.IsNullOrEmpty(fallbackTargetId))
+                        {
+                            var discMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9010, method = "Target.setDiscoverTargets", @params = new { discover = true } });
+                            await ws.SendAsync(discMsg, WebSocketMessageType.Text, true, cts.Token);
+                            var attMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9011, method = "Target.attachToTarget", @params = new { targetId = fallbackTargetId, flatten = true } });
+                            await ws.SendAsync(attMsg, WebSocketMessageType.Text, true, cts.Token);
+                            string? attachedSessionId = null;
+                            while (string.IsNullOrEmpty(createdId))
+                            {
+                                ms.SetLength(0);
+                                WebSocketReceiveResult r;
+                                do
+                                {
+                                    r = await ws.ReceiveAsync(buffer, cts.Token);
+                                    if (r.MessageType == WebSocketMessageType.Close) throw new WebSocketException("Browser CDP socket closed");
+                                    ms.Write(buffer, 0, r.Count);
+                                } while (!r.EndOfMessage);
+                                using var doc = JsonDocument.Parse(ms.GetBuffer().AsMemory(0, (int)ms.Length));
+                                if (doc.RootElement.TryGetProperty("id", out var idProp))
+                                {
+                                    var mid = idProp.GetInt32();
+                                    if (mid == 9011)
+                                    {
+                                        if (doc.RootElement.TryGetProperty("result", out var rProp) && rProp.TryGetProperty("sessionId", out var sidProp))
+                                        {
+                                            attachedSessionId = sidProp.GetString();
+                                            var escapedUrl = JsonSerializer.Serialize(newUrl);
+                                            var openExpr = $"window.open({escapedUrl}, '_blank') ? true : false";
+                                            var evalMsg = JsonSerializer.SerializeToUtf8Bytes(new
+                                            {
+                                                sessionId = attachedSessionId,
+                                                id = 9012,
+                                                method = "Runtime.evaluate",
+                                                @params = new { expression = openExpr, userGesture = true, returnByValue = true }
+                                            });
+                                            await ws.SendAsync(evalMsg, WebSocketMessageType.Text, true, cts.Token);
+                                        }
+                                        else
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                                else if (doc.RootElement.TryGetProperty("method", out var mProp) &&
+                                         mProp.GetString() == "Target.targetCreated" &&
+                                         doc.RootElement.TryGetProperty("params", out var pProp) &&
+                                         pProp.TryGetProperty("targetInfo", out var tiProp))
+                                {
+                                    var tType = tiProp.TryGetProperty("type", out var tp) ? tp.GetString() : "";
+                                    var tId = tiProp.TryGetProperty("targetId", out var tidp) ? tidp.GetString() : null;
+                                    var tCtx = tiProp.TryGetProperty("browserContextId", out var ctxp) ? ctxp.GetString() : null;
+                                    var tOpener = tiProp.TryGetProperty("openerId", out var opp) ? opp.GetString() : null;
+                                    if (tType == "page" && !string.IsNullOrEmpty(tId) && tId != fallbackTargetId &&
+                                        (tOpener == fallbackTargetId || (!string.IsNullOrEmpty(browserContextId) && tCtx == browserContextId)))
+                                    {
+                                        createdId = tId;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!string.IsNullOrEmpty(attachedSessionId))
+                            {
+                                var detMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9013, method = "Target.detachFromTarget", @params = new { sessionId = attachedSessionId } });
+                                _ = ws.SendAsync(detMsg, WebSocketMessageType.Text, true, CancellationToken.None);
                             }
                         }
                         if (!string.IsNullOrEmpty(createdId))

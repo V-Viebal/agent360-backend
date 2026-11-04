@@ -182,7 +182,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                             list.Add(createdTab);
                         }
                         return list;
-                    }, ct);
+                    }, ct) ?? [createdTab];
                 }
                 else if (act == "close_tab")
                 {
@@ -575,8 +575,18 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         // Only targets inside the agent's own browser context are eligible; a foreign pageId is rejected.
         var page = string.IsNullOrEmpty(pageId)
             ? DefaultTab(info.Tabs)
-            : info.Tabs.FirstOrDefault(t => t.TargetId == pageId);
-        return page is null ? (null, null, null, $"No tab of agent '{agentId}' matches") : (page, info.CdpUrl, info.BrowserContextId, null);
+            : (info.Tabs.FirstOrDefault(t => t.TargetId == pageId) ?? DefaultTab(info.Tabs));
+        if (page is null)
+        {
+            info = await directory.GetAsync(agentId, ct, forceRefresh: true);
+            if (info is not null && info.CdpReachable && info.ProfileWindowOpen)
+            {
+                page = string.IsNullOrEmpty(pageId)
+                    ? DefaultTab(info.Tabs)
+                    : (info.Tabs.FirstOrDefault(t => t.TargetId == pageId) ?? DefaultTab(info.Tabs));
+            }
+        }
+        return page is null ? (null, null, null, $"No tab of agent '{agentId}' matches") : (page, info!.CdpUrl, info.BrowserContextId, null);
     }
 
     private static async Task<bool> ActivateAsync(IHttpClientFactory httpFactory, string cdpUrl, string targetId, string? targetContextId, CancellationToken ct)
