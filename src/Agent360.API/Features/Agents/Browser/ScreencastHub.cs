@@ -378,10 +378,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             double h = Math.Max(240, rawH);
             if (isMobileDevice)
             {
-                if (w < 560)
+                if (w < 360)
                 {
-                    var up = 560.0 / w;
-                    w = 560;
+                    var up = 360.0 / w;
+                    w = 360;
                     h *= up;
                 }
                 double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
@@ -392,12 +392,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     w *= scaleDown;
                     h *= scaleDown;
                 }
-                if (w < 560 && boundW >= 560)
-                {
-                    w = 560;
-                    h = Math.Min(boundH, Math.Max(320, h));
-                }
-                return (Math.Max(360, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
+                return (Math.Max(320, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
             }
 
             // Desktop Full-Surface Scale: Fit the logical CSS viewport proportionally up to the full native surface bounds
