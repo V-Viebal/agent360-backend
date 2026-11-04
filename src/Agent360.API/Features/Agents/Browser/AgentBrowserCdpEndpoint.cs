@@ -1084,11 +1084,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         height = h,
                         deviceScaleFactor = 1,
                         scale = backingScale,
-                        mobile = isMobileResize,
+                        mobile = false,
                         screenWidth = w,
                         screenHeight = h
                     }
                 }, cts.Token);
+                await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
                 await ReceiveByIdAsync(ws, rId, cts.Token);
             }
 
