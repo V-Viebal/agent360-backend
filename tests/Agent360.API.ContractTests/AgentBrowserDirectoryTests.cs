@@ -223,6 +223,25 @@ public sealed class AgentBrowserDirectoryTests
         var noBrowserRes = AgentBrowserDirectory.ResolveFromAgentProfileJson(noBrowserJson, "monosbase", "default");
         noBrowserRes.Should().NotBeNull();
         noBrowserRes!.HasBrowserMcp.Should().BeFalse();
+
+        var zaloEnabledJson = """
+        {
+          "id": "default",
+          "channels": {
+            "zalo": { "enabled": true, "mode": "web" }
+          },
+          "mcp": {
+            "clients": {
+              "anysearch": { "name": "anysearch", "enabled": false }
+            }
+          }
+        }
+        """;
+        var zaloBrowserRes = AgentBrowserDirectory.ResolveFromAgentProfileJson(zaloEnabledJson, "qwenpaw-test", "default");
+        zaloBrowserRes.Should().NotBeNull();
+        zaloBrowserRes!.HasBrowserMcp.Should().BeTrue();
+        zaloBrowserRes.Profile.Should().Be("Default");
+        zaloBrowserRes.ViewerUrl.Should().Be("https://browser-test.antares.vn");
     }
 
     private sealed class NoHttpFactory : IHttpClientFactory

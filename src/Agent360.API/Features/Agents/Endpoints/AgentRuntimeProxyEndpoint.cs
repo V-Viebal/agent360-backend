@@ -100,10 +100,55 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         }
     }
 
-    internal static byte[] NormalizeChannelResponseDefaults(string cleanRoute, byte[] rawJson)
+    internal static void ApplyZaloChannelDefaults(System.Text.Json.Nodes.JsonObject zaloObj, bool isWrite)
+    {
+        if (zaloObj["enabled"] is null)
+        {
+            zaloObj["enabled"] = false;
+        }
+        if (string.IsNullOrWhiteSpace(zaloObj["mode"]?.ToString()))
+        {
+            zaloObj["mode"] = string.IsNullOrWhiteSpace(zaloObj["bot_token"]?.ToString()) ? "web" : "webhook";
+        }
+        if (zaloObj["show_typing"] is null)
+        {
+            zaloObj["show_typing"] = true;
+        }
+        if (zaloObj["access_control_dm"] is null)
+        {
+            zaloObj["access_control_dm"] = string.Equals(zaloObj["dm_policy"]?.ToString(), "allowlist", StringComparison.OrdinalIgnoreCase);
+        }
+        if (zaloObj["access_control_group"] is null)
+        {
+            zaloObj["access_control_group"] = string.Equals(zaloObj["group_policy"]?.ToString(), "allowlist", StringComparison.OrdinalIgnoreCase);
+        }
+        if (zaloObj["dm_policy"] is null)
+        {
+            zaloObj["dm_policy"] = zaloObj["access_control_dm"]?.GetValue<bool>() == true ? "allowlist" : "open";
+        }
+        if (zaloObj["group_policy"] is null)
+        {
+            zaloObj["group_policy"] = zaloObj["access_control_group"]?.GetValue<bool>() == true ? "allowlist" : "open";
+        }
+        if (zaloObj["no_text_debounce"] is null)
+        {
+            zaloObj["no_text_debounce"] = true;
+        }
+        if (zaloObj["require_mention"] is null)
+        {
+            zaloObj["require_mention"] = true;
+        }
+        if (string.IsNullOrWhiteSpace(zaloObj["group_monitor_mode"]?.ToString()))
+        {
+            zaloObj["group_monitor_mode"] = zaloObj["require_mention"]?.GetValue<bool>() == false ? "loud" : "silent";
+        }
+    }
+
+    internal static byte[] NormalizeChannelResponseDefaults(string cleanRoute, byte[] rawJson, string? agentKey = null)
     {
         if (!cleanRoute.Equals("config/channels", StringComparison.OrdinalIgnoreCase) &&
-            !cleanRoute.Equals("config/channels/telegram", StringComparison.OrdinalIgnoreCase))
+            !cleanRoute.Equals("config/channels/telegram", StringComparison.OrdinalIgnoreCase) &&
+            !cleanRoute.Equals("config/channels/zalo", StringComparison.OrdinalIgnoreCase))
         {
             return rawJson;
         }
@@ -115,9 +160,31 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 {
                     ApplyTelegramChannelDefaults(rootObj, isWrite: false);
                 }
-                else if (rootObj["telegram"] is System.Text.Json.Nodes.JsonObject tgChild)
+                else if (cleanRoute.Equals("config/channels/zalo", StringComparison.OrdinalIgnoreCase))
                 {
-                    ApplyTelegramChannelDefaults(tgChild, isWrite: false);
+                    ApplyZaloChannelDefaults(rootObj, isWrite: false);
+                }
+                else
+                {
+                    if (rootObj["telegram"] is System.Text.Json.Nodes.JsonObject tgChild)
+                    {
+                        ApplyTelegramChannelDefaults(tgChild, isWrite: false);
+                    }
+                    if (rootObj["zalo"] is not System.Text.Json.Nodes.JsonObject zaloChild)
+                    {
+                        if (!string.IsNullOrEmpty(agentKey) &&
+                            _zaloChannelOverrides.TryGetValue(agentKey, out var savedZalo) &&
+                            System.Text.Json.Nodes.JsonNode.Parse(savedZalo) is System.Text.Json.Nodes.JsonObject savedZaloObj)
+                        {
+                            zaloChild = savedZaloObj;
+                        }
+                        else
+                        {
+                            zaloChild = new System.Text.Json.Nodes.JsonObject();
+                        }
+                        rootObj["zalo"] = zaloChild;
+                    }
+                    ApplyZaloChannelDefaults(zaloChild, isWrite: false);
                 }
                 return System.Text.Encoding.UTF8.GetBytes(rootObj.ToJsonString());
             }
@@ -126,6 +193,80 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         return rawJson;
     }
 
+    private static async Task EnsureZaloWebBrowserOpenedAsync(
+        IFleetInstanceRoutingService routing,
+        ResolvedInstanceTarget target,
+        string agentId,
+        Agent360.API.Features.Agents.Browser.AgentBrowserDirectory? browserDir)
+    {
+        if (target.Instance is not null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var _ = await routing.SendAsync(
+                    target.Instance,
+                    HttpMethod.Post,
+                    "plugin/zalo/web-session/open",
+                    () => new StringContent("{}", System.Text.Encoding.UTF8, "application/json"),
+                    agentProfileHeader: target.TargetAgentProfile,
+                    timeout: TimeSpan.FromSeconds(10),
+                    ct: cts.Token);
+            }
+            catch { }
+        }
+        if (browserDir is not null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                var info = await browserDir.GetAsync(agentId, cts.Token, forceRefresh: true);
+                if (info is not null && info.CdpReachable && !string.IsNullOrWhiteSpace(info.CdpUrl))
+                {
+                    var zaloTab = info.Tabs.FirstOrDefault(t => !t.Anchor && (t.Url.Contains("zalo.me", StringComparison.OrdinalIgnoreCase)));
+                    var blankTab = info.Tabs.FirstOrDefault(t => !t.Anchor && (t.Url.StartsWith("chrome://newtab", StringComparison.OrdinalIgnoreCase) || t.Url == "about:blank" || t.Url.Contains("google.com", StringComparison.OrdinalIgnoreCase)));
+                    var cdpUri = new Uri(info.CdpUrl);
+                    if (zaloTab is not null)
+                    {
+                        using var ws = new System.Net.WebSockets.ClientWebSocket();
+                        await ws.ConnectAsync(new Uri($"ws://{cdpUri.Authority}/devtools/page/{Uri.EscapeDataString(zaloTab.TargetId)}"), cts.Token);
+                        var msg = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { id = 1, method = "Page.bringToFront" });
+                        await ws.SendAsync(msg, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                        await ws.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                    }
+                    else if (blankTab is not null)
+                    {
+                        using var ws = new System.Net.WebSockets.ClientWebSocket();
+                        await ws.ConnectAsync(new Uri($"ws://{cdpUri.Authority}/devtools/page/{Uri.EscapeDataString(blankTab.TargetId)}"), cts.Token);
+                        var nav = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { id = 1, method = "Page.navigate", @params = new { url = "https://chat.zalo.me" } });
+                        await ws.SendAsync(nav, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                        var front = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { id = 2, method = "Page.bringToFront" });
+                        await ws.SendAsync(front, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                        await ws.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                    }
+                    else
+                    {
+                        var anyPage = info.Tabs.FirstOrDefault();
+                        if (anyPage is not null)
+                        {
+                            using var ws = new System.Net.WebSockets.ClientWebSocket();
+                            await ws.ConnectAsync(new Uri($"ws://{cdpUri.Authority}/devtools/page/{Uri.EscapeDataString(anyPage.TargetId)}"), cts.Token);
+                            object createParams = !string.IsNullOrEmpty(info.BrowserContextId)
+                                ? new { url = "https://chat.zalo.me", browserContextId = info.BrowserContextId }
+                                : new { url = "https://chat.zalo.me" };
+                            var createMsg = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { id = 1, method = "Target.createTarget", @params = createParams });
+                            await ws.SendAsync(createMsg, System.Net.WebSockets.WebSocketMessageType.Text, true, cts.Token);
+                            await ws.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                        }
+                    }
+                    await browserDir.InvalidateCacheAsync(agentId, CancellationToken.None);
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _zaloChannelOverrides = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan WarmedFreshTtl = TimeSpan.FromSeconds(90);
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
@@ -276,11 +417,37 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                             ApplyTelegramChannelDefaults(tgWriteObj, isWrite: true);
                             body = System.Text.Encoding.UTF8.GetBytes(tgWriteObj.ToJsonString());
                         }
-                        else if (clean.Equals("config/channels", StringComparison.OrdinalIgnoreCase) &&
-                                 System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject chsWriteObj &&
-                                 chsWriteObj["telegram"] is System.Text.Json.Nodes.JsonObject tgNestedObj)
+                        else if (clean.Equals("config/channels/zalo", StringComparison.OrdinalIgnoreCase) &&
+                                 System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject zaloWriteObj)
                         {
-                            ApplyTelegramChannelDefaults(tgNestedObj, isWrite: true);
+                            ApplyZaloChannelDefaults(zaloWriteObj, isWrite: true);
+                            body = System.Text.Encoding.UTF8.GetBytes(zaloWriteObj.ToJsonString());
+                            _zaloChannelOverrides[agentKey] = body;
+                            cache.Remove($"agent360:proxy:{agentKey}:config/channels");
+                            cache.Remove($"agent360:browser-mcp-bind:{agentKey}");
+                            if (zaloWriteObj["enabled"]?.GetValue<bool>() == true)
+                            {
+                                var browserDir = context.RequestServices.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
+                                _ = Task.Run(() => EnsureZaloWebBrowserOpenedAsync(routing, target, agentId, browserDir));
+                            }
+                        }
+                        else if (clean.Equals("config/channels", StringComparison.OrdinalIgnoreCase) &&
+                                 System.Text.Json.Nodes.JsonNode.Parse(body) is System.Text.Json.Nodes.JsonObject chsWriteObj)
+                        {
+                            if (chsWriteObj["telegram"] is System.Text.Json.Nodes.JsonObject tgNestedObj)
+                            {
+                                ApplyTelegramChannelDefaults(tgNestedObj, isWrite: true);
+                            }
+                            if (chsWriteObj["zalo"] is System.Text.Json.Nodes.JsonObject zaloNestedObj)
+                            {
+                                ApplyZaloChannelDefaults(zaloNestedObj, isWrite: true);
+                                cache.Remove($"agent360:browser-mcp-bind:{agentKey}");
+                                if (zaloNestedObj["enabled"]?.GetValue<bool>() == true)
+                                {
+                                    var browserDir = context.RequestServices.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
+                                    _ = Task.Run(() => EnsureZaloWebBrowserOpenedAsync(routing, target, agentId, browserDir));
+                                }
+                            }
                             body = System.Text.Encoding.UTF8.GetBytes(chsWriteObj.ToJsonString());
                         }
                         else if (clean.Equals("workspace/running-config", StringComparison.OrdinalIgnoreCase) &&
@@ -322,9 +489,29 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                         clean.StartsWith("mcp", StringComparison.OrdinalIgnoreCase) ? TimeSpan.FromSeconds(45) : TimeSpan.FromSeconds(20),
                         ct: ct);
 
+                    if (clean.Equals("config/channels/zalo", StringComparison.OrdinalIgnoreCase) &&
+                        !response.IsSuccessStatusCode)
+                    {
+                        byte[] fallbackZalo;
+                        if (body is not null && !HttpMethods.IsGet(context.Request.Method))
+                        {
+                            fallbackZalo = NormalizeChannelResponseDefaults(clean, body, agentKey);
+                            _zaloChannelOverrides[agentKey] = fallbackZalo;
+                        }
+                        else if (_zaloChannelOverrides.TryGetValue(agentKey, out var existingZalo))
+                        {
+                            fallbackZalo = NormalizeChannelResponseDefaults(clean, existingZalo, agentKey);
+                        }
+                        else
+                        {
+                            fallbackZalo = NormalizeChannelResponseDefaults(clean, System.Text.Encoding.UTF8.GetBytes("{}"), agentKey);
+                        }
+                        return Results.Bytes(SecretRedaction.RedactJson(fallbackZalo), "application/json");
+                    }
+
                     if (cacheable && response.IsSuccessStatusCode)
                     {
-                        var payload = await response.Content.ReadAsByteArrayAsync(ct);
+                        var payload = NormalizeChannelResponseDefaults(clean, await response.Content.ReadAsByteArrayAsync(ct), agentKey);
                         var type = response.Content.Headers.ContentType?.ToString() ?? "application/json";
                         cache.Set(cacheKey, new CachedResponse(payload, type), TimeSpan.FromSeconds(30));
                         cache.Set(lastGoodKey, new CachedResponse(payload, type), TimeSpan.FromMinutes(30));
@@ -350,7 +537,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     if (mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
                     {
                         // Agent configs carry channel bot tokens and MCP env secrets: never return them raw.
-                        var rawBytes = NormalizeChannelResponseDefaults(clean, await response.Content.ReadAsByteArrayAsync(ct));
+                        var rawBytes = NormalizeChannelResponseDefaults(clean, await response.Content.ReadAsByteArrayAsync(ct), agentKey);
                         var json = SecretRedaction.RedactJson(rawBytes);
                         context.Response.Headers.ContentLength = json.Length;
                         await context.Response.Body.WriteAsync(json, ct);

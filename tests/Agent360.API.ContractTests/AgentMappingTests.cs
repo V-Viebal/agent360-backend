@@ -386,6 +386,23 @@ public sealed class AgentMappingTests
         Assert.True(root.GetProperty("require_mention").GetBoolean());
         Assert.True(root.GetProperty("no_text_debounce").GetBoolean());
         Assert.True(Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware.IsUserOwnedAgentWrite("agents/qwenpaw-test-ba/config/channels/telegram"));
+        Assert.True(Agent360.API.Features.Agents.Security.OperatorWriteGuardMiddleware.IsUserOwnedAgentWrite("agents/qwenpaw-test-ba/config/channels/zalo"));
+
+        const string rawChannelsJson = """
+        {
+          "console": { "enabled": true },
+          "telegram": { "enabled": false, "bot_token": "" }
+        }
+        """;
+        var normalizedChannels = Agent360.API.Features.Agents.Endpoints.AgentRuntimeProxyEndpoint.NormalizeChannelResponseDefaults(
+            "config/channels",
+            System.Text.Encoding.UTF8.GetBytes(rawChannelsJson));
+        using var chDoc = System.Text.Json.JsonDocument.Parse(normalizedChannels);
+        var zaloProp = chDoc.RootElement.GetProperty("zalo");
+        Assert.False(zaloProp.GetProperty("enabled").GetBoolean());
+        Assert.Equal("web", zaloProp.GetProperty("mode").GetString());
+        Assert.True(zaloProp.GetProperty("require_mention").GetBoolean());
+        Assert.Equal("silent", zaloProp.GetProperty("group_monitor_mode").GetString());
     }
 
     private sealed class StubMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler

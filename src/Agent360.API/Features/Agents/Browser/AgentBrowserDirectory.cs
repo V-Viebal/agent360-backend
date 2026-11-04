@@ -305,6 +305,21 @@ public sealed class AgentBrowserDirectory(
                     Profile: resolvedProfile);
             }
 
+            // If the Zalo channel is enabled on this agent, allow resolving the built-in browser service/profile
+            // so the user can sign into Zalo Web (https://chat.zalo.me) even before a browser MCP client is bound.
+            var zaloEnabled = root?["channels"]?["zalo"]?["enabled"]?.GetValue<bool>() ?? false;
+            if (zaloEnabled && Services.TryGetValue(defaultInstanceKey, out var zaloSvc) &&
+                zaloSvc.Profiles.TryGetValue(defaultAgentProfile, out var zaloProfile))
+            {
+                return new DynamicMcpBrowserResolution(
+                    HasBrowserMcp: true,
+                    InstanceKey: defaultInstanceKey,
+                    Service: zaloSvc.Service,
+                    ViewerUrl: zaloSvc.ViewerUrl,
+                    CdpUrl: zaloSvc.CdpUrl,
+                    Profile: zaloProfile);
+            }
+
             // Agent profile loaded cleanly and has no enabled browser MCP client -> fail closed.
             return new DynamicMcpBrowserResolution(false, null, null, null, null, null);
         }
