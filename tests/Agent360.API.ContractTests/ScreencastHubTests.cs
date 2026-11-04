@@ -148,15 +148,15 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         var s1 = ScreencastHub.ComputeBackingScale(w1, h1, 1440, 813, isMobileDevice: false);
         s1.Should().Be(1.0);
 
-        // Mobile device viewport (390x660) preserves genuine mobile width (< 640) at 1:1 scale
+        // Mobile device viewport (390x660) guarantees >= 560px logical width so hybrid login cards (e.g. Zalo 540px) never overflow horizontally while fitting within native surface (560x771)
         var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);
-        mw1.Should().Be(390);
-        mh1.Should().Be(660);
+        mw1.Should().Be(560);
+        mh1.Should().Be(771);
         ScreencastHub.ComputeBackingScale(mw1, mh1, 1408, 771, isMobileDevice: true).Should().Be(1.0);
 
-        // Tall mobile viewport (390x844) clamps height to native surface (771) and preserves aspect ratio (356x771)
+        // Tall mobile viewport (390x844) clamps height to native surface (771) and guarantees 560px width (560x771)
         var (mw2, mh2) = ScreencastHub.NormalizeViewport(390, 844, 1408, 771, isMobileDevice: true);
-        mw2.Should().Be(356);
+        mw2.Should().Be(560);
         mh2.Should().Be(771);
     }
 
