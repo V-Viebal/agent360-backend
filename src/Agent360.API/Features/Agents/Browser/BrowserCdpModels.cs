@@ -29,3 +29,10 @@ public sealed record BrowserInputRequest(
     int? Backspaces = null,
     bool? IsMobile = null,
     string? DeviceType = null);
+
+public sealed record BrowserVpnRequest(
+    bool Enabled = true,
+    string? Mode = "auto",
+    string? Region = null,
+    int? ProxyId = null,
+    string? ProxyUrl = null);

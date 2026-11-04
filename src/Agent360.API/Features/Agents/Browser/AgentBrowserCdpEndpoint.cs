@@ -44,6 +44,74 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             .RequireRateLimiting(RateLimitPolicy)
             .AllowAnonymous();
 
+        routeBuilder.MapGet(
+            "agents/{agentId}/browser/vpn",
+            async Task<IResult> (string agentId, HttpContext http, AgentBrowserDirectory directory, CancellationToken ct) =>
+            {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
+                var info = await directory.GetAsync(agentId, ct);
+                if (info is null)
+                {
+                    return TypedResults.NotFound(new { message = $"Agent '{agentId}' has no mapped browser profile" });
+                }
+                var vpn = info.Vpn ?? directory.GetCachedVpnStatus(info.Service, info.Profile);
+                return TypedResults.Ok(new
+                {
+                    agentId,
+                    service = info.Service,
+                    profile = info.Profile,
+                    enabled = vpn.Enabled,
+                    mode = vpn.Mode,
+                    proxyUrl = vpn.ProxyUrl,
+                    server = vpn.Server,
+                    region = vpn.Region,
+                    publicIp = vpn.PublicIp
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("GetAgentBrowserVpn")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Get per-profile VPN status for the agent's Chromium profile")
+            .RequireRateLimiting(RateLimitPolicy)
+            .AllowAnonymous();
+
+        routeBuilder.MapPost(
+            "agents/{agentId}/browser/vpn",
+            async Task<IResult> (string agentId, [FromBody] BrowserVpnRequest req, HttpContext http, AgentBrowserDirectory directory, CancellationToken ct) =>
+            {
+                if (http.User.Identity?.IsAuthenticated == true &&
+                    await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.EnforceOrForbidAsync(agentId, http, ct) is { } denied)
+                {
+                    return denied;
+                }
+                var vpn = await directory.ConfigureProfileVpnAsync(agentId, req, ct);
+                if (vpn is null)
+                {
+                    return TypedResults.Problem("Failed to configure VPN on agent browser profile", statusCode: StatusCodes.Status502BadGateway);
+                }
+                return TypedResults.Ok(new
+                {
+                    ok = true,
+                    agentId,
+                    enabled = vpn.Enabled,
+                    mode = vpn.Mode,
+                    proxyUrl = vpn.ProxyUrl,
+                    server = vpn.Server,
+                    region = vpn.Region,
+                    publicIp = vpn.PublicIp
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .WithName("SetAgentBrowserVpn")
+            .WithTags(EndpointTags.Agents)
+            .WithSummary("Enable or disable per-profile VPN using the proxy360 IP pool for the agent's Chromium profile")
+            .RequireRateLimiting(RateLimitPolicy)
+            .AllowAnonymous();
+
         // Value-free health for monitoring (no tabs, URLs or endpoints): stays public while the rest of
         // /browser requires sign-in (SensitiveReadGuardMiddleware).
         routeBuilder.MapGet(

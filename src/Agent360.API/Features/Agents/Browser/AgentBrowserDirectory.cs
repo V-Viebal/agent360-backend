@@ -14,6 +14,14 @@ using Microsoft.Extensions.Options;
 namespace Agent360.API.Features.Agents.Browser;
 
 /// <summary>Where one agent's Chromium lives and which on-disk profile it owns.</summary>
+public sealed record AgentBrowserVpnStatus(
+    bool Enabled,
+    string Mode,
+    string ProxyUrl,
+    string Server,
+    string Region,
+    string PublicIp);
+
 public sealed record AgentBrowserInfo(
     string AgentId,
     string Instance,
@@ -26,7 +34,8 @@ public sealed record AgentBrowserInfo(
     [property: JsonIgnore] string? BrowserContextId,
     bool CdpReachable,
     bool ProfileWindowOpen,
-    IReadOnlyList<AgentBrowserTab> Tabs);
+    IReadOnlyList<AgentBrowserTab> Tabs,
+    AgentBrowserVpnStatus? Vpn = null);
 
 public sealed record AgentBrowserTab(string TargetId, string Title, string Url, bool Anchor);
 
@@ -52,6 +61,8 @@ public sealed class AgentBrowserDirectory(
     private readonly ConcurrentDictionary<string, long> _recentlyClosedTargets = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (AgentBrowserTab Tab, long Tick)> _recentlyCreatedTargets = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (ClientWebSocket Socket, SemaphoreSlim Lock)> _browserSockets = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, AgentBrowserVpnStatus> _vpnStatusByProfile = new(StringComparer.OrdinalIgnoreCase);
+    public const string DefaultVpnBypassList = "localhost,127.0.0.1,::1,100.64.0.0/10,*.internal,*.local";
 
     private sealed record BrowserService(string Service, string ViewerUrl, string CdpUrl, IReadOnlyDictionary<string, string> Profiles);
 
@@ -535,7 +546,8 @@ public sealed class AgentBrowserDirectory(
             logger.LogWarning("Browser CDP for {Agent} at {Cdp} unavailable: {Error}", agentId, cdp, ex.Message);
         }
 
-        var info = new AgentBrowserInfo(agentId, target.Instance!.Key, target.ClusterNode, service, viewer, cdp, profile, ctx, reachable, ctx is not null, tabs);
+        _vpnStatusByProfile.TryGetValue(key, out var vpnState);
+        var info = new AgentBrowserInfo(agentId, target.Instance!.Key, target.ClusterNode, service, viewer, cdp, profile, ctx, reachable, ctx is not null, tabs, vpnState);
         // An unreachable browser is negatively cached longer: a dead node is not re-dialled on every poll.
         cache.Set(key, info, TimeSpan.FromSeconds(reachable ? 12 : 15));
         return info;
@@ -872,6 +884,237 @@ public sealed class AgentBrowserDirectory(
         finally
         {
             heldLock?.Release();
+        }
+    }
+
+
+    public AgentBrowserVpnStatus GetCachedVpnStatus(string service, string profile)
+    {
+        var key = $"agent360:browser:{service}:{profile}";
+        return _vpnStatusByProfile.TryGetValue(key, out var st)
+            ? st
+            : new AgentBrowserVpnStatus(false, "system", "", "", "", "");
+    }
+
+    public async Task<AgentBrowserVpnStatus?> ConfigureProfileVpnAsync(
+        string agentId,
+        BrowserVpnRequest req,
+        CancellationToken ct = default)
+    {
+        var info = await GetAsync(agentId, ct, forceRefresh: true);
+        if (info is null || !info.CdpReachable)
+        {
+            return null;
+        }
+
+        var key = $"agent360:browser:{info.Service}:{info.Profile}";
+        var proxyUrl = (req.ProxyUrl ?? "").Trim();
+        var region = (req.Region ?? "").Trim();
+        var publicIp = "";
+
+        if (req.Enabled && string.IsNullOrEmpty(proxyUrl))
+        {
+            var acquired = await AcquireFromProxy360Async(info, req, ct);
+            if (acquired is not null)
+            {
+                proxyUrl = acquired.Value.ProxyUrl;
+                if (string.IsNullOrEmpty(region)) region = acquired.Value.Region;
+                publicIp = acquired.Value.PublicIp;
+            }
+            if (string.IsNullOrEmpty(proxyUrl))
+            {
+                proxyUrl = Environment.GetEnvironmentVariable("PROXY360_DEFAULT_WORKSTATION_PROXY")
+                    ?? "http://100.67.180.13:18888";
+                if (string.IsNullOrEmpty(region)) region = "VN";
+            }
+        }
+
+        var anchorTab = info.Tabs.FirstOrDefault(t => t.Anchor) ?? info.Tabs.FirstOrDefault();
+        if (anchorTab is null)
+        {
+            return null;
+        }
+
+        var applied = await ApplyProfileProxyOverCdpAsync(
+            info.CdpUrl,
+            anchorTab.TargetId,
+            info.Profile,
+            agentId,
+            req.Enabled,
+            proxyUrl,
+            ct);
+
+        var status = new AgentBrowserVpnStatus(
+            Enabled: applied.Enabled,
+            Mode: applied.Enabled ? (req.Mode ?? "auto") : "system",
+            ProxyUrl: applied.Enabled ? proxyUrl : "",
+            Server: applied.Server,
+            Region: applied.Enabled ? (string.IsNullOrEmpty(region) ? "VN" : region) : "",
+            PublicIp: applied.Enabled ? publicIp : "");
+
+        _vpnStatusByProfile[key] = status;
+        cache.Remove(key);
+        return status;
+    }
+
+    private async Task<(string ProxyUrl, string Region, string PublicIp)?> AcquireFromProxy360Async(
+        AgentBrowserInfo info,
+        BrowserVpnRequest req,
+        CancellationToken ct)
+    {
+        try
+        {
+            var baseUrl = (Environment.GetEnvironmentVariable("PROXY360_API_URL") ?? "http://100.77.205.126:8000").TrimEnd('/');
+            var token = Environment.GetEnvironmentVariable("PROXY360_API_TOKEN")
+                ?? Environment.GetEnvironmentVariable("APP_PASSWORD")
+                ?? "";
+            var http = httpClientFactory.CreateClient(HttpClientName);
+            using var msg = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/proxies/vpn/acquire");
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                msg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+            msg.Content = JsonContent.Create(new
+            {
+                profile_key = $"{info.Service}:{info.Profile}",
+                agent_id = info.AgentId,
+                browser_service = info.Service,
+                profile_name = info.Profile,
+                enabled = req.Enabled,
+                mode = req.Mode ?? "auto",
+                region = req.Region ?? "",
+                proxy_id = req.ProxyId,
+                proxy_url = req.ProxyUrl ?? "",
+                probe = true
+            });
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            using var resp = await http.SendAsync(msg, cts.Token);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return null;
+            }
+            var json = await resp.Content.ReadFromJsonAsync<JsonObject>(cancellationToken: cts.Token);
+            var url = json?["proxy_url"]?.GetValue<string>() ?? "";
+            var reg = json?["country"]?.GetValue<string>() ?? json?["region"]?.GetValue<string>() ?? "";
+            var ip = json?["public_ip"]?.GetValue<string>() ?? "";
+            return !string.IsNullOrWhiteSpace(url) ? (url, reg, ip) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string NormalizeProxyServer(string raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) s = s[7..];
+        else if (s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) s = s[8..];
+        return s.TrimEnd('/');
+    }
+
+    private static async Task<(bool Enabled, string Server)> ApplyProfileProxyOverCdpAsync(
+        string cdpUrl,
+        string targetId,
+        string profile,
+        string agentId,
+        bool enable,
+        string proxyUrl,
+        CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(8));
+        var cdp = new Uri(cdpUrl);
+        var pageWs = new Uri($"ws://{cdp.Authority}/devtools/page/{Uri.EscapeDataString(targetId)}");
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(pageWs, cts.Token);
+
+        var anchorUrl = BuildAnchorUrl(profile, agentId);
+        int id = 100;
+
+        async Task SendCmdAsync(object payload)
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+            await ws.SendAsync(bytes, WebSocketMessageType.Text, true, cts.Token);
+        }
+
+        async Task<JsonDocument?> WaitIdAsync(int expected)
+        {
+            var buf = new byte[64 * 1024];
+            using var ms = new MemoryStream();
+            while (ws.State == WebSocketState.Open)
+            {
+                ms.SetLength(0);
+                WebSocketReceiveResult r;
+                do
+                {
+                    r = await ws.ReceiveAsync(buf, cts.Token);
+                    if (r.MessageType == WebSocketMessageType.Close) return null;
+                    ms.Write(buf, 0, r.Count);
+                } while (!r.EndOfMessage);
+                var doc = JsonDocument.Parse(ms.ToArray());
+                if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.GetInt32() == expected)
+                {
+                    return doc;
+                }
+                doc.Dispose();
+            }
+            return null;
+        }
+
+        try
+        {
+            var navId = ++id;
+            await SendCmdAsync(new { id = navId, method = "Page.navigate", @params = new { url = "chrome://settings/" } });
+            using (await WaitIdAsync(navId)) { }
+
+            for (int i = 0; i < 20; i++)
+            {
+                await Task.Delay(120, cts.Token);
+                var chkId = ++id;
+                await SendCmdAsync(new
+                {
+                    id = chkId,
+                    method = "Runtime.evaluate",
+                    @params = new { expression = "typeof chrome !== 'undefined' && typeof chrome.settingsPrivate !== 'undefined'", returnByValue = true }
+                });
+                using var chkDoc = await WaitIdAsync(chkId);
+                if (chkDoc is not null &&
+                    chkDoc.RootElement.TryGetProperty("result", out var res) &&
+                    res.TryGetProperty("result", out var inner) &&
+                    inner.TryGetProperty("value", out var val) &&
+                    val.ValueKind == JsonValueKind.True)
+                {
+                    break;
+                }
+            }
+
+            var server = enable ? NormalizeProxyServer(proxyUrl) : "";
+            string expr = enable
+                ? $"new Promise(r => chrome.settingsPrivate.setPref('proxy', {{mode: 'fixed_servers', server: {JsonSerializer.Serialize(server)}, bypassList: {JsonSerializer.Serialize(DefaultVpnBypassList)}}}, '', r))"
+                : "new Promise(r => chrome.settingsPrivate.setPref('proxy', {mode: 'system'}, '', r))";
+
+            var setId = ++id;
+            await SendCmdAsync(new
+            {
+                id = setId,
+                method = "Runtime.evaluate",
+                @params = new { expression = expr, awaitPromise = true, returnByValue = true }
+            });
+            using (await WaitIdAsync(setId)) { }
+
+            return (enable, server);
+        }
+        finally
+        {
+            try
+            {
+                var restoreId = ++id;
+                await SendCmdAsync(new { id = restoreId, method = "Page.navigate", @params = new { url = anchorUrl } });
+                using (await WaitIdAsync(restoreId)) { }
+            }
+            catch { }
         }
     }
 
