@@ -24,6 +24,7 @@ public sealed class OperatorWriteGuardMiddleware(RequestDelegate next)
     private static readonly string[] OpenWrites =
     [
         "agents/console/chat", "console/chat", "agents/console/upload", "console/upload", "agents/analytics/turn-telemetry",
+        "voice/", "agents/voice/",
     ];
 
     public Task InvokeAsync(HttpContext http, IOptionsMonitor<Agent360SecurityOptions> security, IHostEnvironment env)

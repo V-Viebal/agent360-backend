@@ -63,6 +63,21 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         var key = CacheKey(agentId, route);
         cache.Set(key, new CachedResponse(payload, type), WarmedFreshTtl);
         cache.Set(key + ":last-good", new CachedResponse(payload, type), TimeSpan.FromMinutes(30));
+        if (route.Equals("skills", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var skillDtos = System.Text.Json.JsonSerializer.Deserialize<IReadOnlyList<Agent360.API.Features.Agents.Models.QwenPawSkillDto>>(payload,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (skillDtos is not null)
+                {
+                    var normId = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                    cache.Set($"agent360:skills:{normId}", skillDtos, WarmedFreshTtl);
+                    cache.Set($"agent360:skills:{normId}:last-good", skillDtos, TimeSpan.FromMinutes(30));
+                }
+            }
+            catch { }
+        }
     }
 
     public const string DefaultTelegramApiBaseUrl = "http://100.70.201.83:8083";
@@ -345,6 +360,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                     agentId.Equals("skills", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("chats", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("ws", StringComparison.OrdinalIgnoreCase) ||
+                    agentId.Equals("voice", StringComparison.OrdinalIgnoreCase) ||
                     agentId.Equals("approvals", StringComparison.OrdinalIgnoreCase))
                 {
                     return Results.NotFound(new { message = $"Literal route '{agentId}' is handled by dedicated endpoints" });

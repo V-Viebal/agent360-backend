@@ -65,6 +65,32 @@ public sealed class AgentCacheWarmer(
             }
         });
 
+        // Also warm per-agent browser discovery so /api/v1/agents/{id}/browser responds in ~0ms on phone & desktop
+        var browserDir = scope.ServiceProvider.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
+        if (browserDir is not null)
+        {
+            var browserAgents = agents
+                .Where(a => a.Enabled)
+                .Select(a => (a.Slug, Target: routing.ResolveTarget(a.Slug)))
+                .Where(x => x.Target.IsQwenPaw)
+                .GroupBy(x => x.Target.Instance?.Key ?? "")
+                .ToList();
+            await Parallel.ForEachAsync(browserAgents, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, browserAgents.Count), CancellationToken = ct }, async (group, gtoken) =>
+            {
+                foreach (var item in group)
+                {
+                    try
+                    {
+                        await browserDir.GetAsync(item.Slug, gtoken);
+                    }
+                    catch (Exception ex) when (!gtoken.IsCancellationRequested)
+                    {
+                        logger.LogDebug(ex, "Warm browser for {Agent} failed", item.Slug);
+                    }
+                }
+            });
+        }
+
         // Also warm per-agent chat lists so last-good is always populated for every online agent
         var chatAgents = agents
             .Where(a => a.Enabled)
