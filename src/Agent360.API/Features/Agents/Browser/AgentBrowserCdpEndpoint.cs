@@ -411,10 +411,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     var maxWidth = int.TryParse(context.Request.Query["maxWidth"], out var w) && w <= 800 ? 1280 : 1920;
                     var initVw = int.TryParse(context.Request.Query["vw"], out var parsedVw) ? parsedVw : 0;
                     var initVh = int.TryParse(context.Request.Query["vh"], out var parsedVh) ? parsedVh : 0;
+                    var isMobileDevice = context.Request.Query["mobile"] == "1"
+                        || string.Equals(context.Request.Query["device"], "phone", StringComparison.OrdinalIgnoreCase);
                     var quality = int.TryParse(context.Request.Query["q"], out var parsedQ) ? Math.Clamp(parsedQ, 52, 92) : 88;
                     var hub = context.RequestServices.GetRequiredService<ScreencastHub>();
                     // Only use warm LatestFrame from an already-resized session; never push an unscaled 1440x813 CachedScreenshotAsync seed when vw/vh are requested!
-                    var seed = hub.LatestFrame(cdp!, page.TargetId, initVw, initVh);
+                    var seed = hub.LatestFrame(cdp!, page.TargetId, initVw, initVh, isMobileDevice);
                     if (seed is null && (initVw < 320 || initVh < 240))
                     {
                         seed = await CachedScreenshotAsync(gate, context.RequestServices.GetRequiredService<IMemoryCache>(), cdp!, page.TargetId);
@@ -422,10 +424,10 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     if (info?.Tabs is { Count: > 1 } allTabs && initVw >= 320 && initVh >= 240)
                     {
                         var otherIds = allTabs.Where(t => !t.Anchor && t.TargetId != page.TargetId).Select(t => t.TargetId).ToList();
-                        hub.WarmTabsInBackground(cdp!, otherIds, maxWidth, quality, initVw, initVh);
+                        hub.WarmTabsInBackground(cdp!, otherIds, maxWidth, quality, initVw, initVh, isMobileDevice);
                     }
                     var useBinary = context.Request.Query["bin"] == "1";
-                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct, initVw, initVh, useBinary);
+                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct, initVw, initVh, useBinary, isMobileDevice);
                 }
                 finally
                 {
@@ -1048,7 +1050,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             }
             else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
             {
-                var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value);
+                var isMobileResize = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileResize);
                 var rId = ++id;
                 await SendAsync(ws, new
                 {
@@ -1059,7 +1062,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         width = w,
                         height = h,
                         deviceScaleFactor = 1,
-                        mobile = false,
+                        mobile = isMobileResize,
                         screenWidth = w,
                         screenHeight = h
                     }

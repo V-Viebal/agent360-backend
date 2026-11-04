@@ -26,4 +26,6 @@ public sealed record BrowserInputRequest(
     int? Width = null,
     int? Height = null,
     int? Modifiers = null,
-    int? Backspaces = null);
+    int? Backspaces = null,
+    bool? IsMobile = null,
+    string? DeviceType = null);

@@ -142,5 +142,23 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         w2.Should().Be(1111);
         h2.Should().Be(813);
         Math.Abs(((double)w2 / h2) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
+
+        // Mobile device viewport (390x660) preserves genuine mobile width (< 640) while desktop forces >= 640
+        var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);
+        mw1.Should().Be(390);
+        mh1.Should().Be(660);
+
+        var (dw1, dh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: false);
+        dw1.Should().Be(456);
+        dh1.Should().Be(771);
+
+        var (dw2, dh2) = ScreencastHub.NormalizeViewport(420, 460, 1408, 771, isMobileDevice: false);
+        dw2.Should().Be(640);
+        dh2.Should().Be(701);
+
+        // Tall mobile viewport (390x844) clamps height to native surface (771) and preserves aspect ratio (356x771)
+        var (mw2, mh2) = ScreencastHub.NormalizeViewport(390, 844, 1408, 771, isMobileDevice: true);
+        mw2.Should().Be(356);
+        mh2.Should().Be(771);
     }
 }

@@ -19,14 +19,14 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     public int ActiveSessions => _sessions.Count;
 
     /// <summary>Most recent base64 JPEG any live session produced for this tab matching the requested viewport aspect, or null.</summary>
-    public string? LatestFrame(string cdpUrl, string targetId, int reqW = 0, int reqH = 0)
+    public string? LatestFrame(string cdpUrl, string targetId, int reqW = 0, int reqH = 0, bool isMobileDevice = false)
     {
         var prefix = $"{cdpUrl}|{targetId}|";
         foreach (var (k, s) in _sessions)
         {
             if (k.StartsWith(prefix, StringComparison.Ordinal) && s.LastFrameBase64 is { } f)
             {
-                if (reqW >= 320 && reqH >= 240 && !s.MatchesViewport(reqW, reqH))
+                if (reqW >= 320 && reqH >= 240 && !s.MatchesViewport(reqW, reqH, isMobileDevice))
                 {
                     continue;
                 }
@@ -88,7 +88,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     }
 
     /// <summary>Pre-warm background CDP screencast sessions for all open tabs of an agent so clicking any tab switches in 0ms.</summary>
-    public void WarmTabsInBackground(string cdpUrl, IEnumerable<string> targetIds, int maxWidth, int quality, int vw, int vh)
+    public void WarmTabsInBackground(string cdpUrl, IEnumerable<string> targetIds, int maxWidth, int quality, int vw, int vh, bool isMobileDevice = false)
     {
         if (vw < 320 || vh < 240) return;
         foreach (var tid in targetIds.Take(6))
@@ -99,7 +99,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             {
                 if (!_sessions.ContainsKey(key))
                 {
-                    var s = new Session(key, cdpUrl, tid, maxWidth, quality, vw, vh, this, logger);
+                    var s = new Session(key, cdpUrl, tid, maxWidth, quality, vw, vh, this, logger, isMobileDevice);
                     _sessions[key] = s;
                     s.StartWarmLinger();
                 }
@@ -111,17 +111,17 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
     /// <summary>Streams frames to <paramref name="client"/> and processes bidirectional input commands until disconnect.</summary>
 
-    public async Task WatchAsync(string cdpUrl, string targetId, int maxWidth, int quality, WebSocket client, string? seedFrame, CancellationToken ct, int initialWidth = 0, int initialHeight = 0, bool binaryFrames = false)
+    public async Task WatchAsync(string cdpUrl, string targetId, int maxWidth, int quality, WebSocket client, string? seedFrame, CancellationToken ct, int initialWidth = 0, int initialHeight = 0, bool binaryFrames = false, bool isMobileDevice = false)
     {
         var viewer = Channel.CreateBounded<StreamPacket>(new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
         var controlViewer = Channel.CreateBounded<StreamPacket>(new BoundedChannelOptions(8) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
         Session session;
         lock (_gate)
         {
-            session = _sessions.GetOrAdd(Key(cdpUrl, targetId, maxWidth), k => new Session(k, cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, this, logger));
-            session.Add(viewer, controlViewer, binaryFrames, initialWidth, initialHeight);
+            session = _sessions.GetOrAdd(Key(cdpUrl, targetId, maxWidth), k => new Session(k, cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, this, logger, isMobileDevice));
+            session.Add(viewer, controlViewer, binaryFrames, initialWidth, initialHeight, isMobileDevice);
         }
-        if (initialWidth < 320 || initialHeight < 240 || session.MatchesViewport(initialWidth, initialHeight))
+        if (initialWidth < 320 || initialHeight < 240 || session.MatchesViewport(initialWidth, initialHeight, isMobileDevice))
         {
             if (binaryFrames && session.LastBinaryFrame is { } lastBin)
             {
@@ -247,7 +247,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     }
 
     internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
-    internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH);
+    internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH, isMobileDevice);
 
     internal static byte[] Frame(string base64Jpeg) =>
         JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = base64Jpeg } });
@@ -294,6 +294,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private double _viewportH = 813;
         private int _nativeSurfaceMaxW = 1440;
         private int _nativeSurfaceMaxH = 813;
+        private bool _isMobileViewport;
         private bool _hasTargetViewport;
         private int _currentQuality = 88;
         private long _lastCursorProbeTick;
@@ -317,7 +318,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private readonly string _cdpUrl;
         private readonly int _maxWidth;
 
-        public Session(string key, string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight, ScreencastHub hub, ILogger logger)
+        public Session(string key, string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight, ScreencastHub hub, ILogger logger, bool isMobileDevice = false)
         {
             Key = key;
             _cdpUrl = cdpUrl;
@@ -325,14 +326,15 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             _hub = hub;
             _logger = logger;
             _currentQuality = Math.Clamp(quality, 52, 92);
+            _isMobileViewport = isMobileDevice;
             if (initialWidth >= 320 && initialHeight >= 240)
             {
-                var (nw, nh) = NormalizeViewport(initialWidth, initialHeight);
+                var (nw, nh) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH, isMobileDevice);
                 _viewportW = nw;
                 _viewportH = nh;
                 _hasTargetViewport = true;
             }
-            _ = RunAsync(cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight);
+            _ = RunAsync(cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, isMobileDevice);
         }
 
         public string Key { get; }
@@ -340,11 +342,20 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         public byte[]? LastBinaryFrame { get; private set; }
         public string? LastFrameBase64 { get; private set; }
         public bool IsConnected => _ws?.State == WebSocketState.Open;
-        internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813)
+        internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false)
         {
             double w = Math.Max(320, rawW);
             double h = Math.Max(240, rawH);
-            if (w < 560)
+            if (isMobileDevice)
+            {
+                if (w < 360)
+                {
+                    var up = 360.0 / w;
+                    w = 360;
+                    h *= up;
+                }
+            }
+            else if (w < 560)
             {
                 var up = 640.0 / w;
                 w = 640;
@@ -362,9 +373,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
             return (Math.Max(320, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
         }
-        public bool MatchesViewport(int rawW, int rawH)
+        public bool MatchesViewport(int rawW, int rawH, bool? isMobileDevice = null)
         {
-            var (w, h) = NormalizeViewport(rawW, rawH, _nativeSurfaceMaxW, _nativeSurfaceMaxH);
+            var wantMobile = isMobileDevice ?? _isMobileViewport;
+            if (wantMobile != _isMobileViewport) return false;
+            var (w, h) = NormalizeViewport(rawW, rawH, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
             return Math.Abs(_viewportW - w) <= 8 && Math.Abs(_viewportH - h) <= 8;
         }
 
@@ -416,7 +429,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         }
         public int ViewerCount { get { lock (_viewers) return _viewers.Count; } }
 
-        public void Add(Channel<StreamPacket> v, Channel<StreamPacket> ctrl, bool binary, int reqW = 0, int reqH = 0)
+        public void Add(Channel<StreamPacket> v, Channel<StreamPacket> ctrl, bool binary, int reqW = 0, int reqH = 0, bool isMobileDevice = false)
         {
             lock (_viewers)
             {
@@ -424,13 +437,13 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 _linger?.Cancel();
                 _linger = null;
             }
-            var (normReqW, normReqH) = reqW >= 320 && reqH >= 240 ? NormalizeViewport(reqW, reqH, _nativeSurfaceMaxW, _nativeSurfaceMaxH) : (0, 0);
-            if (normReqW >= 320 && normReqH >= 240 && (Math.Abs(_viewportW - normReqW) > 4 || Math.Abs(_viewportH - normReqH) > 4))
+            var (normReqW, normReqH) = reqW >= 320 && reqH >= 240 ? NormalizeViewport(reqW, reqH, _nativeSurfaceMaxW, _nativeSurfaceMaxH, isMobileDevice) : (0, 0);
+            if (normReqW >= 320 && normReqH >= 240 && (_isMobileViewport != isMobileDevice || Math.Abs(_viewportW - normReqW) > 4 || Math.Abs(_viewportH - normReqH) > 4))
             {
                 LastFrame = null;
                 LastBinaryFrame = null;
                 LastFrameBase64 = null;
-                _ = TryDispatchInputAsync(new BrowserInputRequest("resize", Width: reqW, Height: reqH), _cts.Token);
+                _ = TryDispatchInputAsync(new BrowserInputRequest("resize", Width: reqW, Height: reqH, IsMobile: isMobileDevice, DeviceType: isMobileDevice ? "phone" : "desktop"), _cts.Token);
             }
         }
 
@@ -494,7 +507,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         if (!string.IsNullOrEmpty(createdId))
                         {
                             _ = SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Target.activateTarget", @params = new { targetId = createdId } }, CancellationToken.None);
-                            _hub.WarmTabsInBackground(_cdpUrl, [createdId], _maxWidth, _currentQuality, (int)Math.Round(_viewportW), (int)Math.Round(_viewportH));
+                            _hub.WarmTabsInBackground(_cdpUrl, [createdId], _maxWidth, _currentQuality, (int)Math.Round(_viewportW), (int)Math.Round(_viewportH), _isMobileViewport);
                             return (true, createdId);
                         }
                     }
@@ -538,12 +551,14 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, ct);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 1 } }, ct);
                     ProbeScrollMetrics(ws, ct, force: true);
+                    ProbeFocusedEditable(ws, (int)x, (int)y, ct);
                 }
                 else if (action == "dblclick")
                 {
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none" } }, ct);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 2 } }, ct);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mouseReleased", x, y, button = "left", buttons = 0, clickCount = 2 } }, ct);
+                    ProbeFocusedEditable(ws, (int)x, (int)y, ct);
                 }
                 else if (action == "rightclick")
                 {
@@ -556,6 +571,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mouseMoved", x, y, button = "none", buttons = 0 } }, ct);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mousePressed", x, y, button = "left", buttons = 1, clickCount = 1 } }, ct);
                     ProbeScrollMetrics(ws, ct, force: true);
+                    ProbeFocusedEditable(ws, (int)x, (int)y, ct);
                 }
                 else if (action == "mousemove_drag")
                 {
@@ -836,18 +852,19 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
                 else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
                 {
-                    var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value, _nativeSurfaceMaxW, _nativeSurfaceMaxH);
-                    if (Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4)
+                    var wantMobile = req.IsMobile ?? string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                    var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
+                    if (_isMobileViewport == wantMobile && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4)
                     {
                         return true;
                     }
                     _viewportW = w;
                     _viewportH = h;
+                    _isMobileViewport = wantMobile;
                     _hasTargetViewport = true;
                     LastFrame = null;
                     LastBinaryFrame = null;
                     LastFrameBase64 = null;
-                    var isMobile = w < 768;
                     await SafeSendAsync(ws, new
                     {
                         id = Interlocked.Increment(ref _cmdId),
@@ -857,7 +874,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             width = w,
                             height = h,
                             deviceScaleFactor = 1,
-                            mobile = false,
+                            mobile = wantMobile,
                             screenWidth = w,
                             screenHeight = h
                         }
@@ -1052,6 +1069,29 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
         }
 
+        private void ProbeFocusedEditable(ClientWebSocket ws, int ix, int iy, CancellationToken ct)
+        {
+            var isMob = _isMobileViewport ? "true" : "false";
+            var jsProbe = $$"""(() => { try { let el = document.activeElement; if (!el || el === document.body || el === document.documentElement) { el = document.elementFromPoint({{ix}}, {{iy}}); } if (!el) return { editable: false }; if (el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement; const editEl = el.closest?.('input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]):not([type="image"]):not([type="hidden"]),textarea,[contenteditable="true"],[contenteditable=""],[contenteditable="plaintext-only"],[role="textbox"],[role="searchbox"],[role="combobox"]'); if (!editEl) return { editable: false }; if ({{isMob}}) { const r0 = editEl.getBoundingClientRect(); const vh0 = window.innerHeight || document.documentElement.clientHeight || 600; if (r0.bottom > vh0 * 0.52 || r0.top < 36) { try { editEl.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {} } } const r = editEl.getBoundingClientRect(); const vh = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 600); return { editable: true, inputType: (editEl.getAttribute?.('type') || editEl.tagName || 'text').toLowerCase(), yRatio: Math.round(((r.top + r.height / 2) / vh) * 1000) / 1000, bottomRatio: Math.round((r.bottom / vh) * 1000) / 1000 }; } catch { return { editable: false }; } })()""";
+            _ = SafeSendAsync(ws, new { id = 781, method = "Runtime.evaluate", @params = new { expression = jsProbe, returnByValue = true } }, ct);
+        }
+
+        private void BroadcastEditableFocus(bool editable, string inputType, double yRatio, double bottomRatio)
+        {
+            var msgBytes = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                method = "Page.inputFocusChanged",
+                @params = new { editable, inputType, yRatio, bottomRatio }
+            });
+            lock (_viewers)
+            {
+                foreach (var (_, ctrlCh, _) in _viewers)
+                {
+                    ctrlCh.Writer.TryWrite(new StreamPacket(msgBytes, WebSocketMessageType.Text));
+                }
+            }
+        }
+
         private bool Broadcast(string base64Jpeg, bool forcePacing = false)
         {
             if (string.IsNullOrEmpty(base64Jpeg)) return true;
@@ -1093,7 +1133,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             return true;
         }
 
-        private async Task RunAsync(string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight)
+        private async Task RunAsync(string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight, bool isMobileDevice = false)
         {
             var ct = _cts.Token;
             try
@@ -1217,7 +1257,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         }
                         catch { }
                     }
-                    var (w, h) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH);
+                    var (w, h) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH, _isMobileViewport);
                     _viewportW = w;
                     _viewportH = h;
                     await SafeSendAsync(ws, new
@@ -1229,7 +1269,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             width = w,
                             height = h,
                             deviceScaleFactor = 1,
-                            mobile = false,
+                            mobile = _isMobileViewport,
                             screenWidth = w,
                             screenHeight = h
                         }
@@ -1328,6 +1368,24 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             }
                             continue;
                         }
+                        if (rId == 781 &&
+                            doc.RootElement.TryGetProperty("result", out var edRes) &&
+                            edRes.TryGetProperty("result", out var innerEd) &&
+                            innerEd.TryGetProperty("value", out var edVal) &&
+                            edVal.ValueKind == JsonValueKind.Object)
+                        {
+                            var isEd = edVal.TryGetProperty("editable", out var edP) && edP.ValueKind == JsonValueKind.True;
+                            var inType = edVal.TryGetProperty("inputType", out var itP) && itP.ValueKind == JsonValueKind.String ? itP.GetString() ?? "text" : "text";
+                            var yR = edVal.TryGetProperty("yRatio", out var yrP) && yrP.TryGetDouble(out var yrV) ? yrV : 0.5;
+                            var bR = edVal.TryGetProperty("bottomRatio", out var brP) && brP.TryGetDouble(out var brV) ? brV : 0.5;
+                            BroadcastEditableFocus(isEd, inType, yR, bR);
+                            if (isEd && _isMobileViewport)
+                            {
+                                ProbeScrollMetrics(ws, ct, force: true);
+                                TriggerMotionSmoothBoost(ws, ct);
+                            }
+                            continue;
+                        }
                         if (rId == 778 || rId == 779)
                         {
                             try
@@ -1413,7 +1471,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                     width = w,
                                     height = h,
                                     deviceScaleFactor = 1,
-                                    mobile = false,
+                                    mobile = _isMobileViewport,
                                     screenWidth = w,
                                     screenHeight = h
                                 }
