@@ -1229,17 +1229,26 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     else
                     {
                         await SafeSendAsync(ws, new { id = 12, method = "Emulation.clearDeviceMetricsOverride" }, ct);
-                        await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
-                        while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                        await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true, timeout = 350 } }, ct);
+                        using var probe15Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        probe15Cts.CancelAfter(450);
+                        while (ws.State == WebSocketState.Open && !probe15Cts.IsCancellationRequested)
                         {
                             initMs.SetLength(0);
                             WebSocketReceiveResult ir;
-                            do
+                            try
                             {
-                                ir = await ws.ReceiveAsync(initBuf, ct);
-                                if (ir.MessageType == WebSocketMessageType.Close) return;
-                                initMs.Write(initBuf, 0, ir.Count);
-                            } while (!ir.EndOfMessage);
+                                do
+                                {
+                                    ir = await ws.ReceiveAsync(initBuf, probe15Cts.Token);
+                                    if (ir.MessageType == WebSocketMessageType.Close) return;
+                                    initMs.Write(initBuf, 0, ir.Count);
+                                } while (!ir.EndOfMessage);
+                            }
+                            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                            {
+                                break;
+                            }
                             using var initDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
                             if (initDoc.RootElement.TryGetProperty("id", out var probeId) && probeId.GetInt32() == 15)
                             {
@@ -1299,17 +1308,26 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                     await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, ct);
                                     await SafeSendAsync(ws, new { id = 18, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { windowState = "maximized" } } }, ct);
                                     await Task.Delay(80, ct);
-                                    await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
-                                    while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                                    await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true, timeout = 350 } }, ct);
+                                    using var probe19Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                                    probe19Cts.CancelAfter(450);
+                                    while (ws.State == WebSocketState.Open && !probe19Cts.IsCancellationRequested)
                                     {
                                         initMs.SetLength(0);
                                         WebSocketReceiveResult ir;
-                                        do
+                                        try
                                         {
-                                            ir = await ws.ReceiveAsync(initBuf, ct);
-                                            if (ir.MessageType == WebSocketMessageType.Close) return;
-                                            initMs.Write(initBuf, 0, ir.Count);
-                                        } while (!ir.EndOfMessage);
+                                            do
+                                            {
+                                                ir = await ws.ReceiveAsync(initBuf, probe19Cts.Token);
+                                                if (ir.MessageType == WebSocketMessageType.Close) return;
+                                                initMs.Write(initBuf, 0, ir.Count);
+                                            } while (!ir.EndOfMessage);
+                                        }
+                                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                                        {
+                                            break;
+                                        }
                                         using var reDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
                                         if (reDoc.RootElement.TryGetProperty("id", out var reId) && reId.GetInt32() == 19)
                                         {
