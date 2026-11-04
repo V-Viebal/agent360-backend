@@ -37,9 +37,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     }
 
     public int ViewerCount(string cdpUrl, string targetId, int maxWidth, int quality) =>
-        _sessions.TryGetValue(Key(cdpUrl, targetId, maxWidth, quality), out var s) ? s.ViewerCount : 0;
+        _sessions.TryGetValue(Key(cdpUrl, targetId, maxWidth), out var s) ? s.ViewerCount : 0;
 
-    private static string Key(string cdpUrl, string targetId, int maxWidth, int quality) => $"{cdpUrl}|{targetId}|{maxWidth}|{quality}";
+    private static string Key(string cdpUrl, string targetId, int maxWidth) => $"{cdpUrl}|{targetId}|{maxWidth}";
 
     /// <summary>Find an active warm session for (cdpUrl, targetId) — or any warm session on the same cdpUrl if pageId was omitted — to dispatch instant input commands in ~5ms.</summary>
     public async Task<bool> TryDispatchOverWarmSessionAsync(string cdpUrl, string targetId, BrowserInputRequest req, CancellationToken ct)
@@ -94,7 +94,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         foreach (var tid in targetIds.Take(6))
         {
             if (string.IsNullOrEmpty(tid)) continue;
-            var key = Key(cdpUrl, tid, maxWidth, quality);
+            var key = Key(cdpUrl, tid, maxWidth);
             lock (_gate)
             {
                 if (!_sessions.ContainsKey(key))
@@ -118,7 +118,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         Session session;
         lock (_gate)
         {
-            session = _sessions.GetOrAdd(Key(cdpUrl, targetId, maxWidth, quality), k => new Session(k, cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, this, logger));
+            session = _sessions.GetOrAdd(Key(cdpUrl, targetId, maxWidth), k => new Session(k, cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, this, logger));
             session.Add(viewer, controlViewer, binaryFrames, initialWidth, initialHeight);
         }
         if (initialWidth < 320 || initialHeight < 240 || session.MatchesViewport(initialWidth, initialHeight))
@@ -171,7 +171,15 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             var inputReq = JsonSerializer.Deserialize<BrowserInputRequest>(ms.GetBuffer().AsSpan(0, (int)ms.Length), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
                             if (inputReq is not null && !string.IsNullOrEmpty(inputReq.Action))
                             {
-                                _ = session.TryDispatchInputAsync(inputReq, cts.Token);
+                                var actLower = inputReq.Action.Trim().ToLowerInvariant();
+                                if (actLower is "type" or "ime_commit" or "key" or "clipboard_paste" or "clipboard_copy" or "click" or "dblclick" or "rightclick" or "mousedown" or "mouseup")
+                                {
+                                    await session.TryDispatchInputAsync(inputReq, cts.Token);
+                                }
+                                else
+                                {
+                                    _ = session.TryDispatchInputAsync(inputReq, cts.Token);
+                                }
                             }
                         }
                         catch { }
@@ -239,6 +247,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     }
 
     internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
+    internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH);
 
     internal static byte[] Frame(string base64Jpeg) =>
         JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = base64Jpeg } });
@@ -283,6 +292,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private int _cmdId = 1000;
         private double _viewportW = 1440;
         private double _viewportH = 813;
+        private int _nativeSurfaceMaxW = 1440;
+        private int _nativeSurfaceMaxH = 813;
         private bool _hasTargetViewport;
         private int _currentQuality = 88;
         private long _lastCursorProbeTick;
@@ -329,7 +340,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         public byte[]? LastBinaryFrame { get; private set; }
         public string? LastFrameBase64 { get; private set; }
         public bool IsConnected => _ws?.State == WebSocketState.Open;
-        private static (int W, int H) NormalizeViewport(int rawW, int rawH)
+        internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813)
         {
             double w = Math.Max(320, rawW);
             double h = Math.Max(240, rawH);
@@ -339,17 +350,23 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 w = 640;
                 h *= up;
             }
-            // Fit proportionally inside Full HD (1920 x 1920) without ever distorting aspect ratio!
-            var maxDim = Math.Max(w, h);
-            if (maxDim > 1920)
+            // Fit proportionally inside the tab's backing surface (default 1440x813, or probed native surface)
+            // so Emulation.setDeviceMetricsOverride never exceeds the X11/compositor texture and never tiles edges!
+            double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
+            double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
+            var scaleDown = Math.Min(1.0, Math.Min(boundW / w, boundH / h));
+            if (scaleDown < 1.0)
             {
-                var down = 1920.0 / maxDim;
-                w *= down;
-                h *= down;
+                w *= scaleDown;
+                h *= scaleDown;
             }
-            return ((int)Math.Round(w), (int)Math.Round(h));
+            return (Math.Max(320, (int)Math.Round(w)), Math.Max(240, (int)Math.Round(h)));
         }
-        public bool MatchesViewport(int rawW, int rawH) { var (w, h) = NormalizeViewport(rawW, rawH); return Math.Abs(_viewportW - w) <= 8 && Math.Abs(_viewportH - h) <= 8; }
+        public bool MatchesViewport(int rawW, int rawH)
+        {
+            var (w, h) = NormalizeViewport(rawW, rawH, _nativeSurfaceMaxW, _nativeSurfaceMaxH);
+            return Math.Abs(_viewportW - w) <= 8 && Math.Abs(_viewportH - h) <= 8;
+        }
 
         internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes)
         {
@@ -407,9 +424,12 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 _linger?.Cancel();
                 _linger = null;
             }
-            var (normReqW, normReqH) = reqW >= 320 && reqH >= 240 ? NormalizeViewport(reqW, reqH) : (0, 0);
+            var (normReqW, normReqH) = reqW >= 320 && reqH >= 240 ? NormalizeViewport(reqW, reqH, _nativeSurfaceMaxW, _nativeSurfaceMaxH) : (0, 0);
             if (normReqW >= 320 && normReqH >= 240 && (Math.Abs(_viewportW - normReqW) > 4 || Math.Abs(_viewportH - normReqH) > 4))
             {
+                LastFrame = null;
+                LastBinaryFrame = null;
+                LastFrameBase64 = null;
                 _ = TryDispatchInputAsync(new BrowserInputRequest("resize", Width: reqW, Height: reqH), _cts.Token);
             }
         }
@@ -553,7 +573,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     TriggerMotionSmoothBoost(ws, ct);
                     var ratio = Math.Clamp(req.YRatio ?? 0.0, 0.0, 1.0);
                     var ratioStr = ratio.ToString("F5", System.Globalization.CultureInfo.InvariantCulture);
-                    var jsScrollTo = $$"""(() => { try { const r = {{ratioStr}}; let target = document.scrollingElement || document.documentElement || document.body; if (!target || target.scrollHeight <= target.clientHeight + 2) { let best = null, bestArea = 0; for (const el of document.querySelectorAll('*')) { if (el.scrollHeight > el.clientHeight + 8) { const cs = window.getComputedStyle(el); if (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') { const rect = el.getBoundingClientRect(); const area = rect.width * rect.height; if (area > bestArea) { bestArea = area; best = el; } } } } if (best) target = best; } if (target && target.scrollHeight > target.clientHeight) { const nextTop = Math.round((target.scrollHeight - target.clientHeight) * r); if (target === document.scrollingElement || target === document.documentElement || target === document.body) { window.scrollTo({ top: nextTop, behavior: 'instant' }); } else { target.scrollTop = nextTop; } return { scrollTop: Math.round(target.scrollTop || window.scrollY || 0), scrollHeight: Math.round(target.scrollHeight || 0), clientHeight: Math.round(target.clientHeight || window.innerHeight || 0) }; } return null; } catch { return null; } })()""";
+                    var jsScrollTo = $$"""(() => { try { const r = {{ratioStr}}; let target = document.scrollingElement || document.documentElement || document.body; if (!target || target.scrollHeight <= target.clientHeight + 2) { let best = null, bestArea = 0; for (const el of document.querySelectorAll('*')) { if (el.scrollHeight > el.clientHeight + 8) { const cs = window.getComputedStyle(el); if (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') { const rect = el.getBoundingClientRect(); const area = rect.width * rect.height; if (area > bestArea) { bestArea = area; best = el; } } } } if (best) target = best; } if (target && target.scrollHeight > target.clientHeight) { const nextTop = Math.round((target.scrollHeight - target.clientHeight) * r); if (target === document.scrollingElement || target === document.documentElement || target === document.body) { window.scrollTo({ top: nextTop, behavior: 'instant' }); } else { target.scrollTop = nextTop; } if (document.documentElement) { let pt = window.__ag360PaintTick; if (!pt || !document.contains(pt)) { pt = document.createElement('div'); pt.style.cssText = 'position:fixed;right:0;bottom:0;width:2px;height:2px;pointer-events:none;z-index:2147483647;opacity:0.015'; document.documentElement.appendChild(pt); window.__ag360PaintTick = pt; } pt.style.backgroundColor = (window.__ag360PaintN = ((window.__ag360PaintN || 0) + 1) & 1) ? '#010101' : '#fefefe'; } return { scrollTop: Math.round(target.scrollTop || window.scrollY || 0), scrollHeight: Math.round(target.scrollHeight || 0), clientHeight: Math.round(target.clientHeight || window.innerHeight || 0) }; } return null; } catch { return null; } })()""";
                     await SafeSendAsync(ws, new { id = 778, method = "Runtime.evaluate", @params = new { expression = jsScrollTo, returnByValue = true } }, ct);
                 }
                 else if (action == "move")
@@ -583,34 +603,188 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await FlushPendingScrollIfIdleAsync(ws, ct);
                     TriggerMotionSmoothBoost(ws, ct);
                 }
+                else if (action == "ime_commit")
+                {
+                    var bsCount = Math.Clamp(req.Backspaces ?? 0, 0, 64);
+                    for (int i = 0; i < bsCount; i++)
+                    {
+                        await SafeSendAsync(ws, new
+                        {
+                            id = Interlocked.Increment(ref _cmdId),
+                            method = "Input.dispatchKeyEvent",
+                            @params = new
+                            {
+                                type = "rawKeyDown",
+                                key = "Backspace",
+                                code = "Backspace",
+                                windowsVirtualKeyCode = 8,
+                                nativeVirtualKeyCode = 8,
+                                commands = new[] { "DeleteBackward" }
+                            }
+                        }, ct);
+                        await SafeSendAsync(ws, new
+                        {
+                            id = Interlocked.Increment(ref _cmdId),
+                            method = "Input.dispatchKeyEvent",
+                            @params = new
+                            {
+                                type = "keyUp",
+                                key = "Backspace",
+                                code = "Backspace",
+                                windowsVirtualKeyCode = 8,
+                                nativeVirtualKeyCode = 8
+                            }
+                        }, ct);
+                    }
+                    if (!string.IsNullOrEmpty(req.Text))
+                    {
+                        var normText = req.Text.Normalize(System.Text.NormalizationForm.FormC);
+                        await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.insertText", @params = new { text = normText } }, ct);
+                    }
+                    TriggerMotionSmoothBoost(ws, ct);
+                }
                 else if (action == "type" && !string.IsNullOrEmpty(req.Text))
                 {
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.insertText", @params = new { text = req.Text } }, ct);
+                    var normText = req.Text.Normalize(System.Text.NormalizationForm.FormC);
+                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.insertText", @params = new { text = normText } }, ct);
+                    TriggerMotionSmoothBoost(ws, ct);
                 }
                 else if (action == "key" && !string.IsNullOrEmpty(req.Key))
                 {
                     var k = req.Key;
-                    int keyCode = k.Equals("Enter", StringComparison.OrdinalIgnoreCase) ? 13
-                        : k.Equals("Backspace", StringComparison.OrdinalIgnoreCase) ? 8
+                    var mods = req.Modifiers ?? 0;
+                    bool hasCtrlOrMeta = (mods & 2) != 0 || (mods & 4) != 0;
+                    bool hasShift = (mods & 8) != 0;
+                    bool isBackspace = k.Equals("Backspace", StringComparison.OrdinalIgnoreCase);
+                    bool isDelete = k.Equals("Delete", StringComparison.OrdinalIgnoreCase);
+                    bool isEnter = k.Equals("Enter", StringComparison.OrdinalIgnoreCase);
+                    int keyCode = isEnter ? 13
+                        : isBackspace ? 8
                         : k.Equals("Escape", StringComparison.OrdinalIgnoreCase) ? 27
                         : k.Equals("Tab", StringComparison.OrdinalIgnoreCase) ? 9
                         : k.Equals("ArrowLeft", StringComparison.OrdinalIgnoreCase) ? 37
                         : k.Equals("ArrowUp", StringComparison.OrdinalIgnoreCase) ? 38
                         : k.Equals("ArrowRight", StringComparison.OrdinalIgnoreCase) ? 39
                         : k.Equals("ArrowDown", StringComparison.OrdinalIgnoreCase) ? 40
-                        : k.Equals("Delete", StringComparison.OrdinalIgnoreCase) ? 46
+                        : isDelete ? 46
                         : k.Equals("Home", StringComparison.OrdinalIgnoreCase) ? 36
                         : k.Equals("End", StringComparison.OrdinalIgnoreCase) ? 35
+                        : k.Equals("PageUp", StringComparison.OrdinalIgnoreCase) ? 33
+                        : k.Equals("PageDown", StringComparison.OrdinalIgnoreCase) ? 34
+                        : k.Equals(" ", StringComparison.Ordinal) || k.Equals("Space", StringComparison.OrdinalIgnoreCase) ? 32
                         : (k.Length == 1 ? (int)char.ToUpperInvariant(k[0]) : 0);
-                    var mods = req.Modifiers ?? 0;
-                    var codeStr = k.Length == 1 && char.IsLetter(k[0]) ? $"Key{char.ToUpperInvariant(k[0])}" : k;
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, ct);
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, ct);
+                    var codeStr = k.Length == 1 && char.IsLetter(k[0]) ? $"Key{char.ToUpperInvariant(k[0])}"
+                        : k.Length == 1 && char.IsDigit(k[0]) ? $"Digit{k[0]}"
+                        : (k == " " ? "Space" : k);
+                    bool isPrintable = k.Length == 1 && !char.IsControl(k[0]) && !hasCtrlOrMeta;
+                    string? keyText = isEnter ? "\r" : (isPrintable ? k : null);
+                    string downType = (isPrintable || isEnter) ? "keyDown" : "rawKeyDown";
+                    string[]? commands = null;
+                    if (isBackspace)
+                    {
+                        commands = new[] { hasCtrlOrMeta ? "DeleteWordBackward" : "DeleteBackward" };
+                    }
+                    else if (isDelete)
+                    {
+                        commands = new[] { hasCtrlOrMeta ? "DeleteWordForward" : "DeleteForward" };
+                    }
+                    else if (k.Equals("ArrowLeft", StringComparison.OrdinalIgnoreCase))
+                    {
+                        commands = new[] { hasCtrlOrMeta ? (hasShift ? "MoveWordLeftAndModifySelection" : "MoveWordLeft") : (hasShift ? "MoveLeftAndModifySelection" : "MoveLeft") };
+                    }
+                    else if (k.Equals("ArrowRight", StringComparison.OrdinalIgnoreCase))
+                    {
+                        commands = new[] { hasCtrlOrMeta ? (hasShift ? "MoveWordRightAndModifySelection" : "MoveWordRight") : (hasShift ? "MoveRightAndModifySelection" : "MoveRight") };
+                    }
+                    else if (k.Equals("ArrowUp", StringComparison.OrdinalIgnoreCase))
+                    {
+                        commands = new[] { hasShift ? "MoveUpAndModifySelection" : "MoveUp" };
+                    }
+                    else if (k.Equals("ArrowDown", StringComparison.OrdinalIgnoreCase))
+                    {
+                        commands = new[] { hasShift ? "MoveDownAndModifySelection" : "MoveDown" };
+                    }
+                    else if (k.Equals("Home", StringComparison.OrdinalIgnoreCase))
+                    {
+                        commands = new[] { hasShift ? "MoveToBeginningOfLineAndModifySelection" : "MoveToBeginningOfLine" };
+                    }
+                    else if (k.Equals("End", StringComparison.OrdinalIgnoreCase))
+                    {
+                        commands = new[] { hasShift ? "MoveToEndOfLineAndModifySelection" : "MoveToEndOfLine" };
+                    }
+                    else if (hasCtrlOrMeta && k.Length == 1)
+                    {
+                        var lower = char.ToLowerInvariant(k[0]);
+                        commands = lower switch
+                        {
+                            'a' => new[] { "SelectAll" },
+                            'c' => new[] { "Copy" },
+                            'x' => new[] { "Cut" },
+                            'v' => new[] { "Paste" },
+                            'z' => new[] { hasShift ? "Redo" : "Undo" },
+                            'y' => new[] { "Redo" },
+                            _ => null
+                        };
+                    }
+
+                    await SafeSendAsync(ws, new {
+                        id = Interlocked.Increment(ref _cmdId),
+                        method = "Input.dispatchKeyEvent",
+                        @params = new {
+                            type = downType,
+                            key = k,
+                            code = codeStr,
+                            text = keyText,
+                            unmodifiedText = keyText,
+                            windowsVirtualKeyCode = keyCode,
+                            nativeVirtualKeyCode = keyCode,
+                            modifiers = mods,
+                            commands
+                        }
+                    }, ct);
+
+                    if (isPrintable)
+                    {
+                        await SafeSendAsync(ws, new {
+                            id = Interlocked.Increment(ref _cmdId),
+                            method = "Input.dispatchKeyEvent",
+                            @params = new {
+                                type = "char",
+                                key = k,
+                                code = codeStr,
+                                text = keyText,
+                                unmodifiedText = keyText,
+                                windowsVirtualKeyCode = keyCode,
+                                nativeVirtualKeyCode = keyCode,
+                                modifiers = mods
+                            }
+                        }, ct);
+                    }
+
+                    await SafeSendAsync(ws, new {
+                        id = Interlocked.Increment(ref _cmdId),
+                        method = "Input.dispatchKeyEvent",
+                        @params = new {
+                            type = "keyUp",
+                            key = k,
+                            code = codeStr,
+                            windowsVirtualKeyCode = keyCode,
+                            nativeVirtualKeyCode = keyCode,
+                            modifiers = mods
+                        }
+                    }, ct);
+
+                    if (hasCtrlOrMeta && k.Length == 1 && (char.ToLowerInvariant(k[0]) == 'c' || char.ToLowerInvariant(k[0]) == 'x'))
+                    {
+                        var isCut = char.ToLowerInvariant(k[0]) == 'x' ? "true" : "false";
+                        var jsCopy = $"(() => {{ try {{ const a = document.activeElement; let txt = ''; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) {{ const s = a.selectionStart || 0, e = a.selectionEnd || 0; if (e > s) txt = a.value.substring(s, e); }} if (!txt) txt = window.getSelection()?.toString() || ''; try {{ document.execCommand({isCut} ? 'cut' : 'copy'); }} catch {{}} return txt; }} catch {{ return ''; }} }})()";
+                        _ = SafeSendAsync(ws, new { id = 780, method = "Runtime.evaluate", @params = new { expression = jsCopy, returnByValue = true } }, ct);
+                    }
                 }
                 else if (action == "clipboard_copy")
                 {
                     // Copy focused/selected text from DOM and return via Runtime.evaluate
-                    var jsCopy = "(() => { try { document.execCommand('copy'); return window.getSelection()?.toString() || ''; } catch { return ''; } })()";
+                    var jsCopy = "(() => { try { document.execCommand('copy'); const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { const s = a.selectionStart || 0, e = a.selectionEnd || 0; if (e > s) return a.value.substring(s, e); } return window.getSelection()?.toString() || ''; } catch { return ''; } })()";
                     _ = SafeSendAsync(ws, new { id = 780, method = "Runtime.evaluate", @params = new { expression = jsCopy, returnByValue = true } }, ct);
                 }
                 else if (action == "clipboard_paste" && req.Text != null)
@@ -662,8 +836,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
                 else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
                 {
-                    var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value);
-                    if (Math.Abs(_viewportW - w) <= 2 && Math.Abs(_viewportH - h) <= 2)
+                    var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value, _nativeSurfaceMaxW, _nativeSurfaceMaxH);
+                    if (Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4)
                     {
                         return true;
                     }
@@ -752,9 +926,12 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             {
                 var dxStr = dx.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
                 var dyStr = dy.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
-                // Direct DOM scroll engine: fast O(1) cached scroll target + hit-test + document scroll with cached container fallback
-                var jsScrollBy = $$"""(() => { try { const dx = {{dxStr}}, dy = {{dyStr}}; const now = Date.now(); const instantScroll = (node, x, y) => { if (typeof node.scrollBy === 'function') { try { node.scrollBy({ left: x, top: y, behavior: 'instant' }); return; } catch {} } node.scrollTop += y; node.scrollLeft += x; }; let scrolledEl = null; const cached = window.__ag360ScrollEl; if (cached && (cached === document.scrollingElement || cached === document.documentElement || cached === document.body || document.contains(cached)) && Math.abs((window.__ag360ScrollX || 0) - {{ix}}) <= 48 && Math.abs((window.__ag360ScrollY || 0) - {{iy}}) <= 48 && (now - (window.__ag360ScrollAt || 0) < 450)) { if (cached === document.scrollingElement || cached === document.documentElement || cached === document.body) { const prevY = window.scrollY || cached.scrollTop || 0, prevX = window.scrollX || cached.scrollLeft || 0; window.scrollBy({ left: dx, top: dy, behavior: 'instant' }); const afterY = window.scrollY || cached.scrollTop || 0, afterX = window.scrollX || cached.scrollLeft || 0; if (Math.abs(afterY - prevY) > 0.1 || Math.abs(afterX - prevX) > 0.1 || cached.scrollHeight > cached.clientHeight + 2) { scrolledEl = cached; window.__ag360ScrollAt = now; } } else { const prevTop = cached.scrollTop, prevLeft = cached.scrollLeft; instantScroll(cached, dx, dy); if (Math.abs(cached.scrollTop - prevTop) > 0.1 || Math.abs(cached.scrollLeft - prevLeft) > 0.1) { scrolledEl = cached; window.__ag360ScrollAt = now; } } } if (!scrolledEl) { let el = document.elementFromPoint({{ix}}, {{iy}}); while (el && el !== document.body && el !== document.documentElement) { const cs = window.getComputedStyle(el); const canY = Math.abs(dy) > 0.05 && (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') && el.scrollHeight > el.clientHeight + 1; const canX = Math.abs(dx) > 0.05 && (cs.overflowX === 'auto' || cs.overflowX === 'scroll' || cs.overflowX === 'overlay') && el.scrollWidth > el.clientWidth + 1; if (canY || canX) { const prevTop = el.scrollTop, prevLeft = el.scrollLeft; instantScroll(el, canX ? dx : 0, canY ? dy : 0); if (Math.abs(el.scrollTop - prevTop) > 0.2 || Math.abs(el.scrollLeft - prevLeft) > 0.2) { scrolledEl = el; break; } } el = el.parentElement; } } if (!scrolledEl) { const docEl = document.scrollingElement || document.documentElement || document.body; const prevY = window.scrollY || (docEl ? docEl.scrollTop : 0); window.scrollBy({ left: dx, top: dy, behavior: 'instant' }); const afterY = window.scrollY || (docEl ? docEl.scrollTop : 0); if (Math.abs(afterY - prevY) > 0.2 || (docEl && docEl.scrollHeight > docEl.clientHeight + 2)) { scrolledEl = docEl; } else { let best = window.__ag360FallbackEl; if (!best || !document.contains(best) || best.scrollHeight <= best.clientHeight + 8) { best = null; let bestArea = 0; for (const cand of document.querySelectorAll('main,section,article,div,[role="main"]')) { if (cand.scrollHeight > cand.clientHeight + 8) { const cs = window.getComputedStyle(cand); if (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') { const r = cand.getBoundingClientRect(); const area = r.width * r.height; if (area > bestArea) { bestArea = area; best = cand; } } } } window.__ag360FallbackEl = best; } if (best) { instantScroll(best, dx, dy); scrolledEl = best; } } } if (scrolledEl) { window.__ag360ScrollEl = scrolledEl; window.__ag360ScrollX = {{ix}}; window.__ag360ScrollY = {{iy}}; window.__ag360ScrollAt = now; } const mEl = scrolledEl || document.scrollingElement || document.documentElement || document.body; return mEl ? { scrollTop: Math.round(mEl === document.scrollingElement || mEl === document.documentElement || mEl === document.body ? (window.scrollY || mEl.scrollTop || 0) : mEl.scrollTop), scrollHeight: Math.round(mEl.scrollHeight || 0), clientHeight: Math.round(mEl === document.scrollingElement || mEl === document.documentElement || mEl === document.body ? (window.innerHeight || mEl.clientHeight || 0) : mEl.clientHeight) } : null; } catch { return null; } })()""";
+                // Hybrid O(1) DOM scroll + 1px native mouseWheel compositor wake (zero querySelectorAll overhead, 22-30fps on both standard and overflow:hidden SPA pages)
+                var jsScrollBy = $$"""(() => { try { const dx = {{dxStr}}, dy = {{dyStr}}, ix = {{ix}}, iy = {{iy}}, now = Date.now(); const docEl = document.scrollingElement || document.documentElement || document.body; const instantScroll = (node, x, y) => { if (node === docEl || node === document.documentElement || node === document.body) { window.scrollBy({ left: x, top: y, behavior: 'instant' }); return; } if (typeof node.scrollBy === 'function') { try { node.scrollBy({ left: x, top: y, behavior: 'instant' }); return; } catch {} } node.scrollTop += y; node.scrollLeft += x; }; let target = null; const cached = window.__ag360ScrollEl; if (cached && (cached === docEl || document.contains(cached)) && Math.abs((window.__ag360ScrollX || 0) - ix) <= 64 && Math.abs((window.__ag360ScrollY || 0) - iy) <= 64 && (now - (window.__ag360ScrollAt || 0) < 1200)) { if ((cached.scrollHeight > cached.clientHeight + 2 && Math.abs(dy) > 0.05) || (cached.scrollWidth > cached.clientWidth + 2 && Math.abs(dx) > 0.05)) target = cached; } if (!target) { let el = document.elementFromPoint(ix, iy); while (el && el !== document.body && el !== document.documentElement) { if ((el.scrollHeight > el.clientHeight + 2 && Math.abs(dy) > 0.05) || (el.scrollWidth > el.clientWidth + 2 && Math.abs(dx) > 0.05)) { const cs = window.getComputedStyle(el); const canY = Math.abs(dy) > 0.05 && (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') && el.scrollHeight > el.clientHeight + 2; const canX = Math.abs(dx) > 0.05 && (cs.overflowX === 'auto' || cs.overflowX === 'scroll' || cs.overflowX === 'overlay') && el.scrollWidth > el.clientWidth + 2; if (canY || canX) { target = el; break; } } el = el.parentElement; } } if (!target) { if (docEl && ((docEl.scrollHeight > docEl.clientHeight + 4 && Math.abs(dy) > 0.05) || (docEl.scrollWidth > docEl.clientWidth + 4 && Math.abs(dx) > 0.05))) { target = docEl; } else { let best = window.__ag360FallbackEl; if (!best || !document.contains(best) || best.scrollHeight <= best.clientHeight + 4) { best = null; let bestArea = 0; const gx = [0.5, 0.35, 0.65, 0.5, 0.5, 0.25, 0.75], gy = [0.5, 0.5, 0.5, 0.3, 0.7, 0.6, 0.6]; const vw = window.innerWidth || 800, vh = window.innerHeight || 600; for (let k = 0; k < gx.length; k++) { let node = document.elementFromPoint(Math.round(vw * gx[k]), Math.round(vh * gy[k])); while (node && node !== document.body && node !== document.documentElement) { if (node.scrollHeight > node.clientHeight + 8) { const cs = window.getComputedStyle(node); if (cs.overflowY === 'auto' || cs.overflowY === 'scroll' || cs.overflowY === 'overlay') { const area = node.clientWidth * node.clientHeight; if (area > bestArea) { bestArea = area; best = node; } break; } } node = node.parentElement; } } window.__ag360FallbackEl = best; } target = best || docEl; } } if (target) { instantScroll(target, dx, dy); window.__ag360ScrollEl = target; window.__ag360ScrollX = ix; window.__ag360ScrollY = iy; window.__ag360ScrollAt = now; } const mEl = target || docEl; return mEl ? { scrollTop: Math.round(mEl === docEl ? (window.scrollY || mEl.scrollTop || 0) : mEl.scrollTop), scrollHeight: Math.round(mEl.scrollHeight || 0), clientHeight: Math.round(mEl === docEl ? (window.innerHeight || mEl.clientHeight || 0) : mEl.clientHeight) } : null; } catch { return null; } })()""";
                 await SafeSendAsync(ws, new { id = 779, method = "Runtime.evaluate", @params = new { expression = jsScrollBy, returnByValue = true } }, ct);
+                var nudgeDx = Math.Abs(dx) > 0.2 ? (dx > 0 ? 1 : -1) : 0;
+                var nudgeDy = Math.Abs(dy) > 0.2 ? (dy > 0 ? 1 : -1) : 0;
+                _ = SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Input.dispatchMouseEvent", @params = new { type = "mouseWheel", x = ix, y = iy, deltaX = nudgeDx, deltaY = nudgeDy } }, ct);
             }
             catch
             {
@@ -814,7 +991,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             var nowTick = Environment.TickCount64;
             if (!force && nowTick - Interlocked.Read(ref _lastScrollMetricsTick) < 45) return;
             Interlocked.Exchange(ref _lastScrollMetricsTick, nowTick);
-            const string jsMetrics = "(() => { try { const docEl = document.scrollingElement || document.documentElement || document.body; return { scrollTop: Math.round(window.scrollY || (docEl ? docEl.scrollTop : 0)), scrollHeight: Math.round(docEl ? docEl.scrollHeight : 0), clientHeight: Math.round(window.innerHeight || (docEl ? docEl.clientHeight : 0)) }; } catch { return null; } })()";
+            const string jsMetrics = "(() => { try { const docEl = document.scrollingElement || document.documentElement || document.body; const cached = window.__ag360ScrollEl; const mEl = (cached && cached !== docEl && document.contains(cached) && cached.scrollHeight > cached.clientHeight + 4) ? cached : docEl; return mEl ? { scrollTop: Math.round(mEl === docEl ? (window.scrollY || mEl.scrollTop || 0) : mEl.scrollTop), scrollHeight: Math.round(mEl.scrollHeight || 0), clientHeight: Math.round(mEl === docEl ? (window.innerHeight || mEl.clientHeight || 0) : mEl.clientHeight) } : null; } catch { return null; } })()";
             _ = SafeSendAsync(ws, new { id = 778, method = "Runtime.evaluate", @params = new { expression = jsMetrics, returnByValue = true } }, ct);
         }
 
@@ -828,6 +1005,23 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             {
                 method = "Page.scrollMetrics",
                 @params = new { scrollTop, scrollHeight, clientHeight }
+            });
+            lock (_viewers)
+            {
+                foreach (var (_, ctrlCh, _) in _viewers)
+                {
+                    ctrlCh.Writer.TryWrite(new StreamPacket(msgBytes, WebSocketMessageType.Text));
+                }
+            }
+        }
+
+        private void BroadcastClipboardText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            var msgBytes = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                method = "Page.clipboardContent",
+                @params = new { text }
             });
             lock (_viewers)
             {
@@ -914,7 +1108,116 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     await SafeSendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, ct);
                     await SafeSendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, ct);
-                    var (w, h) = NormalizeViewport(initialWidth, initialHeight);
+                    await SafeSendAsync(ws, new { id = 14, method = "Page.bringToFront" }, ct);
+                    await SafeSendAsync(ws, new { id = 12, method = "Emulation.clearDeviceMetricsOverride" }, ct);
+                    await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
+                    var initBuf = new byte[16 * 1024];
+                    using var initMs = new MemoryStream();
+                    while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                    {
+                        initMs.SetLength(0);
+                        WebSocketReceiveResult ir;
+                        do
+                        {
+                            ir = await ws.ReceiveAsync(initBuf, ct);
+                            if (ir.MessageType == WebSocketMessageType.Close) return;
+                            initMs.Write(initBuf, 0, ir.Count);
+                        } while (!ir.EndOfMessage);
+                        using var initDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
+                        if (initDoc.RootElement.TryGetProperty("id", out var probeId) && probeId.GetInt32() == 15)
+                        {
+                            try
+                            {
+                                if (initDoc.RootElement.TryGetProperty("result", out var rProp) &&
+                                    rProp.TryGetProperty("result", out var innerR) &&
+                                    innerR.TryGetProperty("value", out var valProp) &&
+                                    valProp.ValueKind == JsonValueKind.String)
+                                {
+                                    using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
+                                    var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
+                                    var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
+                                    if (sw >= 640 && sh >= 480)
+                                    {
+                                        _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
+                                        _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
+                                    }
+                                }
+                            }
+                            catch { }
+                            break;
+                        }
+                    }
+                    // Self-heal unmaximized Wayland/X11 Chromium window surfaces (<1300px wide):
+                    // toggle normal (1440x900) -> maximized before applying Emulation.setDeviceMetricsOverride so the tab always renders at full 1408x771+ resolution!
+                    if (_nativeSurfaceMaxW < 1300)
+                    {
+                        try
+                        {
+                            await SafeSendAsync(ws, new { id = 16, method = "Browser.getWindowForTarget", @params = new { targetId } }, ct);
+                            int winId = 0;
+                            while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                            {
+                                initMs.SetLength(0);
+                                WebSocketReceiveResult ir;
+                                do
+                                {
+                                    ir = await ws.ReceiveAsync(initBuf, ct);
+                                    if (ir.MessageType == WebSocketMessageType.Close) return;
+                                    initMs.Write(initBuf, 0, ir.Count);
+                                } while (!ir.EndOfMessage);
+                                using var winDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
+                                if (winDoc.RootElement.TryGetProperty("id", out var widAck) && widAck.GetInt32() == 16)
+                                {
+                                    if (winDoc.RootElement.TryGetProperty("result", out var wRes) &&
+                                        wRes.TryGetProperty("windowId", out var widProp) &&
+                                        widProp.TryGetInt32(out var parsedWid))
+                                    {
+                                        winId = parsedWid;
+                                    }
+                                    break;
+                                }
+                            }
+                            if (winId > 0)
+                            {
+                                await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, ct);
+                                await SafeSendAsync(ws, new { id = 18, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { windowState = "maximized" } } }, ct);
+                                await Task.Delay(80, ct);
+                                await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true } }, ct);
+                                while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
+                                {
+                                    initMs.SetLength(0);
+                                    WebSocketReceiveResult ir;
+                                    do
+                                    {
+                                        ir = await ws.ReceiveAsync(initBuf, ct);
+                                        if (ir.MessageType == WebSocketMessageType.Close) return;
+                                        initMs.Write(initBuf, 0, ir.Count);
+                                    } while (!ir.EndOfMessage);
+                                    using var reDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
+                                    if (reDoc.RootElement.TryGetProperty("id", out var reId) && reId.GetInt32() == 19)
+                                    {
+                                        if (reDoc.RootElement.TryGetProperty("result", out var rProp) &&
+                                            rProp.TryGetProperty("result", out var innerR) &&
+                                            innerR.TryGetProperty("value", out var valProp) &&
+                                            valProp.ValueKind == JsonValueKind.String)
+                                        {
+                                            using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
+                                            var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
+                                            var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
+                                            if (sw >= 640 && sh >= 480)
+                                            {
+                                                _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
+                                                _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    var (w, h) = NormalizeViewport(initialWidth, initialHeight, _nativeSurfaceMaxW, _nativeSurfaceMaxH);
                     _viewportW = w;
                     _viewportH = h;
                     await SafeSendAsync(ws, new
@@ -931,9 +1234,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             screenHeight = h
                         }
                     }, ct);
-                    // Wait for id=13 ACK before starting screencast so frame #0 is guaranteed to have the exact requested viewport!
-                    var initBuf = new byte[16 * 1024];
-                    using var initMs = new MemoryStream();
                     while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
                     {
                         initMs.SetLength(0);
@@ -951,13 +1251,13 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         }
                     }
                     await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = w, maxHeight = h, everyNthFrame = 1 } }, ct);
-                    // Fire an immediate fast snapshot (id=888) + follow-up at 180ms so newly created Google tabs broadcast their first live frame in <50ms!
+                    // Fire an immediate fast snapshot (id=888) + follow-up at 160ms so tabs broadcast their first live frame with zero round-trip wait!
                     _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            await Task.Delay(180, ct);
+                            await Task.Delay(160, ct);
                             if (ws.State == WebSocketState.Open)
                             {
                                 await SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
@@ -1012,6 +1312,19 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             if (!string.IsNullOrEmpty(detected))
                             {
                                 BroadcastCursorChanged(detected);
+                            }
+                            continue;
+                        }
+                        if (rId == 780 &&
+                            doc.RootElement.TryGetProperty("result", out var clipRes) &&
+                            clipRes.TryGetProperty("result", out var innerClip) &&
+                            innerClip.TryGetProperty("value", out var clipVal) &&
+                            clipVal.ValueKind == JsonValueKind.String)
+                        {
+                            var copiedText = clipVal.GetString();
+                            if (!string.IsNullOrEmpty(copiedText))
+                            {
+                                BroadcastClipboardText(copiedText);
                             }
                             continue;
                         }
@@ -1085,7 +1398,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     {
                         var dw = meta.TryGetProperty("deviceWidth", out var dwProp) ? dwProp.GetDouble() : _viewportW;
                         var dh = meta.TryGetProperty("deviceHeight", out var dhProp) ? dhProp.GetDouble() : _viewportH;
-                        if (Math.Abs(dw - _viewportW) > 24 || Math.Abs(dh - _viewportH) > 24)
+                        if (Math.Abs(dw - _viewportW) > 16 || Math.Abs(dh - _viewportH) > 16)
                         {
                             var sidDrop = p.GetProperty("sessionId").GetInt32();
                             _ = SafeSendAsync(ws, new { id = 2, method = "Page.screencastFrameAck", @params = new { sessionId = sidDrop } }, ct);
@@ -1106,6 +1419,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                 }
                             }, ct);
                             await RestartScreencastAsync(ws, w, h, ct);
+                            _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                             continue;
                         }
                     }
@@ -1121,9 +1435,6 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     var data = p.GetProperty("data").GetString() ?? "";
                     if (!Broadcast(data) && _hasTargetViewport)
                     {
-                        var w = (int)Math.Round(_viewportW);
-                        var h = (int)Math.Round(_viewportH);
-                        await RestartScreencastAsync(ws, w, h, ct);
                         _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                     }
                     if (Environment.TickCount64 - Interlocked.Read(ref _lastScrollMetricsTick) >= 240)
@@ -1155,6 +1466,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
         }
 
+        private static readonly JsonSerializerOptions CdpJsonOptions = new()
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        };
+
         private async Task SafeSendAsync(WebSocket ws, object message, CancellationToken ct)
         {
             await _sendLock.WaitAsync(ct);
@@ -1162,7 +1478,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             {
                 if (ws.State == WebSocketState.Open)
                 {
-                    await ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message), WebSocketMessageType.Text, true, ct);
+                    await ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message, CdpJsonOptions), WebSocketMessageType.Text, true, ct);
                 }
             }
             finally

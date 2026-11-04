@@ -51,6 +51,7 @@ public sealed class AgentBrowserDirectory(
     private readonly AgentBrowserGate _gate = gate ?? new AgentBrowserGate();
     private readonly ConcurrentDictionary<string, long> _recentlyClosedTargets = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (AgentBrowserTab Tab, long Tick)> _recentlyCreatedTargets = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (ClientWebSocket Socket, SemaphoreSlim Lock)> _browserSockets = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record BrowserService(string Service, string ViewerUrl, string CdpUrl, IReadOnlyDictionary<string, string> Profiles);
 
@@ -179,13 +180,10 @@ public sealed class AgentBrowserDirectory(
 
         var slug = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
         var cacheKey = $"agent360:browser-mcp-bind:{slug}";
-        if (!cache.TryGetValue(cacheKey, out DynamicMcpBrowserResolution? mcpRes) || mcpRes is null)
+        if (!cache.TryGetValue(cacheKey, out DynamicMcpBrowserResolution? mcpRes))
         {
             mcpRes = await ProbeAgentBrowserMcpAsync(target, ct);
-            if (mcpRes is not null)
-            {
-                cache.Set(cacheKey, mcpRes, TimeSpan.FromSeconds(15));
-            }
+            cache.Set(cacheKey, mcpRes, TimeSpan.FromSeconds(mcpRes is not null ? 45 : 20));
         }
 
         if (mcpRes is not null)
@@ -364,7 +362,7 @@ public sealed class AgentBrowserDirectory(
         {
             var nextTabs = mutator(cached.Tabs.ToList());
             var updated = cached with { Tabs = nextTabs };
-            cache.Set(key, updated, TimeSpan.FromSeconds(5));
+            cache.Set(key, updated, TimeSpan.FromSeconds(12));
             return updated.Tabs;
         }
         return null;
@@ -483,7 +481,7 @@ public sealed class AgentBrowserDirectory(
 
         var info = new AgentBrowserInfo(agentId, target.Instance!.Key, target.ClusterNode, service, viewer, cdp, profile, ctx, reachable, ctx is not null, tabs);
         // An unreachable browser is negatively cached longer: a dead node is not re-dialled on every poll.
-        cache.Set(key, info, TimeSpan.FromSeconds(reachable ? 5 : 15));
+        cache.Set(key, info, TimeSpan.FromSeconds(reachable ? 12 : 15));
         return info;
     }
 
@@ -518,9 +516,29 @@ public sealed class AgentBrowserDirectory(
             }
         }
 
-        return KnownContexts.TryGetValue(key, out var known) && all.Any(t => t.Type == "page" && t.BrowserContextId == known)
-            ? known
-            : null;
+        if (KnownContexts.TryGetValue(key, out var known) && all.Any(t => t.Type == "page" && t.BrowserContextId == known))
+        {
+            return known;
+        }
+        // Cold-start recovery for the Default profile when its anchor tab was navigated away and no other context is unanchored
+        if (string.Equals(profile, "Default", StringComparison.OrdinalIgnoreCase))
+        {
+            var anchoredContexts = all
+                .Where(t => t.Type == "page" && ProfileOf(t.Url) is not null && !string.IsNullOrEmpty(t.BrowserContextId))
+                .Select(t => t.BrowserContextId!)
+                .ToHashSet(StringComparer.Ordinal);
+            var unanchoredContexts = all
+                .Where(t => t.Type == "page" && !string.IsNullOrEmpty(t.BrowserContextId) && !anchoredContexts.Contains(t.BrowserContextId!))
+                .Select(t => t.BrowserContextId!)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (unanchoredContexts.Count == 1)
+            {
+                KnownContexts[key] = unanchoredContexts[0];
+                return unanchoredContexts[0];
+            }
+        }
+        return null;
     }
 
     /// <summary>The agent's own pages only (never another profile's), most useful first.</summary>
@@ -612,44 +630,76 @@ public sealed class AgentBrowserDirectory(
 
     private async Task<IReadOnlyList<CdpTarget>> ListTargetsAsync(string cdpUrl, CancellationToken ct)
     {
-        var http = httpClientFactory.CreateClient(HttpClientName);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(5));
-        var version = await http.GetFromJsonAsync<JsonObject>($"{cdpUrl.TrimEnd('/')}/json/version", cts.Token);
-        var browserWs = version?["webSocketDebuggerUrl"]?.GetValue<string>()
-            ?? throw new InvalidOperationException("CDP did not return a browser websocket");
-        // The tailnet proxy rewrites the advertised host; keep the endpoint we can actually reach.
-        var wsUri = new UriBuilder(browserWs) { Host = new Uri(cdpUrl).Host, Port = new Uri(cdpUrl).Port }.Uri;
-
-        using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(wsUri, cts.Token);
-        var req = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"Target.getTargets\"}");
-        await ws.SendAsync(req, WebSocketMessageType.Text, true, cts.Token);
-        var buffer = new byte[64 * 1024];
-        using var ms = new MemoryStream();
-        while (true)
+        var entry = _browserSockets.GetOrAdd(cdpUrl, _ => (new ClientWebSocket(), new SemaphoreSlim(1, 1)));
+        await entry.Lock.WaitAsync(cts.Token);
+        try
         {
-            ms.SetLength(0);
-            WebSocketReceiveResult r;
-            do
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                r = await ws.ReceiveAsync(buffer, cts.Token);
-                ms.Write(buffer, 0, r.Count);
-            } while (!r.EndOfMessage);
-            using var doc = JsonDocument.Parse(ms.ToArray());
-            if (!doc.RootElement.TryGetProperty("id", out var id) || id.GetInt32() != 1)
-            {
-                continue;
+                var ws = entry.Socket;
+                if (ws.State != WebSocketState.Open)
+                {
+                    try { ws.Dispose(); } catch { }
+                    ws = new ClientWebSocket();
+                    ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+                    var http = httpClientFactory.CreateClient(HttpClientName);
+                    var version = await http.GetFromJsonAsync<JsonObject>($"{cdpUrl.TrimEnd('/')}/json/version", cts.Token);
+                    var browserWs = version?["webSocketDebuggerUrl"]?.GetValue<string>()
+                        ?? throw new InvalidOperationException("CDP did not return a browser websocket");
+                    var wsUri = new UriBuilder(browserWs) { Host = new Uri(cdpUrl).Host, Port = new Uri(cdpUrl).Port }.Uri;
+                    await ws.ConnectAsync(wsUri, cts.Token);
+                    entry = (ws, entry.Lock);
+                    _browserSockets[cdpUrl] = entry;
+                }
+
+                try
+                {
+                    var req = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"Target.getTargets\"}");
+                    await ws.SendAsync(req, WebSocketMessageType.Text, true, cts.Token);
+                    var buffer = new byte[64 * 1024];
+                    using var ms = new MemoryStream();
+                    while (true)
+                    {
+                        ms.SetLength(0);
+                        WebSocketReceiveResult r;
+                        do
+                        {
+                            r = await ws.ReceiveAsync(buffer, cts.Token);
+                            if (r.MessageType == WebSocketMessageType.Close)
+                            {
+                                throw new WebSocketException("Browser CDP socket closed");
+                            }
+                            ms.Write(buffer, 0, r.Count);
+                        } while (!r.EndOfMessage);
+                        using var doc = JsonDocument.Parse(ms.ToArray());
+                        if (!doc.RootElement.TryGetProperty("id", out var id) || id.GetInt32() != 1)
+                        {
+                            continue;
+                        }
+                        return doc.RootElement.GetProperty("result").GetProperty("targetInfos").EnumerateArray()
+                            .Select(t => new CdpTarget(
+                                t.GetProperty("targetId").GetString() ?? "",
+                                t.GetProperty("type").GetString() ?? "",
+                                t.TryGetProperty("title", out var title) ? title.GetString() ?? "" : "",
+                                t.TryGetProperty("url", out var url) ? url.GetString() ?? "" : "",
+                                t.TryGetProperty("browserContextId", out var c) ? c.GetString() : null))
+                            .ToList();
+                    }
+                }
+                catch when (attempt == 0)
+                {
+                    try { ws.Dispose(); } catch { }
+                    entry = (new ClientWebSocket(), entry.Lock);
+                    _browserSockets[cdpUrl] = entry;
+                }
             }
-            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
-            return doc.RootElement.GetProperty("result").GetProperty("targetInfos").EnumerateArray()
-                .Select(t => new CdpTarget(
-                    t.GetProperty("targetId").GetString() ?? "",
-                    t.GetProperty("type").GetString() ?? "",
-                    t.TryGetProperty("title", out var title) ? title.GetString() ?? "" : "",
-                    t.TryGetProperty("url", out var url) ? url.GetString() ?? "" : "",
-                    t.TryGetProperty("browserContextId", out var c) ? c.GetString() : null))
-                .ToList();
+            return [];
+        }
+        finally
+        {
+            entry.Lock.Release();
         }
     }
 }

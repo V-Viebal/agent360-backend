@@ -127,4 +127,20 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         w.Should().Be(1200);
         h.Should().Be(650);
     }
+
+    [Fact]
+    public void NormalizeViewportFitsWithinNativeSurfaceWithoutTiling()
+    {
+        // When frontend requests 1312x960 (aspect 1.3667) on a 1095x900 native surface, it scales down proportionally to 1095x801
+        var (w1, h1) = ScreencastHub.NormalizeViewport(1312, 960, 1095, 900);
+        w1.Should().Be(1095);
+        h1.Should().Be(801);
+        Math.Abs(((double)w1 / h1) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
+
+        // When frontend requests 1312x960 on a 1440x813 native surface, it scales down proportionally to 1111x813
+        var (w2, h2) = ScreencastHub.NormalizeViewport(1312, 960, 1440, 813);
+        w2.Should().Be(1111);
+        h2.Should().Be(813);
+        Math.Abs(((double)w2 / h2) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
+    }
 }

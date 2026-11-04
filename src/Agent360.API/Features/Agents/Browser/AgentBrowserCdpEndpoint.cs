@@ -781,38 +781,178 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 await SendAsync(ws, new { id = wheelId, method = "Runtime.evaluate", @params = new { expression = jsScrollBy } }, cts.Token);
                 await ReceiveByIdAsync(ws, wheelId, cts.Token);
             }
+            else if (action == "ime_commit")
+            {
+                var bsCount = Math.Clamp(req.Backspaces ?? 0, 0, 64);
+                int lastAckId = 0;
+                for (int i = 0; i < bsCount; i++)
+                {
+                    await SendAsync(ws, new
+                    {
+                        id = ++id,
+                        method = "Input.dispatchKeyEvent",
+                        @params = new
+                        {
+                            type = "rawKeyDown",
+                            key = "Backspace",
+                            code = "Backspace",
+                            windowsVirtualKeyCode = 8,
+                            nativeVirtualKeyCode = 8,
+                            commands = new[] { "DeleteBackward" }
+                        }
+                    }, cts.Token);
+                    lastAckId = ++id;
+                    await SendAsync(ws, new
+                    {
+                        id = lastAckId,
+                        method = "Input.dispatchKeyEvent",
+                        @params = new
+                        {
+                            type = "keyUp",
+                            key = "Backspace",
+                            code = "Backspace",
+                            windowsVirtualKeyCode = 8,
+                            nativeVirtualKeyCode = 8
+                        }
+                    }, cts.Token);
+                }
+                if (!string.IsNullOrEmpty(req.Text))
+                {
+                    var normText = req.Text.Normalize(System.Text.NormalizationForm.FormC);
+                    lastAckId = ++id;
+                    await SendAsync(ws, new { id = lastAckId, method = "Input.insertText", @params = new { text = normText } }, cts.Token);
+                }
+                if (lastAckId > 0)
+                {
+                    await ReceiveByIdAsync(ws, lastAckId, cts.Token);
+                }
+            }
             else if (action == "type" && !string.IsNullOrEmpty(req.Text))
             {
+                var normText = req.Text.Normalize(System.Text.NormalizationForm.FormC);
                 var txtId = ++id;
-                await SendAsync(ws, new { id = txtId, method = "Input.insertText", @params = new { text = req.Text } }, cts.Token);
+                await SendAsync(ws, new { id = txtId, method = "Input.insertText", @params = new { text = normText } }, cts.Token);
                 await ReceiveByIdAsync(ws, txtId, cts.Token);
             }
             else if (action == "key" && !string.IsNullOrEmpty(req.Key))
             {
                 var k = req.Key;
-                int keyCode = k.Equals("Enter", StringComparison.OrdinalIgnoreCase) ? 13
-                    : k.Equals("Backspace", StringComparison.OrdinalIgnoreCase) ? 8
+                var mods = req.Modifiers ?? 0;
+                bool hasCtrlOrMeta = (mods & 2) != 0 || (mods & 4) != 0;
+                bool hasShift = (mods & 8) != 0;
+                bool isBackspace = k.Equals("Backspace", StringComparison.OrdinalIgnoreCase);
+                bool isDelete = k.Equals("Delete", StringComparison.OrdinalIgnoreCase);
+                bool isEnter = k.Equals("Enter", StringComparison.OrdinalIgnoreCase);
+                int keyCode = isEnter ? 13
+                    : isBackspace ? 8
                     : k.Equals("Escape", StringComparison.OrdinalIgnoreCase) ? 27
                     : k.Equals("Tab", StringComparison.OrdinalIgnoreCase) ? 9
                     : k.Equals("ArrowLeft", StringComparison.OrdinalIgnoreCase) ? 37
                     : k.Equals("ArrowUp", StringComparison.OrdinalIgnoreCase) ? 38
                     : k.Equals("ArrowRight", StringComparison.OrdinalIgnoreCase) ? 39
                     : k.Equals("ArrowDown", StringComparison.OrdinalIgnoreCase) ? 40
-                    : k.Equals("Delete", StringComparison.OrdinalIgnoreCase) ? 46
+                    : isDelete ? 46
                     : k.Equals("Home", StringComparison.OrdinalIgnoreCase) ? 36
                     : k.Equals("End", StringComparison.OrdinalIgnoreCase) ? 35
+                    : k.Equals("PageUp", StringComparison.OrdinalIgnoreCase) ? 33
+                    : k.Equals("PageDown", StringComparison.OrdinalIgnoreCase) ? 34
+                    : k.Equals(" ", StringComparison.Ordinal) || k.Equals("Space", StringComparison.OrdinalIgnoreCase) ? 32
                     : (k.Length == 1 ? (int)char.ToUpperInvariant(k[0]) : 0);
-                var mods = req.Modifiers ?? 0;
-                var codeStr = k.Length == 1 && char.IsLetter(k[0]) ? $"Key{char.ToUpperInvariant(k[0])}" : k;
+                var codeStr = k.Length == 1 && char.IsLetter(k[0]) ? $"Key{char.ToUpperInvariant(k[0])}"
+                    : k.Length == 1 && char.IsDigit(k[0]) ? $"Digit{k[0]}"
+                    : (k == " " ? "Space" : k);
+                bool isPrintable = k.Length == 1 && !char.IsControl(k[0]) && !hasCtrlOrMeta;
+                string? keyText = isEnter ? "\r" : (isPrintable ? k : null);
+                string downType = (isPrintable || isEnter) ? "keyDown" : "rawKeyDown";
+                string[]? commands = null;
+                if (isBackspace)
+                {
+                    commands = new[] { hasCtrlOrMeta ? "DeleteWordBackward" : "DeleteBackward" };
+                }
+                else if (isDelete)
+                {
+                    commands = new[] { hasCtrlOrMeta ? "DeleteWordForward" : "DeleteForward" };
+                }
+                else if (k.Equals("ArrowLeft", StringComparison.OrdinalIgnoreCase))
+                {
+                    commands = new[] { hasCtrlOrMeta ? (hasShift ? "MoveWordLeftAndModifySelection" : "MoveWordLeft") : (hasShift ? "MoveLeftAndModifySelection" : "MoveLeft") };
+                }
+                else if (k.Equals("ArrowRight", StringComparison.OrdinalIgnoreCase))
+                {
+                    commands = new[] { hasCtrlOrMeta ? (hasShift ? "MoveWordRightAndModifySelection" : "MoveWordRight") : (hasShift ? "MoveRightAndModifySelection" : "MoveRight") };
+                }
+                else if (k.Equals("ArrowUp", StringComparison.OrdinalIgnoreCase))
+                {
+                    commands = new[] { hasShift ? "MoveUpAndModifySelection" : "MoveUp" };
+                }
+                else if (k.Equals("ArrowDown", StringComparison.OrdinalIgnoreCase))
+                {
+                    commands = new[] { hasShift ? "MoveDownAndModifySelection" : "MoveDown" };
+                }
+                else if (k.Equals("Home", StringComparison.OrdinalIgnoreCase))
+                {
+                    commands = new[] { hasShift ? "MoveToBeginningOfLineAndModifySelection" : "MoveToBeginningOfLine" };
+                }
+                else if (k.Equals("End", StringComparison.OrdinalIgnoreCase))
+                {
+                    commands = new[] { hasShift ? "MoveToEndOfLineAndModifySelection" : "MoveToEndOfLine" };
+                }
+                else if (hasCtrlOrMeta && k.Length == 1)
+                {
+                    var lower = char.ToLowerInvariant(k[0]);
+                    commands = lower switch
+                    {
+                        'a' => new[] { "SelectAll" },
+                        'c' => new[] { "Copy" },
+                        'x' => new[] { "Cut" },
+                        'v' => new[] { "Paste" },
+                        'z' => new[] { hasShift ? "Redo" : "Undo" },
+                        'y' => new[] { "Redo" },
+                        _ => null
+                    };
+                }
 
-                await SendAsync(ws, new { id = ++id, method = "Input.dispatchKeyEvent", @params = new { type = "keyDown", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, cts.Token);
+                await SendAsync(ws, new {
+                    id = ++id,
+                    method = "Input.dispatchKeyEvent",
+                    @params = new {
+                        type = downType,
+                        key = k,
+                        code = codeStr,
+                        text = keyText,
+                        unmodifiedText = keyText,
+                        windowsVirtualKeyCode = keyCode,
+                        nativeVirtualKeyCode = keyCode,
+                        modifiers = mods,
+                        commands
+                    }
+                }, cts.Token);
+
+                if (isPrintable)
+                {
+                    await SendAsync(ws, new {
+                        id = ++id,
+                        method = "Input.dispatchKeyEvent",
+                        @params = new {
+                            type = "char",
+                            key = k,
+                            code = codeStr,
+                            text = keyText,
+                            unmodifiedText = keyText,
+                            windowsVirtualKeyCode = keyCode,
+                            nativeVirtualKeyCode = keyCode,
+                            modifiers = mods
+                        }
+                    }, cts.Token);
+                }
+
                 var kuId = ++id;
                 await SendAsync(ws, new { id = kuId, method = "Input.dispatchKeyEvent", @params = new { type = "keyUp", key = k, code = codeStr, windowsVirtualKeyCode = keyCode, nativeVirtualKeyCode = keyCode, modifiers = mods } }, cts.Token);
                 await ReceiveByIdAsync(ws, kuId, cts.Token);
             }
             else if (action == "clipboard_copy")
             {
-                var jsCopy = "(() => { try { document.execCommand('copy'); } catch {} })()";
+                var jsCopy = "(() => { try { document.execCommand('copy'); const a = document.activeElement; if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { const s = a.selectionStart || 0, e = a.selectionEnd || 0; if (e > s) return a.value.substring(s, e); } return window.getSelection()?.toString() || ''; } catch { return ''; } })()";
                 var cId = ++id;
                 await SendAsync(ws, new { id = cId, method = "Runtime.evaluate", @params = new { expression = jsCopy, returnByValue = true } }, cts.Token);
                 await ReceiveByIdAsync(ws, cId, cts.Token);
@@ -908,14 +1048,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             }
             else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
             {
-                var w = Math.Clamp(req.Width.Value, 320, 1920);
-                var h = Math.Clamp(req.Height.Value, 240, 1080);
-                if (w < 560)
-                {
-                    var scale = 640.0 / w;
-                    w = 640;
-                    h = Math.Clamp((int)Math.Round(h * scale), 240, 1080);
-                }
+                var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value);
                 var rId = ++id;
                 await SendAsync(ws, new
                 {
@@ -1035,8 +1168,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
     private const int MaxCdpMessageBytes = 16 * 1024 * 1024;
 
+    private static readonly JsonSerializerOptions CdpJsonOptions = new()
+    {
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+    };
+
     private static Task SendAsync(WebSocket ws, object message, CancellationToken ct) =>
-        ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message), WebSocketMessageType.Text, true, ct);
+        ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(message, CdpJsonOptions), WebSocketMessageType.Text, true, ct);
 
     private static async Task<byte[]?> ReceiveAsync(WebSocket ws, CancellationToken ct)
     {
