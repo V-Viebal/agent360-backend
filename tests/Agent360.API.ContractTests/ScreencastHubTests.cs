@@ -179,4 +179,24 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         hub.ActiveSessions.Should().BeGreaterThanOrEqualTo(1);
         hub.RetireTarget(cdpUrl, "T2");
     }
+
+    [Fact]
+    public void BuildUserAgentOverrideParamsReturnsMobileAndDesktopClientHints()
+    {
+        var mobileJson = JsonSerializer.Serialize(ScreencastHub.BuildUserAgentOverrideParams(isMobile: true));
+        using var mobDoc = JsonDocument.Parse(mobileJson);
+        mobDoc.RootElement.GetProperty("userAgent").GetString().Should().Contain("Android 14; Pixel 8");
+        var mobMeta = mobDoc.RootElement.GetProperty("userAgentMetadata");
+        mobMeta.GetProperty("mobile").GetBoolean().Should().BeTrue();
+        mobMeta.GetProperty("platform").GetString().Should().Be("Android");
+        mobMeta.GetProperty("model").GetString().Should().Be("Pixel 8");
+
+        var desktopJson = JsonSerializer.Serialize(ScreencastHub.BuildUserAgentOverrideParams(isMobile: false));
+        using var deskDoc = JsonDocument.Parse(desktopJson);
+        deskDoc.RootElement.GetProperty("userAgent").GetString().Should().Contain("X11; Linux x86_64");
+        var deskMeta = deskDoc.RootElement.GetProperty("userAgentMetadata");
+        deskMeta.GetProperty("mobile").GetBoolean().Should().BeFalse();
+        deskMeta.GetProperty("platform").GetString().Should().Be("Linux");
+        deskMeta.GetProperty("model").GetString().Should().BeEmpty();
+    }
 }

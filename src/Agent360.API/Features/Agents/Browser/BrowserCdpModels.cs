@@ -28,11 +28,13 @@ public sealed record BrowserInputRequest(
     int? Modifiers = null,
     int? Backspaces = null,
     bool? IsMobile = null,
-    string? DeviceType = null);
+    string? DeviceType = null,
+    bool? ReloadOnModeChange = null);
 
 public sealed record BrowserVpnRequest(
     bool Enabled = true,
     string? Mode = "auto",
     string? Region = null,
     int? ProxyId = null,
-    string? ProxyUrl = null);
+    string? ProxyUrl = null,
+    bool Rotate = false);

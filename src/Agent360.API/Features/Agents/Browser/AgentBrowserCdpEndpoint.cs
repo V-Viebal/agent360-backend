@@ -1141,6 +1141,20 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 var isMobileResize = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                 var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileResize);
                 var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileResize);
+                await SendAsync(ws, new
+                {
+                    id = ++id,
+                    method = "Emulation.setUserAgentOverride",
+                    @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileResize)
+                }, cts.Token);
+                await SendAsync(ws, new
+                {
+                    id = ++id,
+                    method = "Emulation.setTouchEmulationEnabled",
+                    @params = new { enabled = isMobileResize, maxTouchPoints = isMobileResize ? 5 : 0 }
+                }, cts.Token);
+                var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
+                var orientationAngle = w > h ? 90 : 0;
                 var rId = ++id;
                 await SendAsync(ws, new
                 {
@@ -1152,12 +1166,17 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         height = h,
                         deviceScaleFactor = 1,
                         scale = backingScale,
-                        mobile = false,
+                        mobile = isMobileResize,
                         screenWidth = w,
-                        screenHeight = h
+                        screenHeight = h,
+                        screenOrientation = new { type = orientationType, angle = orientationAngle }
                     }
                 }, cts.Token);
                 await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
+                if (req.ReloadOnModeChange == true)
+                {
+                    await SendAsync(ws, new { id = ++id, method = "Page.reload", @params = new { ignoreCache = false } }, cts.Token);
+                }
                 await ReceiveByIdAsync(ws, rId, cts.Token);
             }
 

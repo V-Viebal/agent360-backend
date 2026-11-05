@@ -267,6 +267,65 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         }
     }
 
+    public const string MobileUserAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36";
+    public const string DesktopUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+
+    internal static object BuildUserAgentOverrideParams(bool isMobile) => isMobile
+        ? new
+        {
+            userAgent = MobileUserAgent,
+            platform = "Linux armv8l",
+            userAgentMetadata = new
+            {
+                brands = new object[]
+                {
+                    new { brand = "Chromium", version = "134" },
+                    new { brand = "Google Chrome", version = "134" },
+                    new { brand = "Not:A-Brand", version = "24" }
+                },
+                fullVersionList = new object[]
+                {
+                    new { brand = "Chromium", version = "134.0.6998.89" },
+                    new { brand = "Google Chrome", version = "134.0.6998.89" },
+                    new { brand = "Not:A-Brand", version = "24.0.0.0" }
+                },
+                platform = "Android",
+                platformVersion = "14.0.0",
+                architecture = "arm",
+                model = "Pixel 8",
+                mobile = true,
+                bitness = "64",
+                wow64 = false
+            }
+        }
+        : new
+        {
+            userAgent = DesktopUserAgent,
+            platform = "Linux x86_64",
+            userAgentMetadata = new
+            {
+                brands = new object[]
+                {
+                    new { brand = "Chromium", version = "134" },
+                    new { brand = "Google Chrome", version = "134" },
+                    new { brand = "Not:A-Brand", version = "24" }
+                },
+                fullVersionList = new object[]
+                {
+                    new { brand = "Chromium", version = "134.0.6998.89" },
+                    new { brand = "Google Chrome", version = "134.0.6998.89" },
+                    new { brand = "Not:A-Brand", version = "24.0.0.0" }
+                },
+                platform = "Linux",
+                platformVersion = "6.8.0",
+                architecture = "x86",
+                model = "",
+                mobile = false,
+                bitness = "64",
+                wow64 = false
+            }
+        };
+
     internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
     internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH, isMobileDevice);
     internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.ComputeBackingScale(cssW, cssH, maxSurfaceW, maxSurfaceH, isMobileDevice);
@@ -318,6 +377,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private int _nativeSurfaceMaxH = 813;
         private double _backingScale = 1.0;
         private bool _isMobileViewport;
+        private bool? _appliedMobileEmulation;
         private bool _hasTargetViewport;
         private int _currentQuality = 88;
         private long _lastCursorProbeTick;
@@ -901,9 +961,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
                 {
                     var wantMobile = req.IsMobile ?? string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                    var modeChanged = _appliedMobileEmulation != wantMobile || _isMobileViewport != wantMobile;
+                    var shouldReload = req.ReloadOnModeChange == true;
                     var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
                     var nextScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
-                    if (_isMobileViewport == wantMobile && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4 && Math.Abs(_backingScale - nextScale) <= 0.005)
+                    if (!modeChanged && !shouldReload && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4 && Math.Abs(_backingScale - nextScale) <= 0.005)
                     {
                         return true;
                     }
@@ -917,22 +979,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     LastFrameBase64 = null;
                     var capW = Math.Max(320, (int)Math.Round(w * nextScale));
                     var capH = Math.Max(240, (int)Math.Round(h * nextScale));
-                    await SafeSendAsync(ws, new
+                    await ApplyDeviceEmulationAsync(ws, w, h, nextScale, wantMobile, Interlocked.Increment(ref _cmdId), ct);
+                    if (shouldReload)
                     {
-                        id = Interlocked.Increment(ref _cmdId),
-                        method = "Emulation.setDeviceMetricsOverride",
-                        @params = new
-                        {
-                            width = w,
-                            height = h,
-                            deviceScaleFactor = 1,
-                            scale = nextScale,
-                            mobile = false,
-                            screenWidth = w,
-                            screenHeight = h
-                        }
-                    }, ct);
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Emulation.resetPageScaleFactor" }, ct);
+                        await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = false } }, ct);
+                    }
                     await RestartScreencastAsync(ws, capW, capH, ct);
                     if (Math.Abs(nextScale - 1.0) <= 0.01)
                     {
@@ -1005,6 +1056,45 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             var now = Environment.TickCount64;
             Interlocked.Exchange(ref _activeMotionUntilTick, now + 320);
+        }
+
+        private async Task ApplyDeviceEmulationAsync(ClientWebSocket ws, int w, int h, double nextScale, bool isMobile, int metricsCmdId, CancellationToken ct)
+        {
+            if (_appliedMobileEmulation != isMobile)
+            {
+                _appliedMobileEmulation = isMobile;
+                await SafeSendAsync(ws, new
+                {
+                    id = Interlocked.Increment(ref _cmdId),
+                    method = "Emulation.setUserAgentOverride",
+                    @params = BuildUserAgentOverrideParams(isMobile)
+                }, ct);
+                await SafeSendAsync(ws, new
+                {
+                    id = Interlocked.Increment(ref _cmdId),
+                    method = "Emulation.setTouchEmulationEnabled",
+                    @params = new { enabled = isMobile, maxTouchPoints = isMobile ? 5 : 0 }
+                }, ct);
+            }
+            var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
+            var orientationAngle = w > h ? 90 : 0;
+            await SafeSendAsync(ws, new
+            {
+                id = metricsCmdId,
+                method = "Emulation.setDeviceMetricsOverride",
+                @params = new
+                {
+                    width = w,
+                    height = h,
+                    deviceScaleFactor = 1,
+                    scale = nextScale,
+                    mobile = isMobile,
+                    screenWidth = w,
+                    screenHeight = h,
+                    screenOrientation = new { type = orientationType, angle = orientationAngle }
+                }
+            }, ct);
+            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Emulation.resetPageScaleFactor" }, ct);
         }
 
         private async Task RestartScreencastAsync(ClientWebSocket ws, int width, int height, CancellationToken ct)
@@ -1370,22 +1460,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     _backingScale = initScale;
                     var capW = Math.Max(320, (int)Math.Round(w * initScale));
                     var capH = Math.Max(240, (int)Math.Round(h * initScale));
-                    await SafeSendAsync(ws, new
-                    {
-                        id = 13,
-                        method = "Emulation.setDeviceMetricsOverride",
-                        @params = new
-                        {
-                            width = w,
-                            height = h,
-                            deviceScaleFactor = 1,
-                            scale = initScale,
-                            mobile = false,
-                            screenWidth = w,
-                            screenHeight = h
-                        }
-                    }, ct);
-                    await SafeSendAsync(ws, new { id = 1301, method = "Emulation.resetPageScaleFactor" }, ct);
+                    await ApplyDeviceEmulationAsync(ws, w, h, initScale, _isMobileViewport, 13, ct);
                     while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
                     {
                         initMs.SetLength(0);
@@ -1576,22 +1651,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                 _backingScale = healScale;
                                 var capW = Math.Max(320, (int)Math.Round(w * healScale));
                                 var capH = Math.Max(240, (int)Math.Round(h * healScale));
-                                await SafeSendAsync(ws, new
-                                {
-                                    id = Interlocked.Increment(ref _cmdId),
-                                    method = "Emulation.setDeviceMetricsOverride",
-                                    @params = new
-                                    {
-                                        width = w,
-                                        height = h,
-                                        deviceScaleFactor = 1,
-                                        scale = healScale,
-                                        mobile = false,
-                                        screenWidth = w,
-                                        screenHeight = h
-                                    }
-                                }, ct);
-                                await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Emulation.resetPageScaleFactor" }, ct);
+                                _appliedMobileEmulation = null;
+                                await ApplyDeviceEmulationAsync(ws, w, h, healScale, _isMobileViewport, Interlocked.Increment(ref _cmdId), ct);
                                 await RestartScreencastAsync(ws, capW, capH, ct);
                             }
                             continue;
