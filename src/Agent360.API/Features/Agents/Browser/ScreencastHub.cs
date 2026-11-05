@@ -918,6 +918,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
                 else if (action == "navigate" && !string.IsNullOrWhiteSpace(req.Text))
                 {
+                    await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct);
                     var navUrl = req.Text.Trim();
                     if (!navUrl.Contains("://") && !navUrl.StartsWith("about:"))
                     {
@@ -928,13 +929,16 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 else if (action == "activate_tab" && !string.IsNullOrWhiteSpace(req.PageId))
                 {
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Target.activateTarget", @params = new { targetId = req.PageId } }, ct);
+                    await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct);
                 }
                 else if (action == "reload")
                 {
+                    await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct, forceReapplyEmulation: true);
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = false } }, ct);
                 }
                 else if (action == "back" || action == "forward")
                 {
+                    await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct);
                     var js = action == "back" ? "window.history.back()" : "window.history.forward()";
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Runtime.evaluate", @params = new { expression = js } }, ct);
                 }
@@ -1056,6 +1060,47 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             var now = Environment.TickCount64;
             Interlocked.Exchange(ref _activeMotionUntilTick, now + 320);
+        }
+
+        private async Task EnsureActiveViewportAndDeviceEmulationAsync(ClientWebSocket ws, BrowserInputRequest req, CancellationToken ct, bool forceReapplyEmulation = false)
+        {
+            var wantMobile = req.IsMobile ?? (
+                !string.IsNullOrEmpty(req.DeviceType)
+                    ? string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase)
+                    : _isMobileViewport
+            );
+            var rawW = req.Width is >= 320 ? req.Width.Value : (int)Math.Round(_viewportW);
+            var rawH = req.Height is >= 240 ? req.Height.Value : (int)Math.Round(_viewportH);
+            if (rawW < 320 || rawH < 240)
+            {
+                rawW = wantMobile ? 390 : 1440;
+                rawH = wantMobile ? 844 : 813;
+            }
+            var (w, h) = NormalizeViewport(rawW, rawH, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
+            var nextScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
+            var dimsOrModeChanged = _isMobileViewport != wantMobile || _appliedMobileEmulation != wantMobile || Math.Abs(_viewportW - w) > 4 || Math.Abs(_viewportH - h) > 4 || Math.Abs(_backingScale - nextScale) > 0.005;
+            _viewportW = w;
+            _viewportH = h;
+            _backingScale = nextScale;
+            _isMobileViewport = wantMobile;
+            _hasTargetViewport = true;
+            if (forceReapplyEmulation || dimsOrModeChanged)
+            {
+                _appliedMobileEmulation = null;
+                if (dimsOrModeChanged)
+                {
+                    LastFrame = null;
+                    LastBinaryFrame = null;
+                    LastFrameBase64 = null;
+                }
+                await ApplyDeviceEmulationAsync(ws, w, h, nextScale, wantMobile, Interlocked.Increment(ref _cmdId), ct);
+                if (dimsOrModeChanged || forceReapplyEmulation)
+                {
+                    var capW = Math.Max(320, (int)Math.Round(w * nextScale));
+                    var capH = Math.Max(240, (int)Math.Round(h * nextScale));
+                    await RestartScreencastAsync(ws, capW, capH, ct);
+                }
+            }
         }
 
         private async Task ApplyDeviceEmulationAsync(ClientWebSocket ws, int w, int h, double nextScale, bool isMobile, int metricsCmdId, CancellationToken ct)

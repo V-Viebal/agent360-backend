@@ -1055,6 +1055,18 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             }
             else if (action == "navigate" && !string.IsNullOrWhiteSpace(req.Text))
             {
+                if (req.Width is > 0 && req.Height is > 0)
+                {
+                    var isMobileNav = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileNav);
+                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileNav);
+                    var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
+                    var orientationAngle = w > h ? 90 : 0;
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileNav) }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setTouchEmulationEnabled", @params = new { enabled = isMobileNav, maxTouchPoints = isMobileNav ? 5 : 0 } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setDeviceMetricsOverride", @params = new { width = w, height = h, deviceScaleFactor = 1, scale = backingScale, mobile = isMobileNav, screenWidth = w, screenHeight = h, screenOrientation = new { type = orientationType, angle = orientationAngle } } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
+                }
                 var navUrl = req.Text.Trim();
                 if (!navUrl.Contains("://") && !navUrl.StartsWith("about:"))
                 {
@@ -1066,12 +1078,36 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             }
             else if (action == "reload")
             {
+                if (req.Width is > 0 && req.Height is > 0)
+                {
+                    var isMobileRel = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileRel);
+                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileRel);
+                    var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
+                    var orientationAngle = w > h ? 90 : 0;
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileRel) }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setTouchEmulationEnabled", @params = new { enabled = isMobileRel, maxTouchPoints = isMobileRel ? 5 : 0 } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setDeviceMetricsOverride", @params = new { width = w, height = h, deviceScaleFactor = 1, scale = backingScale, mobile = isMobileRel, screenWidth = w, screenHeight = h, screenOrientation = new { type = orientationType, angle = orientationAngle } } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
+                }
                 var relId = ++id;
                 await SendAsync(ws, new { id = relId, method = "Page.reload", @params = new { ignoreCache = false } }, cts.Token);
                 await ReceiveByIdAsync(ws, relId, cts.Token);
             }
             else if (action == "back" || action == "forward")
             {
+                if (req.Width is > 0 && req.Height is > 0)
+                {
+                    var isMobileHist = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileHist);
+                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileHist);
+                    var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
+                    var orientationAngle = w > h ? 90 : 0;
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileHist) }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setTouchEmulationEnabled", @params = new { enabled = isMobileHist, maxTouchPoints = isMobileHist ? 5 : 0 } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setDeviceMetricsOverride", @params = new { width = w, height = h, deviceScaleFactor = 1, scale = backingScale, mobile = isMobileHist, screenWidth = w, screenHeight = h, screenOrientation = new { type = orientationType, angle = orientationAngle } } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
+                }
                 var evalId = ++id;
                 var js = action == "back" ? "window.history.back()" : "window.history.forward()";
                 await SendAsync(ws, new { id = evalId, method = "Runtime.evaluate", @params = new { expression = js } }, cts.Token);
