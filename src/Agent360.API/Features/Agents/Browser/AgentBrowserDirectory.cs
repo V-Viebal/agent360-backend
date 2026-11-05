@@ -985,7 +985,8 @@ public sealed class AgentBrowserDirectory(
                 region = req.Region ?? "",
                 proxy_id = req.ProxyId,
                 proxy_url = req.ProxyUrl ?? "",
-                probe = true
+                probe = true,
+                rotate = req.Rotate || string.Equals(req.Mode, "rotate", StringComparison.OrdinalIgnoreCase)
             });
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(5));
