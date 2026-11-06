@@ -305,6 +305,28 @@ public sealed class AgentBrowserContextMemoryTests
     }
 
     [Fact]
+    public void ContextMappingSurvivesRestartThroughPersistedFile()
+    {
+        var key = "test:" + Guid.NewGuid();
+        var file = Path.Combine(Path.GetTempPath(), "agent360-test", Guid.NewGuid() + ".json");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string> { [key] = "C7" }));
+        AgentBrowserDirectory.EnableKnownContextPersistence(file);
+        // Anchor tab was navigated away before the restart; the persisted mapping still resolves the live context.
+        AgentBrowserDirectory.ResolveContext(key, "Profile 7", [Page("a", "https://erp.example", "C7"), Page("b", "https://x", "C1")]).Should().Be("C7");
+    }
+
+    [Fact]
+    public void RememberedContextNowOwnedByAnotherProfileAnchorIsRejected()
+    {
+        var key = "test:" + Guid.NewGuid();
+        var anchor = AgentBrowserDirectory.AnchorPrefix + "Profile%207--><title>x</title>";
+        AgentBrowserDirectory.ResolveContext(key, "Profile 7", [Page("a", anchor, "C7")]).Should().Be("C7");
+        var other = AgentBrowserDirectory.AnchorPrefix + "Profile%201--><title>y</title>";
+        AgentBrowserDirectory.ResolveContext(key, "Profile 7", [Page("a", "https://x", "C7"), Page("o", other, "C7")]).Should().BeNull();
+    }
+
+    [Fact]
     public void NeverSeenProfileWithoutAnchorIsUnmapped() =>
         AgentBrowserDirectory.ResolveContext("test:" + Guid.NewGuid(), "Profile 8", [Page("b", "https://x", "C1")]).Should().BeNull();
 

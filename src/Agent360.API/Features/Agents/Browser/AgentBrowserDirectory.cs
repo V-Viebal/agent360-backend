@@ -57,6 +57,16 @@ public sealed class AgentBrowserDirectory(
     internal const string LegacyAnchorPrefix = "http://127.0.0.1:3000/agent360-profile?profile=";
     public const string HttpClientName = "agent360-browser-cdp";
     private readonly QwenPawOptions _options = options?.Value ?? new QwenPawOptions();
+    private readonly bool _persistenceEnabled = EnablePersistenceOnce();
+    private static readonly ConcurrentDictionary<string, long> _reanchorAttempts = new(StringComparer.Ordinal);
+
+    private static bool EnablePersistenceOnce()
+    {
+        var dir = Environment.GetEnvironmentVariable("AGENT360_BROWSER_STATE_DIR");
+        if (string.IsNullOrWhiteSpace(dir)) dir = Path.Combine(Path.GetTempPath(), "agent360");
+        EnableKnownContextPersistence(Path.Combine(dir, "browser-contexts.json"));
+        return true;
+    }
     private readonly AgentBrowserGate _gate = gate ?? new AgentBrowserGate();
     private readonly ConcurrentDictionary<string, long> _recentlyClosedTargets = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (AgentBrowserTab Tab, long Tick)> _recentlyCreatedTargets = new(StringComparer.Ordinal);
@@ -70,7 +80,7 @@ public sealed class AgentBrowserDirectory(
     private static readonly IReadOnlyDictionary<string, BrowserService> Services = new Dictionary<string, BrowserService>(StringComparer.OrdinalIgnoreCase)
     {
         ["core"] = new("chromium-browser-q4yu", "https://browser.hmz.one", "http://100.76.185.111:19222",
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Profile 4", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 5", ["AgentCore_QA_Agent_0.2"] = "Profile 5", ["app360"] = "Profile 6", ["mons-app360"] = "Profile 6" }),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mons"] = "Default", ["default"] = "Profile 4", ["default-core"] = "Profile 4", ["ken"] = "Profile 1", ["zen"] = "Profile 2", ["mkai"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 5", ["AgentCore_QA_Agent_0.2"] = "Profile 5", ["core-qa"] = "Profile 5", ["app360"] = "Profile 6", ["mons-app360"] = "Profile 6", ["core-app360"] = "Profile 6" }),
         ["gm"] = new("browser-gm-21er", "https://browser-gm.antares.vn", "http://100.81.66.42:19222",
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["default"] = "Default", ["team"] = "Profile 1", ["customer"] = "Profile 2", ["supplier"] = "Profile 3", ["QwenPaw_QA_Agent_0.2"] = "Profile 4", ["AgentCore_QA_Agent_0.2"] = "Profile 4" }),
         // Planthy runs its own browser service (not the shared 5th climax browser); tailnet proxy on :19224.
@@ -490,6 +500,30 @@ public sealed class AgentBrowserDirectory(
                     }
                     catch { }
                 }
+                else if (!string.Equals(profile, "Default", StringComparison.OrdinalIgnoreCase)
+                    && !all.Any(t => t.Type == "page" && t.BrowserContextId == ctx && string.Equals(ProfileOf(t.Url), profile, StringComparison.OrdinalIgnoreCase)))
+                {
+                    // Context was resolved from memory but carries no anchor any more: re-anchor it so the mapping survives
+                    // the next restart. Disk profiles reject Target.createTarget(browserContextId), so open from inside.
+                    var nowTick = Environment.TickCount64;
+                    if (!_reanchorAttempts.TryGetValue(key, out var lastTick) || nowTick - lastTick > 60_000)
+                    {
+                        _reanchorAttempts[key] = nowTick;
+                        var opener = ctxPages.FirstOrDefault(t => AgentBrowserCdpEndpoint.IsCapturable(t.Url)) ?? ctxPages.FirstOrDefault();
+                        if (opener is not null)
+                        {
+                            try
+                            {
+                                await OpenAnchorFromPageAsync(cdp, opener.TargetId, BuildAnchorUrl(profile, target.TargetAgentProfile), ct);
+                                all = await ListTargetsAsync(cdp, ct);
+                            }
+                            catch (Exception ex)
+                            {
+                                logger.LogDebug("Re-anchoring {Profile} failed: {Error}", profile, ex.Message);
+                            }
+                        }
+                    }
+                }
                 else
                 {
                     // Upgrade any legacy bodyless anchor tab (which renders 100% blank white #FFFFFF) to the styled dark-theme anchor
@@ -557,6 +591,47 @@ public sealed class AgentBrowserDirectory(
     // while working; the context stays theirs as long as any page of it is open, so the browser watchdog no longer
     // has to push a fresh anchor tab in front of the agent's work.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> KnownContexts = new();
+    private static readonly object KnownContextsFileGate = new();
+    private static string? _knownContextsFile;
+
+    // The profile -> context map is otherwise lost on every backend restart, leaving non-Default profiles whose anchor tab
+    // was navigated away unresolvable ("window is not open yet"). Persist it next to the process (override with
+    // AGENT360_BROWSER_STATE_DIR); stale entries are harmless because ResolveContext re-validates them against live pages.
+    internal static void EnableKnownContextPersistence(string file)
+    {
+        lock (KnownContextsFileGate)
+        {
+            if (_knownContextsFile == file) return;
+            _knownContextsFile = file;
+            try
+            {
+                if (File.Exists(file) && JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(file)) is { } saved)
+                {
+                    foreach (var (k, v) in saved) KnownContexts.TryAdd(k, v);
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void RememberContext(string key, string ctx)
+    {
+        if (KnownContexts.TryGetValue(key, out var prev) && prev == ctx) return;
+        KnownContexts[key] = ctx;
+        var file = _knownContextsFile;
+        if (file is null) return;
+        try
+        {
+            lock (KnownContextsFileGate)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+                var tmp = file + ".tmp";
+                File.WriteAllText(tmp, JsonSerializer.Serialize(new Dictionary<string, string>(KnownContexts)));
+                File.Move(tmp, file, overwrite: true);
+            }
+        }
+        catch { }
+    }
 
     internal static string? ResolveContext(string key, string profile, IReadOnlyCollection<CdpTarget> all)
     {
@@ -570,7 +645,7 @@ public sealed class AgentBrowserDirectory(
                 || !string.Equals(t.BrowserContextId, defaultAnchoredCtx, StringComparison.Ordinal)))?.BrowserContextId;
         if (anchored is not null)
         {
-            KnownContexts[key] = anchored;
+            RememberContext(key, anchored);
             return anchored;
         }
 
@@ -584,7 +659,10 @@ public sealed class AgentBrowserDirectory(
             }
         }
 
-        if (KnownContexts.TryGetValue(key, out var known) && all.Any(t => t.Type == "page" && t.BrowserContextId == known))
+        if (KnownContexts.TryGetValue(key, out var known)
+            && all.Any(t => t.Type == "page" && t.BrowserContextId == known)
+            && !all.Any(t => t.Type == "page" && t.BrowserContextId == known
+                && ProfileOf(t.Url) is { } other && !string.Equals(other, profile, StringComparison.OrdinalIgnoreCase)))
         {
             return known;
         }
@@ -602,7 +680,7 @@ public sealed class AgentBrowserDirectory(
                 .ToList();
             if (unanchoredContexts.Count == 1)
             {
-                KnownContexts[key] = unanchoredContexts[0];
+                RememberContext(key, unanchoredContexts[0]);
                 return unanchoredContexts[0];
             }
         }
@@ -664,6 +742,54 @@ public sealed class AgentBrowserDirectory(
             + "background:%230d0d12;color:%23cfcfd8;font:16px system-ui,sans-serif'>"
             + "<div>Agent360 %C2%B7 Browser Profile <b style='color:%23ff7a00'>&nbsp;" + display + "</b></div>"
             + "<div style='font-size:12px;color:%2371717a;font-family:monospace'>Ready for autonomous navigation (" + q + ")</div></body>";
+    }
+
+    /// <summary>Opens <paramref name="anchorUrl"/> as a new tab in the same profile/window as <paramref name="openerTargetId"/>,
+    /// then hands focus back to the opener so the agent's work stays in front.</summary>
+    private static async Task OpenAnchorFromPageAsync(string cdpUrl, string openerTargetId, string anchorUrl, CancellationToken ct)
+    {
+        var cdp = new Uri(cdpUrl);
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://{cdp.Authority}/devtools/page/{Uri.EscapeDataString(openerTargetId)}"), ct);
+        async Task<JsonElement?> CallAsync(int id, string method, object prms)
+        {
+            await ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(new { id, method, @params = prms }), WebSocketMessageType.Text, true, ct);
+            var buf = new byte[16 * 1024];
+            using var ms = new MemoryStream();
+            while (ws.State == WebSocketState.Open)
+            {
+                ms.SetLength(0);
+                WebSocketReceiveResult r;
+                do
+                {
+                    r = await ws.ReceiveAsync(buf, ct);
+                    if (r.MessageType == WebSocketMessageType.Close) return null;
+                    ms.Write(buf, 0, r.Count);
+                } while (!r.EndOfMessage);
+                using var doc = JsonDocument.Parse(ms.ToArray());
+                if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.GetInt32() == id) return doc.RootElement.Clone();
+            }
+            return null;
+        }
+        // about:blank first: navigating the opened window to data: from script is blocked, Page.navigate on it is not.
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var listUrl = $"{cdpUrl.TrimEnd('/')}/json/list";
+        var before = (await http.GetFromJsonAsync<JsonArray>(listUrl, ct))?.OfType<JsonObject>()
+            .Select(t => (string?)t["id"]).ToHashSet() ?? [];
+        await CallAsync(1, "Runtime.evaluate", new { expression = "!!window.open('about:blank', '_blank')", userGesture = true, returnByValue = true });
+        JsonObject? blank = null;
+        for (var i = 0; i < 10 && blank is null; i++)
+        {
+            await Task.Delay(100, ct);
+            blank = (await http.GetFromJsonAsync<JsonArray>(listUrl, ct))?.OfType<JsonObject>().FirstOrDefault(t =>
+                (string?)t["type"] == "page" && !before.Contains((string?)t["id"]));
+        }
+        if ((string?)blank?["id"] is { } newId)
+        {
+            await NavigateTargetAsync(cdpUrl, newId, anchorUrl, ct);
+        }
+        await CallAsync(2, "Page.bringToFront", new { });
+        await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
     private static async Task NavigateTargetAsync(string cdpUrl, string targetId, string url, CancellationToken ct)

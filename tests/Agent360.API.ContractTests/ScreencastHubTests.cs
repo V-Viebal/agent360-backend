@@ -37,6 +37,24 @@ public sealed class ScreencastHubTests : IAsyncLifetime
             var r = await ws.ReceiveAsync(buf, ctx.RequestAborted); // Page.startScreencast
             Encoding.UTF8.GetString(buf, 0, r.Count).Should().Contain("Page.startScreencast");
             Interlocked.Increment(ref _cdpSessions);
+            var targetId = (string)ctx.Request.RouteValues["id"]!;
+            if (targetId == "L1")
+            {
+                // Lifecycle target: emit a main-frame load cycle after the hub enables the Page domain
+                async Task Emit(object msg) => await ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(msg), WebSocketMessageType.Text, true, ctx.RequestAborted);
+                try
+                {
+                    await Task.Delay(150, ctx.RequestAborted);
+                    await Emit(new { method = "Page.frameStartedLoading", @params = new { frameId = "L1" } });
+                    await Emit(new { method = "Page.frameNavigated", @params = new { frame = new { id = "L1", url = "https://example.com/next" } } });
+                    await Emit(new { method = "Page.frameStartedLoading", @params = new { frameId = "child-iframe" } });
+                    await Task.Delay(150, ctx.RequestAborted);
+                    await Emit(new { method = "Page.frameStoppedLoading", @params = new { frameId = "L1" } });
+                    while (ws.State == WebSocketState.Open) await ws.ReceiveAsync(buf, ctx.RequestAborted);
+                }
+                catch { }
+                return;
+            }
             for (var i = 0; ws.State == WebSocketState.Open && !ctx.RequestAborted.IsCancellationRequested; i++)
             {
                 var frame = JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = Convert.ToBase64String([(byte)i]), sessionId = i } });
@@ -61,6 +79,11 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         {
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await hub.WatchAsync(_cdpBase.ToString().TrimEnd('/'), "T1", 640, 55, ws, null, ctx.RequestAborted);
+        });
+        _api.Map("/watch-lifecycle", async (HttpContext ctx, ScreencastHub hub) =>
+        {
+            using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+            await hub.WatchAsync(_cdpBase.ToString().TrimEnd('/'), "L1", 640, 55, ws, null, ctx.RequestAborted);
         });
         await _api.StartAsync(Ct);
         _apiBase = new Uri(_api.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());
@@ -104,6 +127,25 @@ public sealed class ScreencastHubTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MainFrameLifecycleIsForwardedAsPageLoadingState()
+    {
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://{_apiBase.Authority}/watch-lifecycle"), Ct);
+        var states = new List<(bool Loading, string Url)>();
+        for (var i = 0; i < 10 && !(states.Count > 0 && !states[^1].Loading && states.Any(s => s.Loading)); i++)
+        {
+            using var doc = JsonDocument.Parse(await NextFrameAsync(ws));
+            if (doc.RootElement.GetProperty("method").GetString() != "Page.loadingState") continue;
+            var p = doc.RootElement.GetProperty("params");
+            states.Add((p.GetProperty("loading").GetBoolean(), p.GetProperty("url").GetString() ?? ""));
+        }
+        states.Should().Contain(s => s.Loading);
+        states[^1].Loading.Should().BeFalse();
+        states[^1].Url.Should().Be("https://example.com/next");
+        _hub.RetireTarget(_cdpBase.ToString().TrimEnd('/'), "L1");
+    }
+
+    [Fact]
     public async Task AStalledViewerDoesNotBlockOthers()
     {
         using var stalled = await ViewerAsync(); // never reads
@@ -131,23 +173,23 @@ public sealed class ScreencastHubTests : IAsyncLifetime
     [Fact]
     public void NormalizeViewportFitsWithinNativeSurfaceWithoutTiling()
     {
-        // Desktop viewport fits proportionally inside the 1408x771 native surface at 1:1 scale so 100% of the frame is filled without right/bottom padding, while ComputeDesktopProportionalZoom scales CSS content to FullHD 1920px proportions
-        var (fhdW, fhdH) = ScreencastHub.NormalizeViewport(1920, 1080, 1408, 771, isMobileDevice: false);
-        fhdW.Should().Be(1371);
-        fhdH.Should().Be(771);
-        var fhdScale = ScreencastHub.ComputeBackingScale(fhdW, fhdH, 1408, 771, isMobileDevice: false);
-        fhdScale.Should().Be(1.0);
+        // Desktop keeps the client-requested CSS viewport (aspect-exact, >=1280 wide) at 1:1 regardless of the small X11 window surface
+        var (fhdW, fhdH) = ScreencastHub.NormalizeViewport(1920, 1080, 647, 473, isMobileDevice: false);
+        fhdW.Should().Be(1920);
+        fhdH.Should().Be(1080);
+        ScreencastHub.ComputeBackingScale(fhdW, fhdH, 647, 473, isMobileDevice: false).Should().Be(1.0);
         ScreencastHub.ComputeDesktopProportionalZoom(fhdW, 1920, isMobileDevice: false).Should().Be(1.0);
-        ((int)Math.Round(fhdW * fhdScale)).Should().BeLessThanOrEqualTo(1408);
-        ((int)Math.Round(fhdH * fhdScale)).Should().BeLessThanOrEqualTo(771);
 
-        // When frontend requests 1312x960 (aspect 1.3667) on 1440x813 surface, it fits to 1111x813 at 1:1 scale
-        var (w1, h1) = ScreencastHub.NormalizeViewport(1312, 960, 1440, 813, isMobileDevice: false);
-        w1.Should().Be(1111);
-        h1.Should().Be(813);
-        Math.Abs(((double)w1 / h1) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
-        var s1 = ScreencastHub.ComputeBackingScale(w1, h1, 1440, 813, isMobileDevice: false);
-        s1.Should().Be(1.0);
+        // Wide split pane 1517x1080 stays 1517x1080 instead of shrinking to the 1280x720 window
+        var (w0, h0) = ScreencastHub.NormalizeViewport(1517, 1080, 1280, 720, isMobileDevice: false);
+        w0.Should().Be(1517);
+        h0.Should().Be(1080);
+
+        // Narrow pane 1000x780 is lifted to the 1280px desktop floor, preserving aspect ratio
+        var (w1, h1) = ScreencastHub.NormalizeViewport(1000, 780, 1440, 813, isMobileDevice: false);
+        w1.Should().Be(1280);
+        h1.Should().Be(998);
+        Math.Abs(((double)w1 / h1) - (1000.0 / 780.0)).Should().BeLessThan(0.005);
 
         // Mobile device viewport (390x660) preserves genuine mobile width (390) and exact aspect ratio
         var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);

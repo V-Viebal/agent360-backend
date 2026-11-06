@@ -1076,6 +1076,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 await SendAsync(ws, new { id = navId, method = "Page.navigate", @params = new { url = navUrl } }, cts.Token);
                 await ReceiveByIdAsync(ws, navId, cts.Token);
             }
+            else if (action == "stop")
+            {
+                var stopId = ++id;
+                await SendAsync(ws, new { id = stopId, method = "Page.stopLoading" }, cts.Token);
+                await ReceiveByIdAsync(ws, stopId, cts.Token);
+            }
             else if (action == "reload")
             {
                 if (req.Width is > 0 && req.Height is > 0)

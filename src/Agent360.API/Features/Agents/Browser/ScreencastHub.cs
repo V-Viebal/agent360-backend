@@ -383,6 +383,12 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private int _currentQuality = 88;
         private long _lastCursorProbeTick;
         private string _lastCursor = "default";
+        private readonly string _targetId = "";
+        private string _mainFrameId = "";
+        private bool _pageLoading;
+        private string _pageUrl = "";
+        private string _pageTitle = "";
+        private byte[]? _lastLoadingStateMsg;
         private long _lastScrollMetricsTick;
         private string _lastScrollJson = "";
         private long _activeMotionUntilTick;
@@ -407,6 +413,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             Key = key;
             _cdpUrl = cdpUrl;
+            _targetId = targetId;
             _maxWidth = maxWidth;
             _hub = hub;
             _logger = logger;
@@ -454,16 +461,14 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 return (Math.Max(375, (int)Math.Round(w)), Math.Clamp((int)Math.Round(h), 240, 1080));
             }
 
-            // Desktop Full-Surface Scale + Proportional Desktop Zoom:
-            // Fit the physical CDP viewport to the full native surface bounds (maxSurfaceW x maxSurfaceH, e.g. 1440x813 or 1920x1080)
-            // at scale=1.0 so 100% of the screencast frame is filled with zero right/bottom white margins,
-            // while ComputeDesktopProportionalZoom sets document.documentElement.style.zoom = w / 1920 so pages render at true 1920px FullHD desktop proportions!
-            double deskBoundW = Math.Clamp(maxSurfaceW, 640, 1920);
-            double deskBoundH = Math.Clamp(maxSurfaceH, 480, 1080);
-            var fitScale = Math.Min(deskBoundW / Math.Max(1.0, w), deskBoundH / Math.Max(1.0, h));
-            w *= fitScale;
-            h *= fitScale;
-            return (Math.Max(640, (int)Math.Round(w)), Math.Max(360, (int)Math.Round(h)));
+            // Desktop: keep the client-requested CSS viewport (aspect-exact, 1280..1920 wide, <=1080 tall) at scale 1.0.
+            // Chromium renders an emulated viewport larger than the physical X11 window correctly, so never fit it to the
+            // (often 1280x720) window surface: that shrank pages to ~650-800px and the client upscaled them ~2x.
+            var aspect = h / Math.Max(1.0, w);
+            if (w < 1280) { w = 1280; h = w * aspect; }
+            if (w > 1920) { w = 1920; h = w * aspect; }
+            if (h > 1080) { h = 1080; w = h / Math.Max(0.2, aspect); }
+            return (Math.Clamp((int)Math.Round(w), 640, 1920), Math.Clamp((int)Math.Round(h), 360, 1080));
         }
 
         internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false)
@@ -550,6 +555,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 _viewers.Add((v, ctrl, binary));
                 _linger?.Cancel();
                 _linger = null;
+                if (_lastLoadingStateMsg is { } loadingMsg)
+                {
+                    ctrl.Writer.TryWrite(new StreamPacket(loadingMsg, WebSocketMessageType.Text));
+                }
             }
             var (normReqW, normReqH) = reqW >= 320 && reqH >= 240 ? NormalizeViewport(reqW, reqH, _nativeSurfaceMaxW, _nativeSurfaceMaxH, isMobileDevice) : (0, 0);
             if (normReqW >= 320 && normReqH >= 240 && (_isMobileViewport != isMobileDevice || Math.Abs(_viewportW - normReqW) > 4 || Math.Abs(_viewportH - normReqH) > 4))
@@ -940,6 +949,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Target.activateTarget", @params = new { targetId = req.PageId } }, ct);
                     await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct);
                 }
+                else if (action == "stop")
+                {
+                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.stopLoading" }, ct);
+                }
                 else if (action == "reload")
                 {
                     await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct, forceReapplyEmulation: true);
@@ -1292,6 +1305,76 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
         }
 
+        internal const string PageInfoExpression = "({ url: location.href, title: document.title || '', loading: document.readyState !== 'complete' })";
+
+        private bool IsMainFrame(string? frameId) =>
+            !string.IsNullOrEmpty(frameId) &&
+            (string.Equals(frameId, _mainFrameId, StringComparison.Ordinal) || string.Equals(frameId, _targetId, StringComparison.Ordinal));
+
+        /// <summary>Maps CDP Page lifecycle events of the main frame onto a single Page.loadingState viewer message.</summary>
+        private bool HandlePageLifecycleEvent(ClientWebSocket ws, string? method, JsonElement root, CancellationToken ct)
+        {
+            if (method is null || !method.StartsWith("Page.", StringComparison.Ordinal) || method == "Page.screencastFrame") return false;
+            var hasParams = root.TryGetProperty("params", out var p);
+            switch (method)
+            {
+                case "Page.frameStartedLoading":
+                    if (hasParams && p.TryGetProperty("frameId", out var sf) && IsMainFrame(sf.GetString()))
+                    {
+                        UpdateLoadingState(true, _pageUrl, _pageTitle);
+                    }
+                    return true;
+                case "Page.frameNavigated":
+                    if (hasParams && p.TryGetProperty("frame", out var fr) && !fr.TryGetProperty("parentId", out _))
+                    {
+                        _mainFrameId = fr.TryGetProperty("id", out var fid) ? fid.GetString() ?? _mainFrameId : _mainFrameId;
+                        var navUrl = fr.TryGetProperty("url", out var fu) ? fu.GetString() ?? "" : "";
+                        UpdateLoadingState(_pageLoading, navUrl, _pageTitle);
+                    }
+                    return true;
+                case "Page.navigatedWithinDocument":
+                    if (hasParams && p.TryGetProperty("frameId", out var nf) && IsMainFrame(nf.GetString()) && p.TryGetProperty("url", out var nu))
+                    {
+                        UpdateLoadingState(_pageLoading, nu.GetString() ?? _pageUrl, _pageTitle);
+                        _ = SafeSendAsync(ws, new { id = 782, method = "Runtime.evaluate", @params = new { expression = PageInfoExpression, returnByValue = true } }, ct);
+                    }
+                    return true;
+                case "Page.domContentEventFired":
+                    _ = SafeSendAsync(ws, new { id = 782, method = "Runtime.evaluate", @params = new { expression = PageInfoExpression, returnByValue = true } }, ct);
+                    return true;
+                case "Page.frameStoppedLoading":
+                    if (hasParams && p.TryGetProperty("frameId", out var tf) && IsMainFrame(tf.GetString()))
+                    {
+                        UpdateLoadingState(false, _pageUrl, _pageTitle);
+                        _ = SafeSendAsync(ws, new { id = 782, method = "Runtime.evaluate", @params = new { expression = PageInfoExpression, returnByValue = true } }, ct);
+                    }
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        private void UpdateLoadingState(bool loading, string url, string title)
+        {
+            if (loading == _pageLoading && string.Equals(url, _pageUrl, StringComparison.Ordinal) && string.Equals(title, _pageTitle, StringComparison.Ordinal) && _lastLoadingStateMsg is not null) return;
+            _pageLoading = loading;
+            _pageUrl = url ?? "";
+            _pageTitle = title ?? "";
+            var msgBytes = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                method = "Page.loadingState",
+                @params = new { loading, url = _pageUrl, title = _pageTitle }
+            });
+            lock (_viewers)
+            {
+                _lastLoadingStateMsg = msgBytes;
+                foreach (var (_, ctrlCh, _) in _viewers)
+                {
+                    ctrlCh.Writer.TryWrite(new StreamPacket(msgBytes, WebSocketMessageType.Text));
+                }
+            }
+        }
+
         private void ProbeFocusedEditable(ClientWebSocket ws, int ix, int iy, CancellationToken ct)
         {
             var isMob = _isMobileViewport ? "true" : "false";
@@ -1374,7 +1457,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await SafeSendAsync(ws, new { id = 14, method = "Page.bringToFront" }, ct);
                     var initBuf = new byte[16 * 1024];
                     using var initMs = new MemoryStream();
-                    if (_hub._knownNativeSurfaces.TryGetValue(cdpUrl, out var cachedSurf) && cachedSurf.W >= 1300 && cachedSurf.H >= 480)
+                    if (_hub._knownNativeSurfaces.TryGetValue(cdpUrl, out var cachedSurf) && cachedSurf.W >= 640 && cachedSurf.H >= 480)
                     {
                         _nativeSurfaceMaxW = cachedSurf.W;
                         _nativeSurfaceMaxH = cachedSurf.H;
@@ -1426,86 +1509,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                 break;
                             }
                         }
-                        // Self-heal unmaximized Wayland/X11 Chromium window surfaces (<1300px wide):
-                        // toggle normal (1440x900) -> maximized before applying Emulation.setDeviceMetricsOverride so the tab always renders at full 1408x771+ resolution!
-                        if (_nativeSurfaceMaxW < 1300)
-                        {
-                            try
-                            {
-                                await SafeSendAsync(ws, new { id = 16, method = "Browser.getWindowForTarget", @params = new { targetId } }, ct);
-                                int winId = 0;
-                                while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
-                                {
-                                    initMs.SetLength(0);
-                                    WebSocketReceiveResult ir;
-                                    do
-                                    {
-                                        ir = await ws.ReceiveAsync(initBuf, ct);
-                                        if (ir.MessageType == WebSocketMessageType.Close) return;
-                                        initMs.Write(initBuf, 0, ir.Count);
-                                    } while (!ir.EndOfMessage);
-                                    using var winDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
-                                    if (winDoc.RootElement.TryGetProperty("id", out var widAck) && widAck.GetInt32() == 16)
-                                    {
-                                        if (winDoc.RootElement.TryGetProperty("result", out var wRes) &&
-                                            wRes.TryGetProperty("windowId", out var widProp) &&
-                                            widProp.TryGetInt32(out var parsedWid))
-                                        {
-                                            winId = parsedWid;
-                                        }
-                                        break;
-                                    }
-                                }
-                                if (winId > 0)
-                                {
-                                    await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1920, height = 1080, windowState = "normal" } } }, ct);
-                                    await SafeSendAsync(ws, new { id = 18, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { windowState = "maximized" } } }, ct);
-                                    await Task.Delay(80, ct);
-                                    await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true, timeout = 350 } }, ct);
-                                    using var probe19Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                                    probe19Cts.CancelAfter(450);
-                                    while (ws.State == WebSocketState.Open && !probe19Cts.IsCancellationRequested)
-                                    {
-                                        initMs.SetLength(0);
-                                        WebSocketReceiveResult ir;
-                                        try
-                                        {
-                                            do
-                                            {
-                                                ir = await ws.ReceiveAsync(initBuf, probe19Cts.Token);
-                                                if (ir.MessageType == WebSocketMessageType.Close) return;
-                                                initMs.Write(initBuf, 0, ir.Count);
-                                            } while (!ir.EndOfMessage);
-                                        }
-                                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-                                        {
-                                            break;
-                                        }
-                                        using var reDoc = JsonDocument.Parse(initMs.GetBuffer().AsMemory(0, (int)initMs.Length));
-                                        if (reDoc.RootElement.TryGetProperty("id", out var reId) && reId.GetInt32() == 19)
-                                        {
-                                            if (reDoc.RootElement.TryGetProperty("result", out var rProp) &&
-                                                rProp.TryGetProperty("result", out var innerR) &&
-                                                innerR.TryGetProperty("value", out var valProp) &&
-                                                valProp.ValueKind == JsonValueKind.String)
-                                            {
-                                                using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
-                                                var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
-                                                var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
-                                                if (sw >= 640 && sh >= 480)
-                                                {
-                                                    _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
-                                                    _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
-                                                }
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-                        if (_nativeSurfaceMaxW >= 1300 && _nativeSurfaceMaxH >= 480)
+                        if (_nativeSurfaceMaxW >= 640 && _nativeSurfaceMaxH >= 480)
                         {
                             _hub._knownNativeSurfaces[cdpUrl] = (_nativeSurfaceMaxW, _nativeSurfaceMaxH);
                         }
@@ -1546,6 +1550,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
 
 
+
+                // Page lifecycle events drive the viewer's real loading indicator, URL and title (Page.loadingState)
+                await SafeSendAsync(ws, new { id = 20, method = "Page.enable" }, ct);
+                _ = SafeSendAsync(ws, new { id = 782, method = "Runtime.evaluate", @params = new { expression = PageInfoExpression, returnByValue = true } }, ct);
 
                 var buffer = new byte[64 * 1024];
                 using var ms = new MemoryStream();
@@ -1673,6 +1681,20 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             }
                             continue;
                         }
+                        if (rId == 782)
+                        {
+                            if (doc.RootElement.TryGetProperty("result", out var piRes) &&
+                                piRes.TryGetProperty("result", out var piInner) &&
+                                piInner.TryGetProperty("value", out var piVal) &&
+                                piVal.ValueKind == JsonValueKind.Object)
+                            {
+                                var piUrl = piVal.TryGetProperty("url", out var puP) && puP.ValueKind == JsonValueKind.String ? puP.GetString() ?? "" : "";
+                                var piTitle = piVal.TryGetProperty("title", out var ptP) && ptP.ValueKind == JsonValueKind.String ? ptP.GetString() ?? "" : "";
+                                var piLoading = piVal.TryGetProperty("loading", out var plP) && plP.ValueKind == JsonValueKind.True;
+                                UpdateLoadingState(_pageLoading || piLoading, string.IsNullOrEmpty(piUrl) ? _pageUrl : piUrl, piTitle);
+                            }
+                            continue;
+                        }
                         if (rId == 12 &&
                             doc.RootElement.TryGetProperty("result", out var res) &&
                             res.TryGetProperty("cssVisualViewport", out var vp))
@@ -1684,6 +1706,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     }
 
 
+                    if (doc.RootElement.TryGetProperty("method", out var lifeM) && HandlePageLifecycleEvent(ws, lifeM.GetString(), doc.RootElement, ct)) continue;
                     if (!doc.RootElement.TryGetProperty("method", out var m) || m.GetString() != "Page.screencastFrame") continue;
                     var p = doc.RootElement.GetProperty("params");
                     if (_hasTargetViewport && p.TryGetProperty("metadata", out var meta))

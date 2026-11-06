@@ -16,6 +16,11 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
     private static readonly string[] AllowedPrefixes =
     [
         "agent-status",
+        "rtc",
+        "rtc/status",
+        "rtc/vision",
+        "voice/rtc",
+        "voice/status",
         "config/channels",
         "config/heartbeat",
         "cron/jobs",

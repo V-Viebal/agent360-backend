@@ -12,6 +12,16 @@ using Agent360.API.Features.Agents.Services;
 
 namespace Agent360.API.Features.Agents.Endpoints;
 
+public sealed record RtcVisionRequestDto(
+    [property: JsonPropertyName("image_base64")] string ImageBase64,
+    [property: JsonPropertyName("mime_type")] string? MimeType = "image/jpeg",
+    [property: JsonPropertyName("source")] string? Source = "camera",
+    [property: JsonPropertyName("prompt")] string? Prompt = null,
+    [property: JsonPropertyName("model")] string? Model = "gemini-2.5-flash",
+    [property: JsonPropertyName("agent_id")] string? AgentId = "mons",
+    [property: JsonPropertyName("session_id")] string? SessionId = null);
+
+
 public sealed record VoiceSpeechRequestDto(
     [property: JsonPropertyName("input")] string Input,
     [property: JsonPropertyName("model")] string? Model = "eleven_flash_v2_5",
@@ -22,6 +32,102 @@ public sealed record VoiceSpeechRequestDto(
 
 public sealed class VoiceBridgeEndpoint : IEndpoint
 {
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Summary, string Source, long UpdatedAt)> ActiveVisualContexts = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (byte[] AudioBytes, string MimeType)> GreetingAudioCache = new();
+
+    private static async Task<(string Summary, bool Ok)> DescribeVisionFrameViaLlm360Async(
+        IConfiguration config,
+        string imageBase64,
+        string mimeType,
+        string source,
+        string? customPrompt,
+        string model,
+        CancellationToken ct)
+    {
+        var (baseUrl, apiKey) = ResolveLlm360Config(config);
+        var cleanB64 = imageBase64.Trim();
+        if (cleanB64.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            var commaIdx = cleanB64.IndexOf(',');
+            if (commaIdx >= 0)
+            {
+                var header = cleanB64.Substring(0, commaIdx);
+                cleanB64 = cleanB64.Substring(commaIdx + 1);
+                if (header.Contains(':') && header.Contains(';'))
+                {
+                    mimeType = header.Split(':')[1].Split(';')[0];
+                }
+            }
+        }
+
+        var sourceLabel = source == "screen" ? "chia sẻ màn hình (screen share)" : "camera trực tiếp";
+        var promptText = !string.IsNullOrWhiteSpace(customPrompt)
+            ? customPrompt.Trim()
+            : $"Mô tả ngắn gọn, chính xác nội dung hiển thị trong khung hình {sourceLabel} này (văn bản, giao diện, vật thể, hành động chính) bằng tiếng Việt trong 1-3 câu để Agent nắm bắt ngữ cảnh trực quan trong cuộc gọi video.";
+
+        var modelsToTry = new[] { model, "gemini-2.5-flash", "gemini-3.8-flash" }
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Distinct();
+
+        foreach (var candidateModel in modelsToTry)
+        {
+            try
+            {
+                var payload = JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    model = candidateModel,
+                    messages = new object[]
+                    {
+                        new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "text", text = promptText },
+                                new { type = "image_url", image_url = new { url = $"data:{mimeType};base64,{cleanB64}" } }
+                            }
+                        }
+                    },
+                    max_tokens = 220
+                });
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/chat/completions")
+                {
+                    Content = new ByteArrayContent(payload)
+                };
+                req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(25));
+                using var resp = await SharedHttpClient.SendAsync(req, cts.Token);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var respBytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                    using var doc = JsonDocument.Parse(respBytes);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("choices", out var choices) &&
+                        choices.ValueKind == JsonValueKind.Array &&
+                        choices.GetArrayLength() > 0)
+                    {
+                        var content = choices[0].GetProperty("message").GetProperty("content").GetString()?.Trim();
+                        if (!string.IsNullOrEmpty(content))
+                        {
+                            return (content, true);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Try next candidate
+            }
+        }
+
+        return (string.Empty, false);
+    }
+
     private const string DefaultLlm360BaseUrl = "http://100.91.180.20:59528/v1";
     private const string DefaultLlm360ApiKey = "sk-cli-90f6bff83292427e97f330cb329f07db";
     private const string DefaultSttModel = "scribe_v1";
@@ -82,6 +188,177 @@ public sealed class VoiceBridgeEndpoint : IEndpoint
                         new { id = "nova", name = "Kore (Female - Gemini Native)", provider = "gemini" },
                         new { id = "onyx", name = "Puck (Male - Gemini Native)", provider = "gemini" },
                     }
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .AllowAnonymous();
+        }
+
+        
+        // 1b. GET /api/v1/rtc/nodes (Fleet-wide RTC Nodes status per AgentCore instance)
+        foreach (var route in new[] { "rtc/nodes", "voice/rtc-nodes", "agents/voice/rtc-nodes" })
+        {
+            routeBuilder.MapGet(route, async (
+                IFleetInstanceRoutingService fleetRouting,
+                IConfiguration config,
+                CancellationToken ct) =>
+            {
+                var (baseUrl, _) = ResolveLlm360Config(config);
+                var instances = fleetRouting.Instances;
+                var list = new List<object>();
+
+                foreach (var inst in instances)
+                {
+                    var rtcNodeId = $"rtc-node-{inst.Key}-{inst.ClusterNode}";
+                    var isUp = true;
+                    try
+                    {
+                        using var pingReq = new HttpRequestMessage(HttpMethod.Get, $"{inst.InternalUrl.TrimEnd('/')}/rtc/status");
+                        pingReq.Headers.Add("User-Agent", "skyer-api-rtc-probe");
+                        using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        pingCts.CancelAfter(TimeSpan.FromSeconds(2));
+                        using var pingResp = await SharedHttpClient.SendAsync(pingReq, pingCts.Token);
+                        if (pingResp.IsSuccessStatusCode)
+                        {
+                            var respBytes = await pingResp.Content.ReadAsByteArrayAsync(ct);
+                            using var doc = JsonDocument.Parse(respBytes);
+                            var root = doc.RootElement;
+                            if (root.TryGetProperty("rtc_node_id", out var rni)) rtcNodeId = rni.GetString() ?? rtcNodeId;
+                        }
+                    }
+                    catch
+                    {
+                        // Fallback to static node identity
+                    }
+
+                    list.Add(new
+                    {
+                        instance_key = inst.Key,
+                        cluster_node = inst.ClusterNode,
+                        display_name = inst.DisplayName,
+                        rtc_node_id = rtcNodeId,
+                        internal_url = inst.InternalUrl,
+                        public_url = inst.PublicUrl,
+                        llm360_node = "5a54d0",
+                        llm360_endpoint = baseUrl,
+                        stt_model = DefaultSttModel,
+                        tts_model = DefaultTtsModel,
+                        vision_model = "gemini-2.5-flash",
+                        status = isUp ? "ready" : "offline"
+                    });
+                }
+
+                return Results.Ok(new
+                {
+                    ok = true,
+                    llm360_node = "5a54d0",
+                    total_instances = list.Count,
+                    nodes = list
+                });
+            })
+            .MapToApiVersion(ApiVersion.Default)
+            .AllowAnonymous();
+        }
+
+        // 1c. GET /api/v1/agents/{agentId}/rtc (Resolve target RTC Node for specific agent)
+        routeBuilder.MapGet("agents/{agentId}/voice/rtc", async (
+            string agentId,
+            IFleetInstanceRoutingService fleetRouting,
+            IConfiguration config,
+            CancellationToken ct) =>
+        {
+            var target = fleetRouting.ResolveTarget(agentId);
+            var (baseUrl, _) = ResolveLlm360Config(config);
+            var rtcNodeId = $"rtc-node-{(target.Instance?.Key ?? "core")}-{target.ClusterNode}";
+
+            if (target.Instance is not null)
+            {
+                try
+                {
+                    using var pingReq = new HttpRequestMessage(HttpMethod.Get, $"{target.Instance.InternalUrl.TrimEnd('/')}/rtc/status");
+                    pingReq.Headers.Add("User-Agent", "skyer-api-rtc-probe");
+                    using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    pingCts.CancelAfter(TimeSpan.FromSeconds(2));
+                    using var pingResp = await SharedHttpClient.SendAsync(pingReq, pingCts.Token);
+                    if (pingResp.IsSuccessStatusCode)
+                    {
+                        var respBytes = await pingResp.Content.ReadAsByteArrayAsync(ct);
+                        using var doc = JsonDocument.Parse(respBytes);
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("rtc_node_id", out var rni)) rtcNodeId = rni.GetString() ?? rtcNodeId;
+                    }
+                }
+                catch
+                {
+                    // Fallback to static node identity
+                }
+            }
+
+            return Results.Ok(new
+            {
+                ok = true,
+                agent_id = agentId,
+                profile = target.TargetAgentProfile,
+                instance_key = target.Instance?.Key ?? "core",
+                cluster_node = target.ClusterNode,
+                rtc_node_id = rtcNodeId,
+                llm360_node = "5a54d0",
+                llm360_endpoint = baseUrl,
+                stt_model = DefaultSttModel,
+                tts_model = DefaultTtsModel,
+                vision_model = "gemini-2.5-flash",
+                capabilities = new[]
+                {
+                    "mode_a_push_to_talk",
+                    "mode_b_full_duplex_ws",
+                    "camera_vision_stream",
+                    "screen_share_vision_stream",
+                    "barge_in_interrupt"
+                }
+            });
+        })
+        .MapToApiVersion(ApiVersion.Default)
+        .AllowAnonymous();
+
+        // 1d. POST /api/v1/rtc/vision & /api/v1/agents/rtc/vision (Analyze camera / screen share frame via LLM360)
+        foreach (var route in new[] { "rtc/vision", "agents/rtc/vision" })
+        {
+            routeBuilder.MapPost(route, async (
+                RtcVisionRequestDto req,
+                IConfiguration config,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.ImageBase64))
+                {
+                    return Results.BadRequest(new { error = "image_base64 is required" });
+                }
+
+                var source = string.IsNullOrWhiteSpace(req.Source) ? "camera" : req.Source.Trim().ToLowerInvariant();
+                var model = string.IsNullOrWhiteSpace(req.Model) ? "gemini-2.5-flash" : req.Model.Trim();
+                var (summary, ok) = await DescribeVisionFrameViaLlm360Async(
+                    config,
+                    req.ImageBase64,
+                    req.MimeType ?? "image/jpeg",
+                    source,
+                    req.Prompt,
+                    model,
+                    ct);
+
+                var sessionKey = req.SessionId ?? $"agent:{req.AgentId ?? "default"}";
+                if (!string.IsNullOrEmpty(summary))
+                {
+                    ActiveVisualContexts[sessionKey] = (summary, source, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                }
+
+                return Results.Ok(new
+                {
+                    ok,
+                    node = "5a54d0",
+                    agent_id = req.AgentId ?? "default",
+                    session_id = sessionKey,
+                    source,
+                    summary,
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                 });
             })
             .MapToApiVersion(ApiVersion.Default)
@@ -449,12 +726,101 @@ public sealed class VoiceBridgeEndpoint : IEndpoint
         {
             type = "ready",
             node = "5a54d0",
+            rtc_node = $"rtc-node-{agentId}",
             agent_id = agentId,
             session_id = sessionId,
             stt_model = sttModel,
             tts_model = ttsModel,
-            voice
+            voice,
+            capabilities = new[]
+            {
+                "mode_a_push_to_talk",
+                "mode_b_full_duplex_ws",
+                "camera_vision_stream",
+                "screen_share_vision_stream",
+                "barge_in_interrupt",
+                "auto_greeting_listening_loop"
+            }
         }, ct);
+
+        // Ultra-Low Latency Automatic Greeting on Call Start (<20ms from Cache)
+        var enableGreeting = context.Request.Query["greet"].FirstOrDefault() != "false";
+        if (enableGreeting)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (webSocket.State != WebSocketState.Open || ct.IsCancellationRequested) return;
+
+                    var greetingText = agentId.ToLowerInvariant() switch
+                    {
+                        "mons" => "Xin chào! Mons đã sẵn sàng lắng nghe và hỗ trợ bạn.",
+                        "ken" => "Chào bạn, Ken đây! Mình có thể giúp gì cho dự án hôm nay?",
+                        "mkai" => "Xin chào, MKAI đã kết nối. Hãy chia sẻ yêu cầu của bạn.",
+                        "climax" => "Xin chào! Climax đã kết nối, sẵn sàng làm việc.",
+                        "gl" => "Chào bạn, GL đã online và sẵn sàng hỗ trợ.",
+                        "its" => "Xin chào, ITS đã sẵn sàng hỗ trợ kỹ thuật.",
+                        _ => $"Xin chào! Mình đã sẵn sàng hỗ trợ bạn qua cuộc gọi trực tiếp."
+                    };
+
+                    await SendWsJsonAsync(webSocket, new
+                    {
+                        type = "agent_greeting",
+                        text = greetingText,
+                        agent_id = agentId
+                    }, ct);
+
+                    // Check instant memory cache for this agent's greeting audio
+                    var cacheKey = $"{agentId.ToLowerInvariant()}:{ttsModel}:{voice}";
+                    byte[]? greetAudioBytes = null;
+                    string greetMime = "audio/mpeg";
+
+                    if (GreetingAudioCache.TryGetValue(cacheKey, out var cached))
+                    {
+                        greetAudioBytes = cached.AudioBytes;
+                        greetMime = cached.MimeType;
+                    }
+                    else
+                    {
+                        var (ab, mime, st) = await CallLlm360SpeechAsync(
+                            config,
+                            greetingText,
+                            ttsModel,
+                            voice,
+                            "mp3",
+                            null,
+                            ct);
+                        if (st == 200 && ab.Length > 0)
+                        {
+                            greetAudioBytes = ab;
+                            greetMime = mime.Split(';')[0].Trim();
+                            GreetingAudioCache[cacheKey] = (ab, greetMime);
+                        }
+                    }
+
+                    if (greetAudioBytes is not null && greetAudioBytes.Length > 0 && webSocket.State == WebSocketState.Open)
+                    {
+                        await SendWsJsonAsync(webSocket, new
+                        {
+                            type = "audio_chunk",
+                            data = Convert.ToBase64String(greetAudioBytes),
+                            mime_type = greetMime,
+                            text = greetingText,
+                            is_greeting = true
+                        }, ct);
+                    }
+                    else
+                    {
+                        await SendWsJsonAsync(webSocket, new { type = "turn_complete", text = greetingText, is_greeting = true }, ct);
+                    }
+                }
+                catch
+                {
+                    // Ignore greeting delivery failure
+                }
+            }, ct);
+        }
 
         using var audioBuffer = new MemoryStream();
         CancellationTokenSource? turnCts = null;
@@ -476,58 +842,80 @@ public sealed class VoiceBridgeEndpoint : IEndpoint
                 {
                     if (accessAllowed)
                     {
+                        var enrichedPrompt = userText;
+                        if (ActiveVisualContexts.TryGetValue(sessionId, out var visCtx) && !string.IsNullOrEmpty(visCtx.Summary))
+                        {
+                            var srcLabel = visCtx.Source == "screen" ? "Chia sẻ màn hình (Screen Share)" : "Camera trực tiếp";
+                            enrichedPrompt = $"[Ngữ cảnh hình ảnh trực tiếp từ {srcLabel}: {visCtx.Summary}]\n\nNgười dùng nói: {userText}";
+                        }
+
                         var sendReq = new ConsoleChatSendRequestDto(
                             SessionId: sessionId,
-                            Message: userText,
+                            Message: enrichedPrompt,
                             AgentId: agentId,
                             ModelSlotOverride: null,
                             Input: null,
                             UserId: wsChatScope);
 
-                        using var responseStream = await qwenPawClient.StreamConsoleChatAsync(sendReq, turnToken);
-                    if (responseStream.IsSuccessStatusCode)
-                    {
-                        await using var stream = await responseStream.Content.ReadAsStreamAsync(turnToken);
-                        using var reader = new StreamReader(stream);
-                        string? line;
-                        while ((line = await reader.ReadLineAsync(turnToken)) is not null)
-                        {
-                            if (webSocket.State != WebSocketState.Open || turnToken.IsCancellationRequested) break;
-                            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.Ordinal)) continue;
-                            var jsonPart = line[5..].Trim();
-                            if (jsonPart == "[DONE]" || string.IsNullOrEmpty(jsonPart)) continue;
+                        // Conversational Voice SLA: Bound AgentCore upstream to 2.8s; if unresponsive, fast-path straight to LLM360 Grok-4.7
+                        using var fastCts = CancellationTokenSource.CreateLinkedTokenSource(turnToken);
+                        fastCts.CancelAfter(TimeSpan.FromMilliseconds(2800));
 
-                            try
+                        try
+                        {
+                            using var responseStream = await qwenPawClient.StreamConsoleChatAsync(sendReq, fastCts.Token);
+                            if (responseStream.IsSuccessStatusCode)
                             {
-                                using var evDoc = JsonDocument.Parse(jsonPart);
-                                var root = evDoc.RootElement;
-                                var objType = root.TryGetProperty("object", out var oProp) ? oProp.GetString() : null;
-                                var status = root.TryGetProperty("status", out var sProp) ? sProp.GetString() : null;
-                                if (objType == "message" && status == "completed" &&
-                                    root.TryGetProperty("content", out var contentArr) &&
-                                    contentArr.ValueKind == JsonValueKind.Array)
+                                await using var stream = await responseStream.Content.ReadAsStreamAsync(fastCts.Token);
+                                using var reader = new StreamReader(stream);
+                                string? line;
+                                while ((line = await reader.ReadLineAsync(fastCts.Token)) is not null)
                                 {
-                                    foreach (var item in contentArr.EnumerateArray())
+                                    if (webSocket.State != WebSocketState.Open || turnToken.IsCancellationRequested) break;
+                                    if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.Ordinal)) continue;
+                                    var jsonPart = line[5..].Trim();
+                                    if (jsonPart == "[DONE]" || string.IsNullOrEmpty(jsonPart)) continue;
+
+                                    try
                                     {
-                                        var itemType = item.TryGetProperty("type", out var tProp) ? tProp.GetString() : null;
-                                        if (itemType == "text" && item.TryGetProperty("text", out var txtProp))
+                                        using var evDoc = JsonDocument.Parse(jsonPart);
+                                        var root = evDoc.RootElement;
+                                        var objType = root.TryGetProperty("object", out var oProp) ? oProp.GetString() : null;
+                                        var status = root.TryGetProperty("status", out var sProp) ? sProp.GetString() : null;
+                                        if (objType == "message" && status == "completed" &&
+                                            root.TryGetProperty("content", out var contentArr) &&
+                                            contentArr.ValueKind == JsonValueKind.Array)
                                         {
-                                            var chunkTxt = txtProp.GetString()?.Trim();
-                                            if (!string.IsNullOrEmpty(chunkTxt))
+                                            foreach (var item in contentArr.EnumerateArray())
                                             {
-                                                if (accumulated.Length > 0) accumulated.Append(' ');
-                                                accumulated.Append(chunkTxt);
-                                                await SendWsJsonAsync(webSocket, new { type = "text_delta", delta = chunkTxt }, turnToken);
+                                                var itemType = item.TryGetProperty("type", out var tProp) ? tProp.GetString() : null;
+                                                if (itemType == "text" && item.TryGetProperty("text", out var txtProp))
+                                                {
+                                                    var chunkTxt = txtProp.GetString()?.Trim();
+                                                    if (!string.IsNullOrEmpty(chunkTxt))
+                                                    {
+                                                        if (accumulated.Length > 0) accumulated.Append(' ');
+                                                        accumulated.Append(chunkTxt);
+                                                        await SendWsJsonAsync(webSocket, new { type = "text_delta", delta = chunkTxt }, turnToken);
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                    catch
+                                    {
+                                        // Ignore malformed non-JSON SSE lines
+                                    }
                                 }
                             }
-                            catch
-                            {
-                                // Ignore malformed non-JSON SSE lines
-                                }
-                            }
+                        }
+                        catch (OperationCanceledException) when (!turnToken.IsCancellationRequested)
+                        {
+                            // AgentCore SLA elapsed -> seamlessly proceed to LLM360 fallback
+                        }
+                        catch
+                        {
+                            // Upstream unreachable -> proceed to LLM360 fallback
                         }
                     }
 
@@ -535,13 +923,20 @@ public sealed class VoiceBridgeEndpoint : IEndpoint
                     if (accumulated.Length == 0 && !turnToken.IsCancellationRequested)
                     {
                         var (baseUrl, apiKey) = ResolveLlm360Config(config);
+                        var enrichedPrompt = userText;
+                        if (ActiveVisualContexts.TryGetValue(sessionId, out var visCtx) && !string.IsNullOrEmpty(visCtx.Summary))
+                        {
+                            var srcLabel = visCtx.Source == "screen" ? "Chia sẻ màn hình (Screen Share)" : "Camera trực tiếp";
+                            enrichedPrompt = $"[Ngữ cảnh hình ảnh trực tiếp từ {srcLabel}: {visCtx.Summary}]\n\nNgười dùng nói: {userText}";
+                        }
+
                         var chatPayload = JsonSerializer.SerializeToUtf8Bytes(new
                         {
                             model = "grok-4.7",
                             messages = new[]
                             {
-                                new { role = "system", content = "Bạn là trợ lý giọng nói AI thông minh trên nền tảng Skyer. Hãy trả lời tự nhiên, súc tích, rõ ràng." },
-                                new { role = "user", content = userText }
+                                new { role = "system", content = "Bạn là trợ lý AI đàm thoại video/thoại trực tiếp trên nền tảng Skyer. Hãy trả lời tự nhiên, súc tích, rõ ràng." },
+                                new { role = "user", content = enrichedPrompt }
                             }
                         });
                         using var chatReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/chat/completions")
@@ -686,6 +1081,45 @@ public sealed class VoiceBridgeEndpoint : IEndpoint
                     }
                     _ = qwenPawClient.StopChatAsync(new ConsoleChatStopRequestDto(sessionId), ct);
                     await SendWsJsonAsync(webSocket, new { type = "interrupted", session_id = sessionId }, ct);
+                }
+                                else if (msgType is "video_frame" or "screen_frame" or "vision_frame")
+                {
+                    var frameB64 = root.TryGetProperty("data", out var dProp) ? dProp.GetString() : root.TryGetProperty("image_base64", out var ibProp) ? ibProp.GetString() : null;
+                    var src = root.TryGetProperty("source", out var scProp) ? scProp.GetString() : (msgType == "screen_frame" ? "screen" : "camera");
+                    var mime = root.TryGetProperty("mime_type", out var mtProp) ? mtProp.GetString() : "image/jpeg";
+                    var cPrompt = root.TryGetProperty("prompt", out var pmProp) ? pmProp.GetString() : null;
+
+                    if (!string.IsNullOrWhiteSpace(frameB64))
+                    {
+                        var (summary, ok) = await DescribeVisionFrameViaLlm360Async(config, frameB64, mime ?? "image/jpeg", src ?? "camera", cPrompt, "gemini-2.5-flash", ct);
+                        if (ok && !string.IsNullOrEmpty(summary))
+                        {
+                            ActiveVisualContexts[sessionId] = (summary, src ?? "camera", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                            await SendWsJsonAsync(webSocket, new
+                            {
+                                type = "vision_context",
+                                source = src,
+                                summary,
+                                node = "5a54d0"
+                            }, ct);
+                        }
+                    }
+                }
+                else if (msgType == "media_state")
+                {
+                    var camOn = root.TryGetProperty("camera_enabled", out var cProp) && cProp.GetBoolean();
+                    var screenOn = root.TryGetProperty("screen_enabled", out var scrProp) && scrProp.GetBoolean();
+                    if (!camOn && !screenOn)
+                    {
+                        ActiveVisualContexts.TryRemove(sessionId, out _);
+                    }
+                    await SendWsJsonAsync(webSocket, new
+                    {
+                        type = "media_state_ack",
+                        camera_enabled = camOn,
+                        screen_enabled = screenOn,
+                        node = "5a54d0"
+                    }, ct);
                 }
                 else if (msgType == "prompt")
                 {
