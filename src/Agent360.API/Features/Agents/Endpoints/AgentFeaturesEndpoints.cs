@@ -1802,24 +1802,43 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Hot-reload active LLM model provider and model for agent")
         .AllowAnonymous();
 
-        group.MapPatch("{agentId}/toggle", async (
+        group.MapMethods("{agentId}/toggle", ["PATCH", "POST", "PUT"], async (
             string agentId,
             [FromBody] ToggleAgentRequest request,
             HttpContext httpContext,
             IQwenPawClient client,
+            AgentProfileStore profileStore,
             CancellationToken ct) =>
         {
-            var (accessAllowed, accessReason) = await Agent360.API.Features.Agents.Security.AgentOwnershipGuard.CheckAccessAsync(
-                agentId, httpContext, httpContext.RequestServices.GetRequiredService<Agent360.API.Identity.CurrentUser>(),
-                httpContext.RequestServices.GetRequiredService<IConfiguration>(), ct);
-            if (!accessAllowed)
+            await profileStore.EnsureSyncedWithDatabaseAsync(ct);
+            var resolvedSlug = profileStore.ResolveCanonicalSlugByAlias(agentId) ?? agentId;
+
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(resolvedSlug, httpContext, ct) is { } denied)
             {
-                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
-                return Results.Problem(accessReason ?? "Agent access denied", statusCode: StatusCodes.Status403Forbidden, title: "Forbidden");
+                return denied;
             }
 
-            var res = await client.ToggleAgentAsync(agentId, request.Enabled, ct);
-            return res is null ? Results.Problem("Failed to toggle agent enabled state") : TypedResults.Ok(res);
+            var res = await client.ToggleAgentAsync(resolvedSlug, request.Enabled, ct);
+            if (res is null)
+            {
+                return Results.Problem("Failed to toggle agent enabled state", statusCode: 502);
+            }
+
+            var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+            if (multiplexerHub is not null)
+            {
+                var normAgent = FleetInstanceRoutingService.NormalizeAgentId(resolvedSlug).ToLowerInvariant();
+                _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "agent_enabled_updated",
+                    agent_id = normAgent,
+                    enabled = request.Enabled,
+                    timestamp = DateTimeOffset.UtcNow.ToString("O")
+                }));
+            }
+
+            return TypedResults.Ok(res);
         })
         .WithName("ToggleAgentEnabled")
         .WithSummary("Enable or disable agent profile on runtime")

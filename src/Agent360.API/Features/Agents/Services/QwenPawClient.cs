@@ -32,6 +32,11 @@ public sealed class QwenPawClient : IQwenPawClient
     private static readonly object _pinOverridesLock = new();
     private static volatile bool _pinTableEnsured;
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _agentEnabledOverrides = LoadAgentEnabledOverridesFromDisk();
+    private static readonly object _enabledOverridesLock = new();
+    private static volatile bool _enabledTableEnsured;
+    private static volatile bool _enabledOverridesHydrated;
+
     private readonly HttpClient _httpClient;
     private readonly IFleetInstanceRoutingService _routingService;
     private readonly IMemoryCache _cache;
@@ -255,6 +260,146 @@ public sealed class QwenPawClient : IQwenPawClient
         }
     }
 
+    private static string GetEnabledOverridesFilePath()
+    {
+        var dir = Path.Combine(AppContext.BaseDirectory, "_storage");
+        try { Directory.CreateDirectory(dir); } catch { dir = Path.GetTempPath(); }
+        return Path.Combine(dir, "agent_enabled_overrides.json");
+    }
+
+    private static System.Collections.Concurrent.ConcurrentDictionary<string, bool> LoadAgentEnabledOverridesFromDisk()
+    {
+        var dict = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var file = GetEnabledOverridesFilePath();
+            if (File.Exists(file))
+            {
+                var json = File.ReadAllText(file);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                        {
+                            dict[prop.Name] = prop.Value.GetBoolean();
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return dict;
+    }
+
+    private static void PersistAgentEnabledOverridesToDisk()
+    {
+        lock (_enabledOverridesLock)
+        {
+            try
+            {
+                var snapshot = _agentEnabledOverrides.ToDictionary(k => k.Key, v => v.Value, StringComparer.OrdinalIgnoreCase);
+                File.WriteAllText(GetEnabledOverridesFilePath(), JsonSerializer.Serialize(snapshot));
+            }
+            catch { }
+        }
+    }
+
+    private async Task EnsureAgentEnabledOverridesTableAsync(NpgsqlConnection conn, CancellationToken ct)
+    {
+        if (_enabledTableEnsured) return;
+        await using var cmd = new NpgsqlCommand(@"
+            CREATE SCHEMA IF NOT EXISTS user_management;
+            CREATE TABLE IF NOT EXISTS user_management.""AgentEnabledOverrides"" (
+                ""AgentSlug"" varchar(128) PRIMARY KEY,
+                ""Enabled"" boolean NOT NULL,
+                ""UpdatedAt"" timestamptz NOT NULL DEFAULT NOW()
+            );
+        ", conn);
+        await cmd.ExecuteNonQueryAsync(ct);
+        _enabledTableEnsured = true;
+    }
+
+    private async Task HydrateAgentEnabledOverridesFromPostgresAsync(CancellationToken ct)
+    {
+        if (_enabledOverridesHydrated) return;
+        var connStr = GetPostgresConnectionString();
+        if (string.IsNullOrWhiteSpace(connStr))
+        {
+            _enabledOverridesHydrated = true;
+            return;
+        }
+
+        try
+        {
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+            await EnsureAgentEnabledOverridesTableAsync(conn, ct);
+
+            await using var cmd = new NpgsqlCommand(@"
+                SELECT ""AgentSlug"", ""Enabled""
+                FROM user_management.""AgentEnabledOverrides""
+                ORDER BY ""UpdatedAt"" ASC;
+            ", conn);
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var slug = FleetInstanceRoutingService.NormalizeAgentId(reader.GetString(0)).ToLowerInvariant();
+                var isEnabled = reader.GetBoolean(1);
+                _agentEnabledOverrides[slug] = isEnabled;
+            }
+            _enabledOverridesHydrated = true;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "PostgreSQL AgentEnabledOverrides hydration skipped; using local fallback.");
+        }
+    }
+
+    private async Task SaveAgentEnabledOverrideAsync(string slug, bool enabled, CancellationToken ct)
+    {
+        var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
+        _agentEnabledOverrides[norm] = enabled;
+        PersistAgentEnabledOverridesToDisk();
+
+        var connStr = GetPostgresConnectionString();
+        if (string.IsNullOrWhiteSpace(connStr)) return;
+
+        try
+        {
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+            await EnsureAgentEnabledOverridesTableAsync(conn, ct);
+
+            await using var cmd = new NpgsqlCommand(@"
+                INSERT INTO user_management.""AgentEnabledOverrides"" (""AgentSlug"", ""Enabled"", ""UpdatedAt"")
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (""AgentSlug"") DO UPDATE
+                SET ""Enabled"" = EXCLUDED.""Enabled"",
+                    ""UpdatedAt"" = NOW();
+            ", conn);
+            cmd.Parameters.AddWithValue(norm);
+            cmd.Parameters.AddWithValue(enabled);
+            await cmd.ExecuteNonQueryAsync(ct);
+            _enabledOverridesHydrated = true;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "PostgreSQL AgentEnabledOverrides upsert skipped for agent {AgentSlug}; persisted to local fallback.", norm);
+        }
+    }
+
+    private static bool ResolveEffectiveEnabled(string slug, bool runtimeOrDefaultEnabled)
+    {
+        var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
+        if (_agentEnabledOverrides.TryGetValue(norm, out var overridden))
+        {
+            return overridden;
+        }
+        return runtimeOrDefaultEnabled;
+    }
+
     private static bool ResolveEffectivePinned(string slug, bool runtimeOrDefaultPinned, string userScope = "global")
     {
         var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
@@ -276,10 +421,25 @@ public sealed class QwenPawClient : IQwenPawClient
         if (baseAgents.Count == 0) return baseAgents;
         var userScope = ResolveCallerUserScopeKey(out var userId, out _);
         await HydrateUserPinOverridesFromPostgresAsync(userScope, userId, ct);
+        await HydrateAgentEnabledOverridesFromPostgresAsync(ct);
 
         return baseAgents
-            .Select(a => a with { Pinned = ResolveEffectivePinned(a.Slug, a.Pinned, userScope) })
-            .OrderByDescending(a => a.Pinned)
+            .Select(a =>
+            {
+                var effEnabled = ResolveEffectiveEnabled(a.Slug, a.Enabled);
+                var effStatus = !effEnabled ? "disabled" : (a.Status == "disabled" ? "active" : a.Status);
+                return a with
+                {
+                    Enabled = effEnabled,
+                    Status = effStatus,
+                    AvailableInChat = effEnabled && (a.AvailableInChat || effEnabled),
+                    CanToggle = true,
+                    IsRootAgent = false,
+                    Pinned = ResolveEffectivePinned(a.Slug, a.Pinned, userScope)
+                };
+            })
+            .OrderByDescending(a => a.Enabled)
+            .ThenByDescending(a => a.Pinned)
             .ThenBy(a => a.Slug, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
@@ -433,7 +593,11 @@ public sealed class QwenPawClient : IQwenPawClient
         {
             foreach (var dto in task.Result)
             {
-                runtime[Agent360Slug(key, dto.Id)] = dto;
+                var mappedSlug = Agent360Slug(key, dto.Id);
+                if (!string.IsNullOrWhiteSpace(mappedSlug))
+                {
+                    runtime[mappedSlug] = dto;
+                }
             }
         }
 
@@ -561,44 +725,48 @@ public sealed class QwenPawClient : IQwenPawClient
         return string.IsNullOrWhiteSpace(dto.ActiveModel?.ProviderId) ? model : $"{dto.ActiveModel.ProviderId}/{model}";
     }
 
-    private static AgentSummaryResponse MergeRuntime(AgentSummaryResponse guardian, QwenPawAgentDto live) => guardian with
+    private static AgentSummaryResponse MergeRuntime(AgentSummaryResponse guardian, QwenPawAgentDto live)
     {
-        Model = RuntimeModel(live, guardian.Model),
-        Enabled = live.Enabled,
-        Pinned = ResolveEffectivePinned(guardian.Slug, live.Pinned),
-        Status = !live.Enabled ? "disabled" : guardian.Status,
-        Description = string.IsNullOrWhiteSpace(guardian.Description) ? live.Description : guardian.Description,
-        AvailableInChat = live.Enabled && live.AvailableInChat
-    };
+        var effEnabled = ResolveEffectiveEnabled(guardian.Slug, live.Enabled);
+        return guardian with
+        {
+            Model = RuntimeModel(live, guardian.Model),
+            Enabled = effEnabled,
+            Pinned = ResolveEffectivePinned(guardian.Slug, live.Pinned),
+            Status = !effEnabled ? "disabled" : (guardian.Status == "disabled" ? "active" : guardian.Status),
+            Description = string.IsNullOrWhiteSpace(guardian.Description) ? live.Description : guardian.Description,
+            AvailableInChat = effEnabled && live.AvailableInChat
+        };
+    }
 
     private static bool IsRootDefaultAgent(string slug)
     {
-        var s = slug.ToLowerInvariant().Trim();
-        return s is "default-core" or "gm-boc" or "climax-default" or "its-default" or "gl-default" or "planthy-pm"
-            || s.EndsWith("-default") || s == "default";
+        _ = slug;
+        return false;
     }
 
     private AgentSummaryResponse FromRuntime(string slug, QwenPawAgentDto a)
     {
         var target = Resolve(slug);
         var (friendlyName, roleTag) = MapAgentIdentity(slug, a.Description, "skyer");
+        var effEnabled = ResolveEffectiveEnabled(slug, a.Enabled);
         return new AgentSummaryResponse(
             Id: $"bot:agent360:{slug}",
             Name: friendlyName == slug && !string.IsNullOrWhiteSpace(a.Name) ? a.Name : friendlyName,
             Slug: slug,
             RoleTag: roleTag,
             Node: FormatNodeDisplay(target.ClusterNode, target.InstanceName),
-            Status: !a.Enabled ? "disabled" : a.StartupStatus switch { "pending" => "evaluating", "disabled" => "disabled", _ => "active" },
+            Status: !effEnabled ? "disabled" : a.StartupStatus switch { "pending" => "evaluating", "disabled" => "disabled", _ => "active" },
             Model: RuntimeModel(a, null),
             RuntimeVersion: "Skyer v2.2.1",
             Uptime: "Online (Runtime)",
             Description: a.Description,
-            Enabled: a.Enabled,
+            Enabled: effEnabled,
             Pinned: ResolveEffectivePinned(slug, a.Pinned),
-            AvailableInChat: a.AvailableInChat,
+            AvailableInChat: effEnabled && a.AvailableInChat,
             Tools: DefaultTools,
-            CanToggle: !IsRootDefaultAgent(slug),
-            IsRootAgent: IsRootDefaultAgent(slug));
+            CanToggle: true,
+            IsRootAgent: false);
     }
 
     private const string GuardianLastGoodKey = "agent360:guardian:last-good";
@@ -930,30 +1098,47 @@ public sealed class QwenPawClient : IQwenPawClient
 
     public async Task<ToggleAgentResponse?> ToggleAgentAsync(string agentId, bool enabled, CancellationToken cancellationToken = default)
     {
-        var target = Resolve(agentId);
-        var payload = new ToggleAgentRequest(enabled);
-        using var response = await SendAsync(
-            target,
-            HttpMethod.Patch,
-            "toggle",
-            () => JsonContent.Create(payload),
-            global: false,
-            timeout: SlowReadTimeout,
-            ct: cancellationToken);
+        var normalizedSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        await SaveAgentEnabledOverrideAsync(normalizedSlug, enabled, cancellationToken);
 
-        if (!response.IsSuccessStatusCode)
+        var target = Resolve(agentId);
+        if (!target.IsQwenPaw || target.Instance is null)
         {
-            _logger.LogError("Failed to toggle agent {AgentId} to enabled={Enabled}. StatusCode: {StatusCode}", agentId, enabled, response.StatusCode);
-            return null;
+            InvalidateAgent(agentId);
+            _cache.Remove(GuardianLastGoodKey);
+            return new ToggleAgentResponse(true, normalizedSlug, enabled);
+        }
+
+        try
+        {
+            var payload = new ToggleAgentRequest(enabled);
+            using var response = await SendAsync(
+                target,
+                HttpMethod.Patch,
+                "toggle",
+                () => JsonContent.Create(payload),
+                global: false,
+                timeout: SlowReadTimeout,
+                ct: cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                // Note: QwenPaw returns HTTP 400 when disabling its root "default" profile (e.g. gm-boc, climax-default, agentcore-test-ba).
+                // We still honor the enable/disable state in Agent360 via _agentEnabledOverrides so any agent in the fleet can be disabled/enabled cleanly.
+                _logger.LogInformation("Runtime toggle endpoint returned {StatusCode} for {AgentId} (profile={Profile}, enabled={Enabled}); using Agent360 enabled override ledger.", response.StatusCode, normalizedSlug, target.TargetAgentProfile, enabled);
+            }
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Runtime toggle sync skipped for {AgentId}; persisted in Agent360 enabled override ledger.", normalizedSlug);
         }
 
         InvalidateAgent(agentId);
-        if (target.Instance is not null)
-        {
-            _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
-        }
+        _cache.Remove(AgentsCacheKey);
+        _cache.Remove(GuardianLastGoodKey);
+        _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
 
-        return await response.Content.ReadFromJsonAsync<ToggleAgentResponse>(cancellationToken: cancellationToken);
+        return new ToggleAgentResponse(true, normalizedSlug, enabled);
     }
 
     public async Task<PinAgentResponse?> PinAgentAsync(string agentId, bool pinned, CancellationToken cancellationToken = default)

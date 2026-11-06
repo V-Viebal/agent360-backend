@@ -81,6 +81,52 @@ public sealed class AgentMappingTests
         Assert.True(repinRes!.Pinned);
     }
 
+    [Fact]
+    public async Task ToggleAgentAsync_HonorsDisableAndEnableEvenWhenRuntimeRejectsDefaultProfile()
+    {
+        var routing = new Agent360.API.Features.Agents.Services.FleetInstanceRoutingService(
+            new HttpClient(new StubMessageHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+            {
+                Content = new System.Net.Http.StringContent("{\"detail\":\"Cannot disable the default agent\"}")
+            })),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Services.FleetInstanceRoutingService>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new Agent360.API.Options.QwenPawOptions()));
+
+        var cache = new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        var client = new Agent360.API.Features.Agents.Services.QwenPawClient(
+            new HttpClient(),
+            routing,
+            Microsoft.Extensions.Options.Options.Create(new Agent360.API.Options.QwenPawOptions()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Agent360.API.Features.Agents.Services.QwenPawClient>.Instance,
+            cache);
+
+        var disableRes = await client.ToggleAgentAsync("agentcore-test-ba", false, TestContext.Current.CancellationToken);
+        Assert.NotNull(disableRes);
+        Assert.True(disableRes!.Success);
+        Assert.Equal("agentcore-test-ba", disableRes.AgentId);
+        Assert.False(disableRes.Enabled);
+
+        cache.Set("agent360:agents:v2", (IReadOnlyList<AgentSummaryResponse>)new[]
+        {
+            new AgentSummaryResponse("bot:agent360:agentcore-test-ba", "Test AgentCore Default", "agentcore-test-ba", "Core", "Node 7th", "active", "grok-4.7", "v2.2", "Online", "Desc", true, false, true, Array.Empty<AgentToolSummary>())
+        });
+        var disabledList = await client.GetAgentsAsync(TestContext.Current.CancellationToken);
+        Assert.False(disabledList[0].Enabled);
+        Assert.Equal("disabled", disabledList[0].Status);
+
+        var enableRes = await client.ToggleAgentAsync("agentcore-test-ba", true, TestContext.Current.CancellationToken);
+        Assert.NotNull(enableRes);
+        Assert.True(enableRes!.Enabled);
+
+        cache.Set("agent360:agents:v2", (IReadOnlyList<AgentSummaryResponse>)new[]
+        {
+            new AgentSummaryResponse("bot:agent360:agentcore-test-ba", "Test AgentCore Default", "agentcore-test-ba", "Core", "Node 7th", "active", "grok-4.7", "v2.2", "Online", "Desc", true, false, true, Array.Empty<AgentToolSummary>())
+        });
+        var enabledList = await client.GetAgentsAsync(TestContext.Current.CancellationToken);
+        Assert.True(enabledList[0].Enabled);
+        Assert.Equal("active", enabledList[0].Status);
+    }
+
 
     [Fact]
     public async Task PinAgentAsync_IsolatesPinStatePerUserScope()
