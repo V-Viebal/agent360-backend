@@ -327,8 +327,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         };
 
     internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
-    internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH, isMobileDevice);
-    internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false) => Session.ComputeBackingScale(cssW, cssH, maxSurfaceW, maxSurfaceH, isMobileDevice);
+    internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH, isMobileDevice);
+    internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false) => Session.ComputeBackingScale(cssW, cssH, maxSurfaceW, maxSurfaceH, isMobileDevice);
 
     internal static byte[] Frame(string base64Jpeg) =>
         JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = base64Jpeg } });
@@ -432,7 +432,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         public byte[]? LastBinaryFrame { get; private set; }
         public string? LastFrameBase64 { get; private set; }
         public bool IsConnected => _ws?.State == WebSocketState.Open;
-        internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false)
+        internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false)
         {
             double w = Math.Max(320, rawW);
             double h = Math.Max(240, rawH);
@@ -453,26 +453,36 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 return (Math.Max(375, (int)Math.Round(w)), Math.Clamp((int)Math.Round(h), 240, 1080));
             }
 
-            // Desktop Full-Surface Scale: Fit the logical CSS viewport proportionally up to the full native surface bounds
-            // (maxSurfaceW x maxSurfaceH, e.g. 1440x813 or up to 1920x1080) at 1:1 scale so the webpage fills 100% of the frame with zero white bars!
-            double deskBoundW = Math.Clamp(maxSurfaceW, 640, 1920);
-            double deskBoundH = Math.Clamp(maxSurfaceH, 480, 1080);
-            var fitScale = Math.Min(deskBoundW / Math.Max(1.0, w), deskBoundH / Math.Max(1.0, h));
-            w *= fitScale;
-            h *= fitScale;
-            return (Math.Max(640, (int)Math.Round(w)), Math.Max(360, (int)Math.Round(h)));
+            // Desktop True FullHD / Native Client CSS Viewport:
+            // Never shrink the logical CSS width down to the container X11 window surface (maxSurfaceW x maxSurfaceH),
+            // otherwise websites render at a cramped 800px-1100px viewport and get stretched 2x-3x on the client screen!
+            // Keep the full requested Desktop CSS viewport (up to 1920x1080, minimum 1280px wide) preserving exact aspect ratio,
+            // and let ComputeBackingScale fit the backing buffer into maxSurfaceW x maxSurfaceH.
+            var aspect = h / Math.Max(1.0, w);
+            if (w < 1280)
+            {
+                w = 1280;
+                h = Math.Round(w * aspect);
+            }
+            if (w > 1920)
+            {
+                w = 1920;
+                h = Math.Round(w * aspect);
+            }
+            if (h > 1080)
+            {
+                h = 1080;
+                w = Math.Round(h / Math.Max(0.2, aspect));
+            }
+            return (Math.Clamp((int)Math.Round(w), 640, 1920), Math.Clamp((int)Math.Round(h), 360, 1080));
         }
 
-        internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1440, int maxSurfaceH = 813, bool isMobileDevice = false)
+        internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false)
         {
-            if (isMobileDevice)
-            {
-                double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
-                double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
-                var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
-                return Math.Round(Math.Clamp(scale, 0.5, 1.0), 4);
-            }
-            return 1.0;
+            double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
+            double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
+            var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
+            return Math.Round(Math.Clamp(scale, 0.35, 1.0), 4);
         }
 
         public bool MatchesViewport(int rawW, int rawH, bool? isMobileDevice = null)
@@ -1446,7 +1456,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                 }
                                 if (winId > 0)
                                 {
-                                    await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1440, height = 900, windowState = "normal" } } }, ct);
+                                    await SafeSendAsync(ws, new { id = 17, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { left = 0, top = 0, width = 1920, height = 1080, windowState = "normal" } } }, ct);
                                     await SafeSendAsync(ws, new { id = 18, method = "Browser.setWindowBounds", @params = new { windowId = winId, bounds = new { windowState = "maximized" } } }, ct);
                                     await Task.Delay(80, ct);
                                     await SafeSendAsync(ws, new { id = 19, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true, timeout = 350 } }, ct);
