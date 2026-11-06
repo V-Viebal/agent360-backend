@@ -1058,8 +1058,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 if (req.Width is > 0 && req.Height is > 0)
                 {
                     var isMobileNav = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
-                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1920, 1080, isMobileNav);
-                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1920, 1080, isMobileNav);
+                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileNav);
+                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileNav);
                     var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                     var orientationAngle = w > h ? 90 : 0;
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileNav) }, cts.Token);
@@ -1081,8 +1081,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 if (req.Width is > 0 && req.Height is > 0)
                 {
                     var isMobileRel = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
-                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1920, 1080, isMobileRel);
-                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1920, 1080, isMobileRel);
+                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileRel);
+                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileRel);
                     var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                     var orientationAngle = w > h ? 90 : 0;
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileRel) }, cts.Token);
@@ -1099,8 +1099,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 if (req.Width is > 0 && req.Height is > 0)
                 {
                     var isMobileHist = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
-                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1920, 1080, isMobileHist);
-                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1920, 1080, isMobileHist);
+                    var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileHist);
+                    var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileHist);
                     var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                     var orientationAngle = w > h ? 90 : 0;
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileHist) }, cts.Token);
@@ -1175,8 +1175,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             else if (action == "resize" && req.Width is > 0 && req.Height is > 0)
             {
                 var isMobileResize = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
-                var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1920, 1080, isMobileResize);
-                var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1920, 1080, isMobileResize);
+                var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileResize);
+                var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileResize);
                 await SendAsync(ws, new
                 {
                     id = ++id,

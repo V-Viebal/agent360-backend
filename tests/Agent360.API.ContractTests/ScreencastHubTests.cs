@@ -131,22 +131,23 @@ public sealed class ScreencastHubTests : IAsyncLifetime
     [Fact]
     public void NormalizeViewportFitsWithinNativeSurfaceWithoutTiling()
     {
-        // Desktop viewport preserves true FullHD 1920x1080 CSS layout and scales the backing buffer proportionally into the 1408x771 native surface
+        // Desktop viewport fits proportionally inside the 1408x771 native surface at 1:1 scale so 100% of the frame is filled without right/bottom padding, while ComputeDesktopProportionalZoom scales CSS content to FullHD 1920px proportions
         var (fhdW, fhdH) = ScreencastHub.NormalizeViewport(1920, 1080, 1408, 771, isMobileDevice: false);
-        fhdW.Should().Be(1920);
-        fhdH.Should().Be(1080);
+        fhdW.Should().Be(1371);
+        fhdH.Should().Be(771);
         var fhdScale = ScreencastHub.ComputeBackingScale(fhdW, fhdH, 1408, 771, isMobileDevice: false);
-        fhdScale.Should().BeApproximately(771.0 / 1080.0, 0.001);
+        fhdScale.Should().Be(1.0);
+        ScreencastHub.ComputeDesktopProportionalZoom(fhdW, 1920, isMobileDevice: false).Should().BeApproximately(1371.0 / 1920.0, 0.001);
         ((int)Math.Round(fhdW * fhdScale)).Should().BeLessThanOrEqualTo(1408);
         ((int)Math.Round(fhdH * fhdScale)).Should().BeLessThanOrEqualTo(771);
 
-        // When frontend requests 1312x960 (aspect 1.3667) on 1440x813 surface, it preserves full 1312x960 CSS layout and scales backing surface proportionally
+        // When frontend requests 1312x960 (aspect 1.3667) on 1440x813 surface, it fits to 1111x813 at 1:1 scale
         var (w1, h1) = ScreencastHub.NormalizeViewport(1312, 960, 1440, 813, isMobileDevice: false);
-        w1.Should().Be(1312);
-        h1.Should().Be(960);
+        w1.Should().Be(1111);
+        h1.Should().Be(813);
         Math.Abs(((double)w1 / h1) - (1312.0 / 960.0)).Should().BeLessThan(0.005);
         var s1 = ScreencastHub.ComputeBackingScale(w1, h1, 1440, 813, isMobileDevice: false);
-        s1.Should().BeApproximately(813.0 / 960.0, 0.001);
+        s1.Should().Be(1.0);
 
         // Mobile device viewport (390x660) preserves genuine mobile width (390) and exact aspect ratio
         var (mw1, mh1) = ScreencastHub.NormalizeViewport(390, 660, 1408, 771, isMobileDevice: true);

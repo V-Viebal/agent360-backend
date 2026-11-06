@@ -329,6 +329,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     internal static (int W, int H) ReadJpegDimensions(ReadOnlySpan<byte> bytes) => Session.ReadJpegDimensions(bytes);
     internal static (int W, int H) NormalizeViewport(int rawW, int rawH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false) => Session.NormalizeViewport(rawW, rawH, maxSurfaceW, maxSurfaceH, isMobileDevice);
     internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false) => Session.ComputeBackingScale(cssW, cssH, maxSurfaceW, maxSurfaceH, isMobileDevice);
+    internal static double ComputeDesktopProportionalZoom(int surfaceW, int requestedCssW = 1920, bool isMobileDevice = false) => Session.ComputeDesktopProportionalZoom(surfaceW, requestedCssW, isMobileDevice);
 
     internal static byte[] Frame(string base64Jpeg) =>
         JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = base64Jpeg } });
@@ -453,36 +454,36 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 return (Math.Max(375, (int)Math.Round(w)), Math.Clamp((int)Math.Round(h), 240, 1080));
             }
 
-            // Desktop True FullHD / Native Client CSS Viewport:
-            // Never shrink the logical CSS width down to the container X11 window surface (maxSurfaceW x maxSurfaceH),
-            // otherwise websites render at a cramped 800px-1100px viewport and get stretched 2x-3x on the client screen!
-            // Keep the full requested Desktop CSS viewport (up to 1920x1080, minimum 1280px wide) preserving exact aspect ratio,
-            // and let ComputeBackingScale fit the backing buffer into maxSurfaceW x maxSurfaceH.
-            var aspect = h / Math.Max(1.0, w);
-            if (w < 1280)
-            {
-                w = 1280;
-                h = Math.Round(w * aspect);
-            }
-            if (w > 1920)
-            {
-                w = 1920;
-                h = Math.Round(w * aspect);
-            }
-            if (h > 1080)
-            {
-                h = 1080;
-                w = Math.Round(h / Math.Max(0.2, aspect));
-            }
-            return (Math.Clamp((int)Math.Round(w), 640, 1920), Math.Clamp((int)Math.Round(h), 360, 1080));
+            // Desktop Full-Surface Scale + Proportional Desktop Zoom:
+            // Fit the physical CDP viewport to the full native surface bounds (maxSurfaceW x maxSurfaceH, e.g. 1440x813 or 1920x1080)
+            // at scale=1.0 so 100% of the screencast frame is filled with zero right/bottom white margins,
+            // while ComputeDesktopProportionalZoom sets document.documentElement.style.zoom = w / 1920 so pages render at true 1920px FullHD desktop proportions!
+            double deskBoundW = Math.Clamp(maxSurfaceW, 640, 1920);
+            double deskBoundH = Math.Clamp(maxSurfaceH, 480, 1080);
+            var fitScale = Math.Min(deskBoundW / Math.Max(1.0, w), deskBoundH / Math.Max(1.0, h));
+            w *= fitScale;
+            h *= fitScale;
+            return (Math.Max(640, (int)Math.Round(w)), Math.Max(360, (int)Math.Round(h)));
         }
 
         internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false)
         {
-            double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
-            double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
-            var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
-            return Math.Round(Math.Clamp(scale, 0.35, 1.0), 4);
+            if (isMobileDevice)
+            {
+                double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
+                double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
+                var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
+                return Math.Round(Math.Clamp(scale, 0.5, 1.0), 4);
+            }
+            return 1.0;
+        }
+
+        internal static double ComputeDesktopProportionalZoom(int surfaceW, int requestedCssW = 1920, bool isMobileDevice = false)
+        {
+            if (isMobileDevice) return 1.0;
+            double targetW = Math.Clamp(requestedCssW >= 1280 ? requestedCssW : 1920, 1280, 2560);
+            if (surfaceW >= targetW - 16) return 1.0;
+            return Math.Round(Math.Clamp(surfaceW / targetW, 0.55, 1.0), 4);
         }
 
         public bool MatchesViewport(int rawW, int rawH, bool? isMobileDevice = null)
@@ -1150,6 +1151,14 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
             }, ct);
             await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Emulation.resetPageScaleFactor" }, ct);
+            var zoomVal = ComputeDesktopProportionalZoom(w, 1920, isMobile);
+            var zoomStr = isMobile || Math.Abs(zoomVal - 1.0) <= 0.01
+                ? ""
+                : zoomVal.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
+            var jsZoom = "(() => { try { window.__ag360DeskZoom = '" + zoomStr + "'; const apply = () => { if (document.documentElement) { document.documentElement.style.zoom = window.__ag360DeskZoom || ''; } }; apply(); if (!window.__ag360ZoomHooked) { window.__ag360ZoomHooked = true; document.addEventListener('DOMContentLoaded', apply); window.addEventListener('load', apply); } } catch {} })()";
+            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.enable" }, ct);
+            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.addScriptToEvaluateOnNewDocument", @params = new { source = jsZoom } }, ct);
+            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Runtime.evaluate", @params = new { expression = jsZoom } }, ct);
         }
 
         private async Task RestartScreencastAsync(ClientWebSocket ws, int width, int height, CancellationToken ct)
