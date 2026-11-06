@@ -1807,11 +1807,14 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             [FromBody] ToggleAgentRequest request,
             HttpContext httpContext,
             IQwenPawClient client,
-            AgentProfileStore profileStore,
             CancellationToken ct) =>
         {
-            await profileStore.EnsureSyncedWithDatabaseAsync(ct);
-            var resolvedSlug = profileStore.ResolveCanonicalSlugByAlias(agentId) ?? agentId;
+            var profileStore = httpContext.RequestServices.GetService<AgentProfileStore>();
+            if (profileStore is not null)
+            {
+                await profileStore.EnsureSyncedWithDatabaseAsync(ct);
+            }
+            var resolvedSlug = profileStore?.ResolveCanonicalSlugByAlias(agentId) ?? agentId;
 
             if (httpContext.User.Identity?.IsAuthenticated == true &&
                 await AgentOwnershipGuard.EnforceOrForbidAsync(resolvedSlug, httpContext, ct) is { } denied)
