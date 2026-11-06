@@ -480,10 +480,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
         internal static double ComputeDesktopProportionalZoom(int surfaceW, int requestedCssW = 1920, bool isMobileDevice = false)
         {
-            if (isMobileDevice) return 1.0;
-            double targetW = Math.Clamp(requestedCssW >= 1280 ? requestedCssW : 1920, 1280, 2560);
-            if (surfaceW >= targetW - 16) return 1.0;
-            return Math.Round(Math.Clamp(surfaceW / targetW, 0.55, 1.0), 4);
+            // Keep CSS zoom at 1.0 (unmodified) because CSS zoom on documentElement shrinks 100vw/100vh/position:fixed SPAs to a sub-quadrant
+            return 1.0;
         }
 
         public bool MatchesViewport(int rawW, int rawH, bool? isMobileDevice = null)
@@ -1151,14 +1149,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 }
             }, ct);
             await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Emulation.resetPageScaleFactor" }, ct);
-            var zoomVal = ComputeDesktopProportionalZoom(w, 1920, isMobile);
-            var zoomStr = isMobile || Math.Abs(zoomVal - 1.0) <= 0.01
-                ? ""
-                : zoomVal.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
-            var jsZoom = "(() => { try { window.__ag360DeskZoom = '" + zoomStr + "'; const apply = () => { if (document.documentElement) { document.documentElement.style.zoom = window.__ag360DeskZoom || ''; } }; apply(); if (!window.__ag360ZoomHooked) { window.__ag360ZoomHooked = true; document.addEventListener('DOMContentLoaded', apply); window.addEventListener('load', apply); } } catch {} })()";
-            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.enable" }, ct);
-            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.addScriptToEvaluateOnNewDocument", @params = new { source = jsZoom } }, ct);
-            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Runtime.evaluate", @params = new { expression = jsZoom } }, ct);
+            // Clear any legacy CSS documentElement.style.zoom override so fixed/100vw/100vh SPAs (MISA CUKCUK, Google, Zalo) never shrink to a sub-quadrant
+            var jsClearZoom = "(() => { try { window.__ag360DeskZoom = ''; if (document.documentElement && document.documentElement.style.zoom) { document.documentElement.style.zoom = ''; } } catch {} })()";
+            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Runtime.evaluate", @params = new { expression = jsClearZoom } }, ct);
         }
 
         private async Task RestartScreencastAsync(ClientWebSocket ws, int width, int height, CancellationToken ct)

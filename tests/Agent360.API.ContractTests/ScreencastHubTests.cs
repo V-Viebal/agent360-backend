@@ -137,7 +137,7 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         fhdH.Should().Be(771);
         var fhdScale = ScreencastHub.ComputeBackingScale(fhdW, fhdH, 1408, 771, isMobileDevice: false);
         fhdScale.Should().Be(1.0);
-        ScreencastHub.ComputeDesktopProportionalZoom(fhdW, 1920, isMobileDevice: false).Should().BeApproximately(1371.0 / 1920.0, 0.001);
+        ScreencastHub.ComputeDesktopProportionalZoom(fhdW, 1920, isMobileDevice: false).Should().Be(1.0);
         ((int)Math.Round(fhdW * fhdScale)).Should().BeLessThanOrEqualTo(1408);
         ((int)Math.Round(fhdH * fhdScale)).Should().BeLessThanOrEqualTo(771);
 
