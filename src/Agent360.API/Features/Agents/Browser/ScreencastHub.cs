@@ -273,6 +273,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     internal const string ProbeDocumentMobileMismatchExpression =
         "(() => { try { const url = location.href || ''; if (!url.startsWith('http://') && !url.startsWith('https://')) return false; const ua = navigator.userAgent || ''; const chMob = navigator.userAgentData ? Boolean(navigator.userAgentData.mobile) : /Mobile|Android|iPhone/i.test(ua); const iw = window.innerWidth || document.documentElement?.clientWidth || 0; const vpMeta = document.querySelector('meta[name=\"viewport\"]')?.content || ''; return !chMob || !/Mobile|Android|iPhone/i.test(ua) || (iw > 540 && !vpMeta.includes('width=device-width')); } catch { return false; } })()";
 
+    internal const string SuppressHeadlessWebAuthnScript =
+        "(() => { try { if (navigator.credentials) { const abortErr = () => Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError')); navigator.credentials.get = abortErr; navigator.credentials.create = abortErr; } if (typeof window.PublicKeyCredential !== 'undefined') { window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false); window.PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false); } } catch {} })()";
+
     internal static object BuildUserAgentOverrideParams(bool isMobile) => isMobile
         ? new
         {
@@ -1591,6 +1594,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
                 // Page lifecycle events drive the viewer's real loading indicator, URL and title (Page.loadingState)
                 await SafeSendAsync(ws, new { id = 20, method = "Page.enable" }, ct);
+                // Prevent headless/container Chromium from stalling on native OS WebAuthn/passkey modals that have no physical security key
+                await SafeSendAsync(ws, new { id = 21, method = "WebAuthn.enable", @params = new { enableUI = false } }, ct);
+                await SafeSendAsync(ws, new { id = 22, method = "Page.addScriptToEvaluateOnNewDocument", @params = new { source = SuppressHeadlessWebAuthnScript } }, ct);
+                _ = SafeSendAsync(ws, new { id = 23, method = "Runtime.evaluate", @params = new { expression = SuppressHeadlessWebAuthnScript } }, ct);
                 _ = SafeSendAsync(ws, new { id = 782, method = "Runtime.evaluate", @params = new { expression = PageInfoExpression, returnByValue = true } }, ct);
 
                 var buffer = new byte[64 * 1024];
