@@ -481,13 +481,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
         internal static double ComputeBackingScale(int cssW, int cssH, int maxSurfaceW = 1920, int maxSurfaceH = 1080, bool isMobileDevice = false)
         {
-            if (isMobileDevice)
-            {
-                double boundW = Math.Clamp(maxSurfaceW, 640, 1920);
-                double boundH = Math.Clamp(maxSurfaceH, 480, 1080);
-                var scale = Math.Min(1.0, Math.Min(boundW / Math.Max(1.0, cssW), boundH / Math.Max(1.0, cssH)));
-                return Math.Round(Math.Clamp(scale, 0.5, 1.0), 4);
-            }
+            // Keep Emulation.setDeviceMetricsOverride scale at 1.0 for both mobile and desktop viewports.
+            // Passing scale < 1.0 (e.g. 0.80 when cssH=750 > maxSurfaceH=600) shrinks the rendered mobile page
+            // inside a full-size WxH compositor frame, leaving a ~20% white margin on the right and bottom.
             return 1.0;
         }
 
@@ -552,7 +548,17 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             var targetAspect = _viewportW / Math.Max(1.0, _viewportH);
             var frameAspect = (double)jw / Math.Max(1, jh);
             var matchesBacking = Math.Abs(jw - expectedBackingW) <= 18 && Math.Abs(jh - expectedBackingH) <= 18;
-            return matchesBacking && Math.Abs(frameAspect - targetAspect) <= 0.035;
+            if (matchesBacking && Math.Abs(frameAspect - targetAspect) <= 0.035)
+            {
+                return true;
+            }
+            // On mobile viewports taller than the host X11/Wayland window (e.g. 411x750 on a 1280x720 display),
+            // Page.startScreencast may downscale the encoded JPEG proportionally while keeping the exact mobile aspect ratio.
+            if (_isMobileViewport && jw <= expectedBackingW + 18 && jh <= expectedBackingH + 18 && Math.Abs(frameAspect - targetAspect) <= 0.045)
+            {
+                return true;
+            }
+            return false;
         }
         public int ViewerCount { get { lock (_viewers) return _viewers.Count; } }
 
@@ -1497,8 +1503,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     }
                     else
                     {
-                        await SafeSendAsync(ws, new { id = 12, method = "Emulation.clearDeviceMetricsOverride" }, ct);
-                        await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: window.innerWidth || document.documentElement.clientWidth || 1440, h: window.innerHeight || document.documentElement.clientHeight || 813})", returnByValue = true, timeout = 350 } }, ct);
+                        // Probe outer/screen surface bounds without calling clearDeviceMetricsOverride before applying mobile emulation,
+                        // and only cache valid desktop-sized window surfaces (>=1024x600).
+                        await SafeSendAsync(ws, new { id = 15, method = "Runtime.evaluate", @params = new { expression = "JSON.stringify({w: Math.max(window.outerWidth || 0, screen.width || 0, 1280), h: Math.max(window.outerHeight || 0, screen.height || 0, 720)})", returnByValue = true, timeout = 350 } }, ct);
                         using var probe15Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         probe15Cts.CancelAfter(450);
                         while (ws.State == WebSocketState.Open && !probe15Cts.IsCancellationRequested)
@@ -1531,10 +1538,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                         using var surfDoc = JsonDocument.Parse(valProp.GetString() ?? "{}");
                                         var sw = surfDoc.RootElement.TryGetProperty("w", out var swP) && swP.TryGetInt32(out var swV) ? swV : 0;
                                         var sh = surfDoc.RootElement.TryGetProperty("h", out var shP) && shP.TryGetInt32(out var shV) ? shV : 0;
-                                        if (sw >= 640 && sh >= 480)
+                                        if (sw >= 1024 && sh >= 600)
                                         {
-                                            _nativeSurfaceMaxW = Math.Clamp(sw, 640, 1920);
-                                            _nativeSurfaceMaxH = Math.Clamp(sh, 480, 1080);
+                                            _nativeSurfaceMaxW = Math.Clamp(sw, 1024, 1920);
+                                            _nativeSurfaceMaxH = Math.Clamp(sh, 600, 1080);
                                         }
                                     }
                                 }
