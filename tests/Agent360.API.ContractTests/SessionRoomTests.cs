@@ -163,12 +163,32 @@ public class SessionRoomTests
         negSent.Should().Be("negative");
         negCat.Should().Be("disapprove");
 
-        var prompt = AgentReactionClassifier.BuildImplicitReactionPrompt("👎", "Câu trả lời trước đó của agent", "Mons");
+        var prompt = AgentReactionClassifier.BuildImplicitReactionPrompt(
+            "👎",
+            "Câu trả lời trước đó của agent",
+            "Mons",
+            "Kiểm tra cấu hình triển khai và sửa lỗi kết nối");
         prompt.Should().Contain("[IMPLICIT_REACTION_FEEDBACK");
         prompt.Should().Contain("emoji=\"👎\"");
         prompt.Should().Contain("category=\"disapprove\"");
         prompt.Should().Contain("Mons");
+        prompt.Should().Contain("[Phân tích ý đồ người dùng (Intent)]:");
+        prompt.Should().Contain("[Hành động cải thiện đề xuất (Action)]:");
+        prompt.Should().Contain("Kiểm tra cấu hình triển khai và sửa lỗi kết nối");
         prompt.Should().Contain("[/IMPLICIT_REACTION_FEEDBACK]");
+
+        // Verify QwenPaw Telegram mood classification for user messages
+        var (thanksMood, thanksEmoji) = AgentReactionClassifier.ClassifyUserMessageMood("cảm ơn em nhiều nhé", false, "msg_101");
+        thanksMood.Should().Be("thanks");
+        AgentReactionClassifier.AllowedTelegramReactionEmojis.Should().Contain(thanksEmoji);
+
+        var (taskMood, taskEmoji) = AgentReactionClassifier.ClassifyUserMessageMood("kiểm tra và sửa lỗi api giúp anh", false, "msg_102");
+        taskMood.Should().BeOneOf("problem", "task");
+        AgentReactionClassifier.AllowedTelegramReactionEmojis.Should().Contain(taskEmoji);
+
+        var (questionMood, questionEmoji) = AgentReactionClassifier.ClassifyUserMessageMood("tại sao cần cấu hình này?", false, "msg_103");
+        questionMood.Should().Be("question");
+        questionEmoji.Should().BeOneOf("🤔", "🤓");
     }
 
     [Fact]

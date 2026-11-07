@@ -91,7 +91,8 @@ public sealed record SubmitMessageReactionRequestDto(
     [property: JsonPropertyName("session_id")] string? SessionId = null,
     [property: JsonPropertyName("message_snippet")] string? MessageSnippet = null,
     [property: JsonPropertyName("target_agent_id")] string? TargetAgentId = null,
-    [property: JsonPropertyName("trigger_agent_response")] bool TriggerAgentResponse = true
+    [property: JsonPropertyName("trigger_agent_response")] bool TriggerAgentResponse = true,
+    [property: JsonPropertyName("source_user_prompt")] string? SourceUserPrompt = null
 );
 
 public sealed record MessageReactionSummaryDto(
@@ -221,37 +222,222 @@ public sealed record AdaptiveSpecialtyProfileDto(
 
 public static class AgentReactionClassifier
 {
+    public static readonly IReadOnlySet<string> AllowedTelegramReactionEmojis = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢",
+        "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳",
+        "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓",
+        "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈",
+        "😇", "😨", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿",
+        "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀",
+        "😡"
+    };
+
+    private static readonly IReadOnlyDictionary<string, string> EmojiAliases = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["❤️"] = "❤",
+        ["✍️"] = "✍",
+        ["☃️"] = "☃",
+        ["🕊️"] = "🕊",
+        ["❤️‍🔥"] = "❤‍🔥"
+    };
+
+    private static readonly (string Mood, string[] Emojis, string[] Terms)[] UserMessageMoodRules =
+    [
+        ("love_request", ["❤"], ["thả tim", "tha tim", "thả ❤", "thả ❤️", "tim cho", "love"]),
+        ("reaction_request", ["👍", "👌"], [
+            "reaction", "react", "thả biểu cảm", "tha bieu cam", "bấm biểu cảm",
+            "bam bieu cam", "bấm vào tin", "bam vao tin", "thả like", "tha like",
+            "thả icon", "tha icon", "bấm reaction", "bam reaction"
+        ]),
+        ("thanks", ["🙏", "🤗", "❤"], [
+            "cảm ơn", "cam on", "cám ơn", "thanks", "thank you", "thank", "tks", "thx"
+        ]),
+        ("praise", ["🔥", "👏", "🏆"], [
+            "giỏi", "xuất sắc", "tuyệt vời", "tuyệt", "quá đỉnh", "đỉnh", "pro quá",
+            "good job", "great job", "awesome", "perfect", "hoàn hảo", "ngon",
+            "hoạt động đó", "hoat dong do", "ổn rồi", "on roi"
+        ]),
+        ("success", ["🎉", "🏆", "🍾"], [
+            "thành công", "thanh cong", "xong rồi", "xong roi", "done", "deploy được",
+            "chạy rồi", "chay roi", "hoàn thành", "hoan thanh", "được rồi", "duoc roi"
+        ]),
+        ("urgent", ["⚡", "🫡"], [
+            "gấp", "khẩn", "urgent", "asap", "ngay lập tức", "ngay bây giờ", "nhanh lên"
+        ]),
+        ("problem", ["🫡", "👨‍💻", "🤨"], [
+            "lỗi", "loi ", "bug", "error", "fail", "hỏng", "không được", "khong duoc",
+            "chưa được", "chua duoc", "sập", "down", "không chạy", "vẫn chưa", "van chua",
+            "problem", "sai "
+        ]),
+        ("sad", ["🤗", "😢"], [
+            "buồn", "mệt", "chán", "tiếc", "nản", "stress", "áp lực", "sad", "tired"
+        ]),
+        ("laugh", ["🤣", "😁"], ["haha", "hihi", "hehe", "kkk", "lol", "lmao", "😂", "🤣"]),
+        ("greeting", ["🤗"], ["xin chào", "chào", "hello", "hi em", "hey", "alo"]),
+        ("agree", ["👌", "🤝", "👍"], [
+            "ok", "oke", "okay", "đồng ý", "dong y", "chuẩn", "chuan", "đúng rồi",
+            "dung roi", "yes", "chốt", "chot", "được đó", "duoc do"
+        ]),
+        ("task", ["🫡", "✍", "👨‍💻"], [
+            "kiểm tra", "kiem tra", "sửa", "sua ", "fix", "deploy", "triển khai",
+            "trien khai", "thực thi", "thuc thi", "thực hiện", "thuc hien", "làm ",
+            "lam ", "tạo", "tao ", "cập nhật", "cap nhat", "hoàn thiện", "hoan thien",
+            "check", "build", "viết", "viet ", "gửi", "gui "
+        ]),
+        ("question", ["🤔", "🤓"], [
+            "?", "tại sao", "tai sao", "vì sao", "vi sao", "như thế nào", "thế nào",
+            "làm sao", "lam sao", "phân tích", "phan tich", "đánh giá", "danh gia",
+            "so sánh", "so sanh", "nên ", "có nên", "why", "how", "what"
+        ])
+    ];
+
+    public static string NormalizeReactionEmoji(string? value)
+    {
+        var text = (value ?? "").Trim();
+        return EmojiAliases.TryGetValue(text, out var alias) ? alias : text;
+    }
+
+    private static bool ReactionTermMatches(string term, string normalizedText)
+    {
+        var core = term.Trim();
+        if (string.IsNullOrEmpty(core)) return false;
+        var prefix = char.IsLetterOrDigit(core[0]) ? @"(?<!\w)" : "";
+        var suffix = char.IsLetterOrDigit(core[^1]) ? @"(?!\w)" : "";
+        return Regex.IsMatch(normalizedText, prefix + Regex.Escape(core) + suffix, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static int ComputeDeterministicSeed(string? seedSource)
+    {
+        if (string.IsNullOrWhiteSpace(seedSource)) return 0;
+        if (int.TryParse(seedSource, out var numeric)) return Math.Abs(numeric);
+        int hash = 0;
+        foreach (var ch in seedSource)
+        {
+            hash = ((hash * 31) + ch) & 0x7FFFFFFF;
+        }
+        return hash;
+    }
+
+    /// <summary>
+    /// Picks a mood and an allowed QwenPaw Telegram reaction emoji for one inbound user message,
+    /// mirroring QwenPaw Telegram's <c>classify_reaction_mood</c> behavior.
+    /// </summary>
+    public static (string Mood, string Emoji) ClassifyUserMessageMood(string? text, bool hasMedia = false, string? messageId = null)
+    {
+        var raw = (text ?? "").Trim();
+        // Strip leading [Replying to ...] and trailing [Attached File: ...] markers before mood matching
+        var cleaned = Regex.Replace(raw, @"^\[Replying to [^\]]+\]\s*", "", RegexOptions.IgnoreCase);
+        var hasAttachedTag = Regex.IsMatch(cleaned, @"\[Attached (?:File|Image|Video|Audio):[^\]]+\]", RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\[Attached (?:File|Image|Video|Audio):[^\]]+\]", "", RegexOptions.IgnoreCase).Trim();
+        var effectiveHasMedia = hasMedia || hasAttachedTag;
+
+        var normalized = " " + string.Join(" ", cleaned.ToLowerInvariant().Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) + " ";
+
+        if (normalized.Length <= 60)
+        {
+            foreach (var candidate in AllowedTelegramReactionEmojis)
+            {
+                if (candidate == "🤣") continue;
+                if (normalized.Contains(candidate, StringComparison.Ordinal))
+                {
+                    return ("named_emoji", candidate);
+                }
+            }
+            foreach (var kv in EmojiAliases)
+            {
+                if (normalized.Contains(kv.Key, StringComparison.Ordinal) && AllowedTelegramReactionEmojis.Contains(kv.Value))
+                {
+                    return ("named_emoji", kv.Value);
+                }
+            }
+        }
+
+        var seed = ComputeDeterministicSeed(messageId ?? cleaned);
+        foreach (var (mood, emojis, terms) in UserMessageMoodRules)
+        {
+            if (terms.Any(t => ReactionTermMatches(t, normalized)))
+            {
+                var allowed = emojis.Where(AllowedTelegramReactionEmojis.Contains).ToArray();
+                if (allowed.Length == 0) allowed = ["👀"];
+                return (mood, allowed[seed % allowed.Length]);
+            }
+        }
+
+        if (effectiveHasMedia && string.IsNullOrWhiteSpace(cleaned))
+        {
+            return ("media", "👀");
+        }
+
+        return ("seen", "👀");
+    }
+
     public static (string Sentiment, string Category, string DirectiveVi) Classify(string emoji)
+    {
+        var (sentiment, category, _, _, directive) = ClassifyDetailed(emoji);
+        return (sentiment, category, directive);
+    }
+
+    public static (string Sentiment, string Category, string IntentSummaryVi, string RecommendedActionVi, string DirectiveVi) ClassifyDetailed(string emoji)
     {
         return emoji switch
         {
-            "❤️" or "🔥" or "🚀" or "🎉" or "💯" or "👏" or "🤩" or "😍" or "🙌" or "⚡" or "💪" =>
-                ("positive", "praise", "Người dùng rất ấn tượng, khen ngợi và đánh giá cao câu trả lời vừa rồi. Hãy ghi nhận, cảm ơn ngắn gọn lịch thiệp tự nhiên (1-2 câu), củng cố hướng tiếp cận này và sẵn sàng hỗ trợ bước tiếp theo."),
-            "👍" or "🤝" or "🫡" or "🎯" or "💡" or "🙏" or "☕" or "🤖" =>
-                ("positive", "approve", "Người dùng đồng ý, xác nhận phương án hoặc thông tin vừa nêu là đúng và hữu ích. Hãy xác nhận ngắn gọn rằng bạn đã chốt ý này và đề xuất bước thực thi tiếp theo."),
-            "👎" =>
-                ("negative", "disapprove", "Người dùng không hài lòng hoặc chê chất lượng/tính chính xác của câu trả lời vừa rồi. Hãy lập tức nhận phản hồi với thái độ cầu thị, tự rà soát ngắn gọn điểm có thể chưa chuẩn hoặc chưa đầy đủ trong câu trả lời trên, và đưa ra giải pháp khắc phục/bổ sung chính xác hơn hoặc hỏi ngắn gọn ý người dùng muốn điều chỉnh."),
-            "😢" =>
-                ("negative", "sad_frustrated", "Người dùng cảm thấy hụt hẫng, chưa thỏa đáng hoặc gặp sự cố bất tiện. Hãy thể hiện sự đồng cảm, kiểm tra lại thiếu sót và chủ động đề xuất giải pháp tháo gỡ khó khăn ngay lập tức."),
-            "😮" or "👀" =>
-                ("neutral", "surprised_curious", "Người dùng thấy bất ngờ, ngạc nhiên hoặc tò mò về điểm mấu chốt/thông tin vừa nêu. Hãy làm rõ thêm chi tiết quan trọng nhất để người dùng nắm bắt trọn vẹn."),
-            "😆" =>
-                ("positive", "amused", "Người dùng thấy phản hồi thú vị, vui vẻ. Hãy đáp lại tự nhiên, tích cực và giữ mạch công việc trôi chảy."),
+            "❤️" or "❤" or "🔥" or "🚀" or "🎉" or "💯" or "👏" or "🤩" or "😍" or "🙌" or "⚡" or "💪" or "🏆" or "🍾" or "❤‍🔥" or "🥰" =>
+                ("positive", "praise",
+                 "Người dùng đánh giá rất cao chất lượng, độ sâu sắc hoặc kết quả thực thi của câu trả lời vừa rồi.",
+                 "Ghi nhận chuẩn mực làm việc này, củng cố kết quả đã đạt được và chủ động gợi ý 1-2 bước mở rộng hoặc tối ưu tiếp theo có giá trị cao.",
+                 "Người dùng rất ấn tượng, khen ngợi và đánh giá cao câu trả lời vừa rồi. Hãy ghi nhận, cảm ơn ngắn gọn lịch thiệp tự nhiên (1-2 câu), tóm lược điểm cốt lõi đã chốt thành công và chủ động đề xuất 1-2 bước hành động hoặc tối ưu tiếp theo sát ngữ cảnh."),
+            "👍" or "👌" or "🤝" or "🫡" or "🎯" or "💡" or "🙏" or "☕" or "🤖" or "✍" or "✍️" =>
+                ("positive", "approve",
+                 "Người dùng đồng thuận, xác nhận phương án/thông tin vừa nêu là đúng ý và chấp thuận hướng giải quyết.",
+                 "Chốt phương án hiện tại làm chuẩn, xác nhận sẵn sàng triển khai và đề xuất bước thực thi kế tiếp ngay lập tức.",
+                 "Người dùng đồng ý, xác nhận phương án hoặc thông tin vừa nêu là đúng và hữu ích. Hãy xác nhận ngắn gọn rằng bạn đã chốt phương án này và chủ động đề xuất bước triển khai tiếp theo."),
+            "👎" or "🤬" or "😡" or "🤮" or "💩" or "🖕" =>
+                ("negative", "disapprove",
+                 "Người dùng KHÔNG hài lòng hoặc phát hiện câu trả lời vừa rồi sai trọng tâm, thiếu chính xác, quá chung chung hoặc chưa giải quyết đúng yêu cầu.",
+                 "Tự kiểm điểm câu trả lời trước, chỉ rõ điểm có thể chưa chuẩn/thiếu sót, lập tức đưa ra phiên bản cải thiện trực tiếp (chính xác hơn, đi thẳng vào giải pháp cụ thể) và hỏi 1 câu xác nhận hướng điều chỉnh.",
+                 "Người dùng không hài lòng hoặc đánh giá câu trả lời vừa rồi chưa đạt yêu cầu/chưa chính xác. Hãy cầu thị nhận phản hồi, tự rà soát nhanh điểm hạn chế trong câu trả lời trên (thiếu chi tiết, lệch trọng tâm hoặc chưa chạy thực tế), sau đó ĐƯA RA NGAY phương án/câu trả lời cải thiện tốt hơn, rõ ràng và thực tế hơn, kèm câu hỏi ngắn để xác nhận đúng ý người dùng."),
+            "😢" or "😭" or "💔" or "😨" or "😱" =>
+                ("negative", "sad_frustrated",
+                 "Người dùng đang gặp trở ngại, hụt hẫng vì kết quả chưa như kỳ vọng hoặc sự cố kỹ thuật vẫn chưa được tháo gỡ.",
+                 "Thể hiện sự đồng cảm, rà soát lại các nguyên nhân gốc rễ có thể gây lỗi và chủ động đưa ra phương án xử lý/workaround cụ thể ngay lập tức.",
+                 "Người dùng cảm thấy hụt hẫng, chưa thỏa đáng hoặc đang gặp sự cố bất tiện. Hãy thể hiện sự đồng cảm chân thành, kiểm tra lại thiếu sót trong hướng dẫn trước đó và chủ động đề xuất ngay các bước tháo gỡ/khắc phục cụ thể, dễ thực hiện nhất."),
+            "🤔" or "🤨" or "🤓" or "😮" or "👀" or "🤯" =>
+                ("neutral", "surprised_curious",
+                 "Người dùng đang băn khoăn, nghi ngờ một chi tiết, thấy bất ngờ hoặc cần làm rõ thêm nguyên lý/bằng chứng cụ thể của câu trả lời vừa rồi.",
+                 "Giải thích sâu hơn điểm mấu chốt, bổ sung ví dụ thực tế/dẫn chứng rõ ràng và kiểm tra xem người dùng cần làm rõ khía cạnh nào.",
+                 "Người dùng đang suy nghĩ, băn khoăn hoặc muốn tìm hiểu sâu hơn về điểm mấu chốt trong câu trả lời vừa rồi. Hãy chủ động làm rõ thêm cơ chế, dẫn chứng hoặc ví dụ cụ thể cho phần quan trọng nhất, đồng thời hỏi xem người dùng muốn đi sâu vào chi tiết nào."),
+            "😆" or "🤣" or "😁" or "🤪" or "😎" =>
+                ("positive", "amused",
+                 "Người dùng thấy phản hồi thú vị, dí dỏm và tạo không khí tích cực cho cuộc trò chuyện.",
+                 "Đáp lại tự nhiên, giữ tinh thần cởi mở và hướng mạch hội thoại vào mục tiêu công việc tiếp theo.",
+                 "Người dùng thấy phản hồi thú vị, vui vẻ. Hãy đáp lại tự nhiên, tích cực và giữ mạch công việc trôi chảy."),
             _ =>
-                ("neutral", "feedback", "Người dùng vừa gắn biểu tượng cảm xúc vào phản hồi của bạn. Hãy tiếp thu một cách tự nhiên và tiếp tục đồng hành hỗ trợ.")
+                ("neutral", "feedback",
+                 "Người dùng gửi tín hiệu cảm xúc phản hồi lên tin nhắn của Agent.",
+                 "Tiếp nhận tín hiệu tự nhiên và hỏi xem người dùng có muốn bổ sung hay điều chỉnh gì thêm không.",
+                 "Người dùng vừa gắn biểu tượng cảm xúc vào phản hồi của bạn. Hãy tiếp thu một cách tự nhiên và tiếp tục đồng hành hỗ trợ.")
         };
     }
 
-                public static string BuildImplicitReactionPrompt(string emoji, string? messageSnippet, string? authorName)
+    public static string BuildImplicitReactionPrompt(string emoji, string? messageSnippet, string? authorName, string? sourceUserPrompt = null)
     {
-        var (sentiment, category, directive) = Classify(emoji);
+        var (sentiment, category, intentSummary, recommendedAction, directive) = ClassifyDetailed(emoji);
         var cleanSnippet = string.IsNullOrWhiteSpace(messageSnippet) ? "(phản hồi trước đó)" : messageSnippet.Trim().Replace("\r", "").Replace("\n", " ");
-        if (cleanSnippet.Length > 200) cleanSnippet = cleanSnippet[..200] + "...";
+        if (cleanSnippet.Length > 360) cleanSnippet = cleanSnippet[..360] + "...";
         var author = string.IsNullOrWhiteSpace(authorName) ? "bạn" : authorName;
+        var cleanUserPrompt = string.IsNullOrWhiteSpace(sourceUserPrompt) ? null : sourceUserPrompt.Trim().Replace("\r", "").Replace("\n", " ");
+        if (cleanUserPrompt is { Length: > 240 }) cleanUserPrompt = cleanUserPrompt[..240] + "...";
+        var userContextBlock = !string.IsNullOrWhiteSpace(cleanUserPrompt)
+            ? $"Yêu cầu gốc của người dùng trước đó: \"{cleanUserPrompt}\"\n"
+            : "";
 
         return $"[IMPLICIT_REACTION_FEEDBACK emoji=\"{emoji}\" category=\"{category}\" sentiment=\"{sentiment}\" target=\"{author}\"]\n" +
                $"Người dùng vừa thả biểu tượng cảm xúc {emoji} để đánh giá câu trả lời vừa rồi của {author}:\n" +
+               userContextBlock +
                $"\"{cleanSnippet}\"\n\n" +
+               $"[Phân tích ý đồ người dùng (Intent)]: {intentSummary}\n" +
+               $"[Hành động cải thiện đề xuất (Action)]: {recommendedAction}\n" +
                $"[Chỉ thị phản hồi ngầm]: {directive} Lưu ý: KHÔNG lặp lại thẻ hệ thống [IMPLICIT_REACTION_FEEDBACK]. Hãy trả lời ngắn gọn, tự nhiên, đúng giọng điệu của agent.\n" +
                $"[/IMPLICIT_REACTION_FEEDBACK]";
     }
@@ -550,19 +736,22 @@ public sealed class SessionRoomStore
         string emoji,
         string userId,
         string action,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? hostSessionId = null)
     {
         var host = SubAgentService.NormalizeAgentId(hostAgentId);
         var shortHash = Math.Abs($"{host}:{hostChatId}".GetHashCode()).ToString("x8");
         var roomSlug = $"room_{host}_{shortHash}";
         var room = GetByChat(host, hostChatId)
+            ?? (!string.IsNullOrWhiteSpace(hostSessionId) ? GetByChat(host, hostSessionId!) : null)
+            ?? GetByChatIdOnly(hostChatId)
             ?? new SessionCollaborationRoom(
                 roomSlug,
                 $"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}",
                 $"{SessionRoomOrchestrator.ElementBaseUrl}{Uri.EscapeDataString($"!{roomSlug}:{SessionRoomOrchestrator.GatewayDomain}")}",
                 host,
                 hostChatId,
-                hostChatId,
+                !string.IsNullOrWhiteSpace(hostSessionId) ? hostSessionId! : hostChatId,
                 [],
                 "idle",
                 null,
@@ -1328,6 +1517,7 @@ public sealed class SessionRoomStore
                         }
                     }
                     var mid = msgObj["id"]?.ToString();
+                    bool attachedStoredReaction = false;
                     if (room?.Reactions is { Count: > 0 })
                     {
                         if (!string.IsNullOrEmpty(mid) && room.Reactions.TryGetValue(mid, out var recs) && recs.Count > 0)
@@ -1336,6 +1526,18 @@ public sealed class SessionRoomStore
                             foreach (var e in recs.Select(r => r.Emoji).Distinct(StringComparer.OrdinalIgnoreCase))
                                 reactArr.Add(e);
                             msgObj["reactions"] = reactArr;
+                            attachedStoredReaction = true;
+                        }
+                    }
+                    if (!attachedStoredReaction &&
+                        string.Equals(role, "user", StringComparison.OrdinalIgnoreCase) &&
+                        msgObj["reactions"] is null &&
+                        !string.IsNullOrWhiteSpace(txt))
+                    {
+                        var (_, autoEmoji) = AgentReactionClassifier.ClassifyUserMessageMood(txt, false, mid ?? chatId);
+                        if (!string.IsNullOrWhiteSpace(autoEmoji))
+                        {
+                            msgObj["reactions"] = new System.Text.Json.Nodes.JsonArray(autoEmoji);
                         }
                     }
                     if (!string.IsNullOrEmpty(mid) && room?.PinnedMessageIds is { Count: > 0 } &&
@@ -1544,6 +1746,19 @@ public sealed class SessionRoomStore
                         foreach (var e in emojiList) reactArr.Add(e);
                         msgObj["reactions"] = reactArr;
                     }
+                }
+            }
+            foreach (var msgObj in messagesArr.OfType<System.Text.Json.Nodes.JsonObject>())
+            {
+                if (!string.Equals(msgObj["role"]?.ToString(), "user", StringComparison.OrdinalIgnoreCase)) continue;
+                if (msgObj["reactions"] is not null) continue;
+                var uText = ExtractMessageNodeText(msgObj);
+                if (string.IsNullOrWhiteSpace(uText)) continue;
+                var mid = msgObj["id"]?.ToString();
+                var (_, autoEmoji) = AgentReactionClassifier.ClassifyUserMessageMood(uText, false, mid ?? chatId);
+                if (!string.IsNullOrWhiteSpace(autoEmoji))
+                {
+                    msgObj["reactions"] = new System.Text.Json.Nodes.JsonArray(autoEmoji);
                 }
             }
 

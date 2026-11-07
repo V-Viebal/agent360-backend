@@ -257,7 +257,8 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 request.Emoji,
                 userId,
                 request.Action ?? "add",
-                ct);
+                ct,
+                request.SessionId);
 
             // If action is remove or trigger_agent_response is false, return updated room immediately
             var isAdd = !string.Equals(request.Action, "remove", StringComparison.OrdinalIgnoreCase);
@@ -268,22 +269,121 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
 
             // Implicit Evaluation Turn: Build implicit prompt and stream directly to QwenPaw
             var targetAgent = !string.IsNullOrWhiteSpace(request.TargetAgentId) ? request.TargetAgentId : agentId;
-            var implicitPrompt = Agent360.API.Features.Agents.SubAgents.AgentReactionClassifier.BuildImplicitReactionPrompt(
-                request.Emoji, request.MessageSnippet, targetAgent);
-
             var effectiveSessionId = !string.IsNullOrWhiteSpace(request.SessionId) ? request.SessionId : chatId;
+            string qwenPawSessionId = effectiveSessionId;
+            string? detectedChatChannel = null;
+            string? detectedChatUserId = null;
+            string? sourceUserPrompt = request.SourceUserPrompt;
+
+            var consoleChatScope = await ChatVisibilityGuard.ResolveScopeAsync(targetAgent, httpContext, ct);
+            if (consoleChatScope is not null)
+            {
+                detectedChatUserId = consoleChatScope;
+            }
+
+            try
+            {
+                var chatsRaw = await client.GetAgentChatsRawAsync(targetAgent, ct);
+                if (!string.IsNullOrWhiteSpace(chatsRaw))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(chatsRaw);
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        System.Text.Json.JsonElement? matchedEl = null;
+                        foreach (var el in doc.RootElement.EnumerateArray())
+                        {
+                            var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                            if (string.Equals(id, chatId, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(id, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                matchedEl = el;
+                                break;
+                            }
+                        }
+                        if (matchedEl is null)
+                        {
+                            foreach (var el in doc.RootElement.EnumerateArray())
+                            {
+                                var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                                if (string.Equals(sid, chatId, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(sid, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    matchedEl = el;
+                                    break;
+                                }
+                            }
+                        }
+                        if (matchedEl.HasValue)
+                        {
+                            var m = matchedEl.Value;
+                            var sid = m.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                            var ch = m.TryGetProperty("channel", out var chProp) ? chProp.GetString() : null;
+                            var uid = m.TryGetProperty("user_id", out var uProp) ? uProp.GetString() : null;
+                            if (!string.IsNullOrWhiteSpace(sid)) qwenPawSessionId = sid;
+                            if (!string.IsNullOrWhiteSpace(ch)) detectedChatChannel = ch;
+                            if (!string.IsNullOrWhiteSpace(uid) && consoleChatScope is null) detectedChatUserId = uid;
+                        }
+                    }
+                }
+            }
+            catch {}
+
+            if (string.IsNullOrWhiteSpace(sourceUserPrompt))
+            {
+                try
+                {
+                    var histRaw = await client.GetChatHistoryRawAsync(chatId, targetAgent, ct);
+                    if (!string.IsNullOrWhiteSpace(histRaw))
+                    {
+                        using var hDoc = System.Text.Json.JsonDocument.Parse(histRaw);
+                        if (hDoc.RootElement.TryGetProperty("messages", out var mArr) && mArr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            for (int i = mArr.GetArrayLength() - 1; i >= 0; i--)
+                            {
+                                var item = mArr[i];
+                                var r = item.TryGetProperty("role", out var rP) ? rP.GetString() : null;
+                                if (!string.Equals(r, "user", StringComparison.OrdinalIgnoreCase)) continue;
+                                string? uTxt = null;
+                                if (item.TryGetProperty("content", out var cP))
+                                {
+                                    if (cP.ValueKind == System.Text.Json.JsonValueKind.String)
+                                        uTxt = cP.GetString();
+                                    else if (cP.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        uTxt = string.Join("\n", cP.EnumerateArray().Where(x => !x.TryGetProperty("type", out var tp) || tp.GetString() == "text").Select(x => x.TryGetProperty("text", out var tx) ? tx.GetString() : null).Where(x => !string.IsNullOrWhiteSpace(x)));
+                                }
+                                if (!string.IsNullOrWhiteSpace(uTxt) && !uTxt.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var ctxIdx = uTxt.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+                                    if (ctxIdx >= 0) uTxt = uTxt[..ctxIdx].TrimEnd();
+                                    sourceUserPrompt = uTxt.Trim();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch {}
+            }
+
+            var implicitPrompt = Agent360.API.Features.Agents.SubAgents.AgentReactionClassifier.BuildImplicitReactionPrompt(
+                request.Emoji, request.MessageSnippet, targetAgent, sourceUserPrompt);
 
             var consoleReq = new ConsoleChatSendRequestDto(
-                effectiveSessionId,
+                qwenPawSessionId,
                 implicitPrompt,
                 targetAgent,
                 null,
                 [new ConsoleChatInputItem("user", "message", [new ConsoleChatContentItem("text", implicitPrompt)])],
-                "console");
+                detectedChatChannel ?? "console",
+                detectedChatUserId);
 
-            var sessionLock = queueManager.GetOrCreateSessionLock(effectiveSessionId);
+            var sessionLock = queueManager.GetOrCreateSessionLock(qwenPawSessionId);
             await sessionLock.WaitAsync(ct);
             queueManager.SetSessionTurnActive(effectiveSessionId, true, targetAgent);
+            if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+            {
+                queueManager.SetSessionTurnActive(qwenPawSessionId, true, targetAgent);
+            }
             bool backgrounded = false;
 
             try
@@ -292,7 +392,7 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                     consoleReq,
                     targetAgent,
                     effectiveSessionId,
-                    effectiveSessionId,
+                    qwenPawSessionId,
                     httpContext,
                     client,
                     queueManager,
@@ -306,6 +406,10 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
                 if (!backgrounded)
                 {
                     queueManager.SetSessionTurnActive(effectiveSessionId, false, targetAgent);
+                    if (!string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        queueManager.SetSessionTurnActive(qwenPawSessionId, false, targetAgent);
+                    }
                     sessionLock.Release();
                 }
             }
@@ -2467,63 +2571,115 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
             }
 
             stream = await response.Content.ReadAsStreamAsync(upstreamCts.Token);
+            bool isImplicitReactionTurn = !string.IsNullOrWhiteSpace(rawUserText) &&
+                rawUserText.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase);
+            if (!isImplicitReactionTurn && !string.IsNullOrWhiteSpace(rawUserText) && !ct.IsCancellationRequested)
+            {
+                var hasMediaItems = existingMediaContentItems.Count > 0;
+                var (autoMood, autoEmoji) = Agent360.API.Features.Agents.SubAgents.AgentReactionClassifier.ClassifyUserMessageMood(
+                    rawUserText, hasMediaItems, effectiveSessionId);
+                var agentReactionEvt = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    @object = "agent_reaction",
+                    agent_id = agentTarget,
+                    session_id = effectiveSessionId,
+                    mood = autoMood,
+                    emoji = autoEmoji
+                });
+                try
+                {
+                    await httpContext.Response.WriteAsync($"data: {agentReactionEvt}\n\n", ct);
+                    await httpContext.Response.Body.FlushAsync(ct);
+                }
+                catch {}
+            }
             await SseRelay.CopyAsync(stream, httpContext.Response, TimeSpan.FromSeconds(5), ct, sendInitialPing: true);
             await stream.DisposeAsync();
             response.Dispose();
             upstreamCts.Dispose();
 
-            if (roomOrchestrator is not null && (mentionedCollaborators.Count > 0 || hasActiveMultiAgentRoom))
+            _ = Task.Run(async () =>
             {
                 var capturedSoloInit = soloRoomInitTask;
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
+                    if (capturedSoloInit is not null)
                     {
-                        if (capturedSoloInit is not null)
+                        try { await capturedSoloInit; } catch {}
+                    }
+                    client.InvalidateChatList(agentTarget);
+                    var histRaw = await client.GetChatHistoryRawAsync(effectiveSessionId, agentTarget, CancellationToken.None);
+                    if (string.IsNullOrWhiteSpace(histRaw) && !string.Equals(qwenPawSessionId, effectiveSessionId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        histRaw = await client.GetChatHistoryRawAsync(qwenPawSessionId, agentTarget, CancellationToken.None);
+                    }
+                    if (!string.IsNullOrWhiteSpace(histRaw))
+                    {
+                        using var hDoc = System.Text.Json.JsonDocument.Parse(histRaw);
+                        if (hDoc.RootElement.TryGetProperty("messages", out var mArr) && mArr.ValueKind == System.Text.Json.JsonValueKind.Array && mArr.GetArrayLength() > 0)
                         {
-                            try { await capturedSoloInit; } catch {}
-                        }
-                        client.InvalidateChatList(agentTarget);
-                        var histRaw = await client.GetChatHistoryRawAsync(effectiveSessionId, agentTarget, CancellationToken.None);
-                        if (!string.IsNullOrWhiteSpace(histRaw))
-                        {
-                            using var hDoc = System.Text.Json.JsonDocument.Parse(histRaw);
-                            if (hDoc.RootElement.TryGetProperty("messages", out var mArr) && mArr.ValueKind == System.Text.Json.JsonValueKind.Array && mArr.GetArrayLength() > 0)
+                            string? latestUserId = null;
+                            string? latestUserTxt = null;
+                            string? synthText = null;
+                            string? synthReasoning = null;
+                            for (int i = mArr.GetArrayLength() - 1; i >= 0; i--)
                             {
-                                string? synthText = null;
-                                string? synthReasoning = null;
-                                for (int i = mArr.GetArrayLength() - 1; i >= 0; i--)
+                                var item = mArr[i];
+                                var r = item.TryGetProperty("role", out var rP) ? rP.GetString() : null;
+                                if (r == "user")
                                 {
-                                    var item = mArr[i];
-                                    var r = item.TryGetProperty("role", out var rP) ? rP.GetString() : null;
-                                    if (r == "user") break;
-                                    if (r == "assistant")
+                                    latestUserId = item.TryGetProperty("id", out var idP) ? idP.GetString() : null;
+                                    if (item.TryGetProperty("content", out var uCp))
                                     {
-                                        var t = item.TryGetProperty("type", out var tP) ? tP.GetString() : "message";
-                                        var txt = item.TryGetProperty("content", out var cP) && cP.ValueKind == System.Text.Json.JsonValueKind.Array
-                                            ? string.Join("\n", cP.EnumerateArray().Select(x => x.TryGetProperty("text", out var tx) ? tx.GetString() : null).Where(x => !string.IsNullOrEmpty(x)))
-                                            : null;
-                                        if (t == "message" && string.IsNullOrWhiteSpace(synthText) && !string.IsNullOrWhiteSpace(txt))
-                                            synthText = txt;
-                                        else if (t == "reasoning" && string.IsNullOrWhiteSpace(synthReasoning) && !string.IsNullOrWhiteSpace(txt))
-                                            synthReasoning = txt;
+                                        if (uCp.ValueKind == System.Text.Json.JsonValueKind.String)
+                                            latestUserTxt = uCp.GetString();
+                                        else if (uCp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                            latestUserTxt = string.Join("\n", uCp.EnumerateArray().Select(x => x.TryGetProperty("text", out var tx) ? tx.GetString() : null).Where(x => !string.IsNullOrEmpty(x)));
                                     }
+                                    break;
                                 }
-                                if (!string.IsNullOrWhiteSpace(synthText))
+                                if (r == "assistant")
                                 {
-                                    await roomOrchestrator.RecordHostSynthesisTurnAsync(
-                                        agentTarget, effectiveSessionId, synthText, synthReasoning, null, qwenPawSessionId, CancellationToken.None, activeRoomRunId, activeRoomFinalRound);
+                                    var t = item.TryGetProperty("type", out var tP) ? tP.GetString() : "message";
+                                    var txt = item.TryGetProperty("content", out var cP) && cP.ValueKind == System.Text.Json.JsonValueKind.Array
+                                        ? string.Join("\n", cP.EnumerateArray().Select(x => x.TryGetProperty("text", out var tx) ? tx.GetString() : null).Where(x => !string.IsNullOrEmpty(x)))
+                                        : null;
+                                    if (t == "message" && string.IsNullOrWhiteSpace(synthText) && !string.IsNullOrWhiteSpace(txt))
+                                        synthText = txt;
+                                    else if (t == "reasoning" && string.IsNullOrWhiteSpace(synthReasoning) && !string.IsNullOrWhiteSpace(txt))
+                                        synthReasoning = txt;
                                 }
+                            }
+
+                            // Persist the agent's QwenPaw Telegram-style auto-reaction on the user's message ID so reloads retain it
+                            if (!isImplicitReactionTurn &&
+                                roomStore is not null &&
+                                !string.IsNullOrWhiteSpace(latestUserId) &&
+                                (string.IsNullOrWhiteSpace(latestUserTxt) || !latestUserTxt.Contains("[IMPLICIT_REACTION_FEEDBACK", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                var (_, persistedEmoji) = Agent360.API.Features.Agents.SubAgents.AgentReactionClassifier.ClassifyUserMessageMood(
+                                    latestUserTxt ?? rawUserText, existingMediaContentItems.Count > 0, latestUserId);
+                                await roomStore.RecordReactionAsync(
+                                    agentTarget,
+                                    effectiveSessionId,
+                                    latestUserId,
+                                    persistedEmoji,
+                                    $"agent:{agentTarget}",
+                                    "add",
+                                    CancellationToken.None,
+                                    qwenPawSessionId);
+                            }
+
+                            if (roomOrchestrator is not null && (mentionedCollaborators.Count > 0 || hasActiveMultiAgentRoom) && !string.IsNullOrWhiteSpace(synthText))
+                            {
+                                await roomOrchestrator.RecordHostSynthesisTurnAsync(
+                                    agentTarget, effectiveSessionId, synthText, synthReasoning, null, qwenPawSessionId, CancellationToken.None, activeRoomRunId, activeRoomFinalRound);
                             }
                         }
                     }
-                    catch {}
-                });
-            }
-            else
-            {
-                client.InvalidateChatList(agentTarget);
-            }
+                }
+                catch {}
+            });
 
             return false;
         }
