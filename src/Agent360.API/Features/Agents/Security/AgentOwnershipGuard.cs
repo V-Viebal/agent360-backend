@@ -92,14 +92,6 @@ public static class AgentOwnershipGuard
             return true;
         }
 
-        // 1a. Verified Operator Token header or key grants administrative operation clearance
-        var secOpt = context.RequestServices.GetService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()?.CurrentValue;
-        var env = context.RequestServices.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>();
-        if (secOpt is not null && env is not null && Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.IsAuthorized(context, secOpt, env))
-        {
-            return true;
-        }
-
         // 2. If caller is an authenticated user with a resolved local DB UserId, PostgreSQL RBAC is authoritative!
         //    Do NOT allow X-Agent360-Operator-Token or stale JWT claims to override a demoted DB user.
         if (user.Identity?.IsAuthenticated == true && currentUser.UserId is > 0)
@@ -139,7 +131,7 @@ public static class AgentOwnershipGuard
         }
 
         // 3. Headless operator token (only when there is NO authenticated non-admin user session)
-        secOpt = context.RequestServices.GetService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()?.CurrentValue;
+        var secOpt = context.RequestServices.GetService<Microsoft.Extensions.Options.IOptionsMonitor<Agent360.API.Features.Agents.SubAgents.Agent360SecurityOptions>>()?.CurrentValue;
         if (user.Identity?.IsAuthenticated != true && secOpt is not null &&
             Agent360.API.Features.Agents.SubAgents.OperatorAuthFilter.PresentsOperatorToken(context, secOpt))
         {

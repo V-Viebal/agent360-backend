@@ -112,6 +112,7 @@ public sealed class OperatorAuthFilter(
     {
         if (!opt.RequireOperatorForWrites) return true;
         if (string.IsNullOrWhiteSpace(opt.OperatorToken)) return env.IsDevelopment();
+        if (HasUserJwtBearer(http) || http.User.Identity?.IsAuthenticated == true) return false;
         var presented = http.Request.Headers[HeaderName].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(presented))
         {

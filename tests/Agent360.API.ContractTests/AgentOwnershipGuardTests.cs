@@ -36,6 +36,8 @@ public sealed class AgentOwnershipGuardTests
             services.AddSingleton<IOptionsMonitor<Agent360SecurityOptions>>(
                 new StaticOptionsMonitor<Agent360SecurityOptions>(new Agent360SecurityOptions { OperatorToken = operatorToken }));
         }
+        services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(
+            new Microsoft.Extensions.Hosting.Internal.HostingEnvironment { EnvironmentName = "Production" });
 
         var ctx = new DefaultHttpContext { RequestServices = services.BuildServiceProvider() };
         if (isAuthenticated)
@@ -118,5 +120,25 @@ public sealed class AgentOwnershipGuardTests
 
         var (allowed, _) = await AgentOwnershipGuard.CheckAccessAsync("mons", ctx, user, NoDb, TestContext.Current.CancellationToken);
         allowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AuthenticatedMember_PresentingMatchingOperatorHeader_WithUserJwtBearer_MustNeverBeElevatedToAdmin()
+    {
+        var (ctx, user, snapshot) = Build(
+            adminPolicyPasses: false,
+            isAuthenticated: true,
+            resolvedUserId: 99,
+            operatorToken: "4c72b68abbe9a28628df95234d79e665d76e65ff5154deff54ac40f9b1b6b10b",
+            presentedOperatorHeader: "4c72b68abbe9a28628df95234d79e665d76e65ff5154deff54ac40f9b1b6b10b");
+        ctx.Request.Headers.Authorization = "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJtZW1iZXItdXNlciJ9.c2ln";
+
+        snapshot.Set(new PermissionSnapshot(99, new HashSet<string> { UserManagementPermissions.Users.Read }, DateTimeOffset.UtcNow, new Dictionary<long, DateTimeOffset>()));
+
+        var isEffectiveAdmin = await AgentOwnershipGuard.IsEffectiveAdminAsync(ctx, user, NoDb, TestContext.Current.CancellationToken);
+        isEffectiveAdmin.Should().BeFalse("a member session with a JWT Bearer token must never be elevated to Admin by an operator token header");
+
+        var (allowed, _) = await AgentOwnershipGuard.CheckAccessAsync("mons", ctx, user, NoDb, TestContext.Current.CancellationToken);
+        allowed.Should().BeFalse();
     }
 }

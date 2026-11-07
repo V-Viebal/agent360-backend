@@ -51,7 +51,20 @@ public class SessionMultiplexerTests
 
         // Reader should receive broadcasted event
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        var msg = await reader.ReadAsync(cts.Token);
+        string? msg = null;
+        while (await reader.WaitToReadAsync(cts.Token))
+        {
+            while (reader.TryRead(out var candidate))
+            {
+                if (candidate.Contains(testSession, StringComparison.Ordinal))
+                {
+                    msg = candidate;
+                    break;
+                }
+            }
+            if (msg is not null) break;
+        }
+        msg.Should().NotBeNull();
         msg.Should().Contain("session_turn_update");
         msg.Should().Contain(testSession);
         msg.Should().Contain("\"is_running\":true");
