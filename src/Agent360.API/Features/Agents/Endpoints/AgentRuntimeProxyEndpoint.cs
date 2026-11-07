@@ -333,6 +333,60 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         }
     }
 
+    private static async Task EnsureZaloWebBrowserClosedAsync(
+        IFleetInstanceRoutingService routing,
+        ResolvedInstanceTarget target,
+        string agentId,
+        Agent360.API.Features.Agents.Browser.AgentBrowserDirectory? browserDir)
+    {
+        if (target.Instance is not null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var _ = await routing.SendAsync(
+                    target.Instance,
+                    HttpMethod.Post,
+                    $"plugin/zalo/web-session/close/{Uri.EscapeDataString(target.TargetAgentProfile)}",
+                    () => new StringContent("{}", System.Text.Encoding.UTF8, "application/json"),
+                    agentProfileHeader: target.TargetAgentProfile,
+                    timeout: TimeSpan.FromSeconds(10),
+                    ct: cts.Token);
+            }
+            catch { }
+        }
+        if (browserDir is not null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                var info = await browserDir.GetAsync(agentId, cts.Token, forceRefresh: true);
+                if (info is not null && info.CdpReachable && !string.IsNullOrWhiteSpace(info.CdpUrl))
+                {
+                    var zaloTabs = info.Tabs.Where(t => !t.Anchor && t.Url.Contains("zalo.me", StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (zaloTabs.Count > 0)
+                    {
+                        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                        var cdpBase = info.CdpUrl.TrimEnd('/');
+                        foreach (var zt in zaloTabs)
+                        {
+                            try
+                            {
+                                browserDir.RecordTabClosed(zt.TargetId);
+                                using var req = new HttpRequestMessage(HttpMethod.Get, $"{cdpBase}/json/close/{Uri.EscapeDataString(zt.TargetId)}");
+                                req.Headers.Host = "localhost";
+                                using var __ = await http.SendAsync(req, cts.Token);
+                            }
+                            catch { }
+                        }
+                        await browserDir.InvalidateCacheAsync(agentId, CancellationToken.None);
+                    }
+                }
+            }
+            catch { }
+        }
+    }
+
     private static readonly TimeSpan WarmedFreshTtl = TimeSpan.FromSeconds(90);
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
@@ -491,10 +545,14 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                             body = System.Text.Encoding.UTF8.GetBytes(zaloWriteObj.ToJsonString());
                             cache.Remove($"agent360:proxy:{agentKey}:config/channels");
                             cache.Remove($"agent360:browser-mcp-bind:{agentKey}");
+                            var browserDir = context.RequestServices.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
                             if (zaloWriteObj["enabled"]?.GetValue<bool>() == true)
                             {
-                                var browserDir = context.RequestServices.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
                                 _ = Task.Run(() => EnsureZaloWebBrowserOpenedAsync(routing, target, agentId, browserDir));
+                            }
+                            else
+                            {
+                                _ = Task.Run(() => EnsureZaloWebBrowserClosedAsync(routing, target, agentId, browserDir));
                             }
                         }
                         else if (clean.Equals("config/channels", StringComparison.OrdinalIgnoreCase) &&
@@ -508,10 +566,14 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                             {
                                 ApplyZaloChannelDefaults(zaloNestedObj, isWrite: true);
                                 cache.Remove($"agent360:browser-mcp-bind:{agentKey}");
+                                var browserDir = context.RequestServices.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
                                 if (zaloNestedObj["enabled"]?.GetValue<bool>() == true)
                                 {
-                                    var browserDir = context.RequestServices.GetService<Agent360.API.Features.Agents.Browser.AgentBrowserDirectory>();
                                     _ = Task.Run(() => EnsureZaloWebBrowserOpenedAsync(routing, target, agentId, browserDir));
+                                }
+                                else
+                                {
+                                    _ = Task.Run(() => EnsureZaloWebBrowserClosedAsync(routing, target, agentId, browserDir));
                                 }
                             }
                             body = System.Text.Encoding.UTF8.GetBytes(chsWriteObj.ToJsonString());
