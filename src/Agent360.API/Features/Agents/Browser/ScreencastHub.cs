@@ -17,7 +17,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     private readonly ConcurrentDictionary<string, (int W, int H)> _knownNativeSurfaces = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
 
-    public void PrewarmSession(string cdpUrl, string targetId, int maxWidth = 1920, int quality = 88, int initialWidth = 0, int initialHeight = 0, bool isMobileDevice = false)
+    public void PrewarmSession(string cdpUrl, string targetId, int maxWidth = 1920, int quality = 88, int initialWidth = 0, int initialHeight = 0, bool isMobileDevice = false, string? initialNavigateUrl = null)
     {
         if (string.IsNullOrEmpty(cdpUrl) || string.IsNullOrEmpty(targetId)) return;
         var cappedMaxW = Math.Clamp(maxWidth, 800, 1920);
@@ -26,7 +26,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         {
             if (!_sessions.TryGetValue(key, out var existing))
             {
-                var s = new Session(key, cdpUrl, targetId, cappedMaxW, quality, initialWidth, initialHeight, this, logger, isMobileDevice);
+                var s = new Session(key, cdpUrl, targetId, cappedMaxW, quality, initialWidth, initialHeight, this, logger, isMobileDevice, initialNavigateUrl);
                 _sessions[key] = s;
                 s.StartWarmLinger();
             }
@@ -270,6 +270,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     public const string MobileUserAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36";
     public const string DesktopUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
+    internal const string ProbeDocumentMobileMismatchExpression =
+        "(() => { try { const url = location.href || ''; if (!url.startsWith('http://') && !url.startsWith('https://')) return false; const ua = navigator.userAgent || ''; const chMob = navigator.userAgentData ? Boolean(navigator.userAgentData.mobile) : /Mobile|Android|iPhone/i.test(ua); const iw = window.innerWidth || document.documentElement?.clientWidth || 0; const vpMeta = document.querySelector('meta[name=\"viewport\"]')?.content || ''; return !chMob || !/Mobile|Android|iPhone/i.test(ua) || (iw > 540 && !vpMeta.includes('width=device-width')); } catch { return false; } })()";
+
     internal static object BuildUserAgentOverrideParams(bool isMobile) => isMobile
         ? new
         {
@@ -408,8 +411,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
         private readonly string _cdpUrl;
         private readonly int _maxWidth;
+        private readonly string? _initialNavigateUrl;
 
-        public Session(string key, string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight, ScreencastHub hub, ILogger logger, bool isMobileDevice = false)
+        public Session(string key, string cdpUrl, string targetId, int maxWidth, int quality, int initialWidth, int initialHeight, ScreencastHub hub, ILogger logger, bool isMobileDevice = false, string? initialNavigateUrl = null)
         {
             Key = key;
             _cdpUrl = cdpUrl;
@@ -419,6 +423,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             _logger = logger;
             _currentQuality = Math.Clamp(quality, 52, 92);
             _isMobileViewport = isMobileDevice;
+            _initialNavigateUrl = initialNavigateUrl;
             if (hub._knownNativeSurfaces.TryGetValue(cdpUrl, out var knownSurf) && knownSurf.W >= 640 && knownSurf.H >= 480)
             {
                 _nativeSurfaceMaxW = knownSurf.W;
@@ -619,9 +624,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     _pendingTargetCreates[reqId] = tcs;
                     try
                     {
+                        var isMobNewTab = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                        var createUrl = isMobNewTab ? "about:blank" : req.Text;
                         object createParams = !string.IsNullOrEmpty(browserContextId)
-                            ? new { url = req.Text, browserContextId }
-                            : new { url = req.Text };
+                            ? new { url = createUrl, browserContextId }
+                            : new { url = createUrl };
                         await SafeSendAsync(ws, new { id = reqId, method = "Target.createTarget", @params = createParams }, ct);
                         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(1500));
@@ -956,7 +963,8 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 else if (action == "reload")
                 {
                     await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct, forceReapplyEmulation: true);
-                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = false } }, ct);
+                    var reloadIgnoreCache = req.ReloadOnModeChange == true || req.IsMobile == true || _isMobileViewport;
+                    await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = reloadIgnoreCache } }, ct);
                 }
                 else if (action == "back" || action == "forward")
                 {
@@ -988,7 +996,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     var wantMobile = req.IsMobile ?? string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                     var modeChanged = _appliedMobileEmulation != wantMobile || _isMobileViewport != wantMobile;
-                    var shouldReload = req.ReloadOnModeChange == true;
+                    var shouldReload = req.ReloadOnModeChange == true || modeChanged;
                     var (w, h) = NormalizeViewport(req.Width.Value, req.Height.Value, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
                     var nextScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
                     if (!modeChanged && !shouldReload && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4 && Math.Abs(_backingScale - nextScale) <= 0.005)
@@ -1008,7 +1016,11 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     await ApplyDeviceEmulationAsync(ws, w, h, nextScale, wantMobile, Interlocked.Increment(ref _cmdId), ct);
                     if (shouldReload)
                     {
-                        await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = false } }, ct);
+                        await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = true } }, ct);
+                    }
+                    else if (wantMobile)
+                    {
+                        _ = SafeSendAsync(ws, new { id = 783, method = "Runtime.evaluate", @params = new { expression = ProbeDocumentMobileMismatchExpression, returnByValue = true } }, ct);
                     }
                     await RestartScreencastAsync(ws, capW, capH, ct);
                     if (Math.Abs(nextScale - 1.0) <= 0.01)
@@ -1133,6 +1145,18 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 await SafeSendAsync(ws, new
                 {
                     id = Interlocked.Increment(ref _cmdId),
+                    method = "Network.enable",
+                    @params = new { }
+                }, ct);
+                await SafeSendAsync(ws, new
+                {
+                    id = Interlocked.Increment(ref _cmdId),
+                    method = "Network.setUserAgentOverride",
+                    @params = BuildUserAgentOverrideParams(isMobile)
+                }, ct);
+                await SafeSendAsync(ws, new
+                {
+                    id = Interlocked.Increment(ref _cmdId),
                     method = "Emulation.setUserAgentOverride",
                     @params = BuildUserAgentOverrideParams(isMobile)
                 }, ct);
@@ -1141,6 +1165,12 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     id = Interlocked.Increment(ref _cmdId),
                     method = "Emulation.setTouchEmulationEnabled",
                     @params = new { enabled = isMobile, maxTouchPoints = isMobile ? 5 : 0 }
+                }, ct);
+                await SafeSendAsync(ws, new
+                {
+                    id = Interlocked.Increment(ref _cmdId),
+                    method = "Emulation.setEmitTouchEventsForMouse",
+                    @params = new { enabled = isMobile, configuration = isMobile ? "mobile" : "desktop" }
                 }, ct);
             }
             var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
@@ -1538,7 +1568,15 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             break;
                         }
                     }
+                    if (!string.IsNullOrWhiteSpace(_initialNavigateUrl))
+                    {
+                        await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.navigate", @params = new { url = _initialNavigateUrl } }, ct);
+                    }
                     await SafeSendAsync(ws, new { id = 1, method = "Page.startScreencast", @params = new { format = "jpeg", quality = 76, maxWidth = capW, maxHeight = capH, everyNthFrame = 1 } }, ct);
+                    if (_isMobileViewport && string.IsNullOrWhiteSpace(_initialNavigateUrl))
+                    {
+                        _ = SafeSendAsync(ws, new { id = 783, method = "Runtime.evaluate", @params = new { expression = ProbeDocumentMobileMismatchExpression, returnByValue = true } }, ct);
+                    }
                     if (Math.Abs(initScale - 1.0) <= 0.01)
                     {
                         _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
@@ -1692,6 +1730,22 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                                 var piTitle = piVal.TryGetProperty("title", out var ptP) && ptP.ValueKind == JsonValueKind.String ? ptP.GetString() ?? "" : "";
                                 var piLoading = piVal.TryGetProperty("loading", out var plP) && plP.ValueKind == JsonValueKind.True;
                                 UpdateLoadingState(_pageLoading || piLoading, string.IsNullOrEmpty(piUrl) ? _pageUrl : piUrl, piTitle);
+                            }
+                            continue;
+                        }
+                        if (rId == 783)
+                        {
+                            if (_isMobileViewport &&
+                                doc.RootElement.TryGetProperty("result", out var mmRes) &&
+                                mmRes.TryGetProperty("result", out var mmInner) &&
+                                mmInner.TryGetProperty("value", out var mmVal) &&
+                                mmVal.ValueKind == JsonValueKind.True)
+                            {
+                                _appliedMobileEmulation = null;
+                                var mw = Math.Max(375, (int)Math.Round(_viewportW));
+                                var mh = Math.Max(240, (int)Math.Round(_viewportH));
+                                await ApplyDeviceEmulationAsync(ws, mw, mh, _backingScale, true, Interlocked.Increment(ref _cmdId), ct);
+                                await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Page.reload", @params = new { ignoreCache = true } }, ct);
                             }
                             continue;
                         }

@@ -217,7 +217,8 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         var isMobNew = safeReq.IsMobile == true || string.Equals(safeReq.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                         var initW = safeReq.Width is >= 320 ? safeReq.Width.Value : (isMobNew ? 390 : 1920);
                         var initH = safeReq.Height is >= 240 ? safeReq.Height.Value : (isMobNew ? 720 : 1080);
-                        hub.PrewarmSession(cdp!, createdTargetId, 1920, 88, initW, initH, isMobNew);
+                        var initNavUrl = isMobNew ? (safeReq.Text ?? "https://www.google.com") : null;
+                        hub.PrewarmSession(cdp!, createdTargetId, 1920, 88, initW, initH, isMobNew, initNavUrl);
                     }
                 }
                 else if (hub is not null)
@@ -1062,8 +1063,11 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileNav);
                     var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                     var orientationAngle = w > h ? 90 : 0;
+                    await SendAsync(ws, new { id = ++id, method = "Network.enable", @params = new { } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Network.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileNav) }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileNav) }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setTouchEmulationEnabled", @params = new { enabled = isMobileNav, maxTouchPoints = isMobileNav ? 5 : 0 } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setEmitTouchEventsForMouse", @params = new { enabled = isMobileNav, configuration = isMobileNav ? "mobile" : "desktop" } }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setDeviceMetricsOverride", @params = new { width = w, height = h, deviceScaleFactor = 1, scale = backingScale, mobile = isMobileNav, screenWidth = w, screenHeight = h, screenOrientation = new { type = orientationType, angle = orientationAngle } } }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
                 }
@@ -1084,20 +1088,23 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             }
             else if (action == "reload")
             {
+                var isMobileRel = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                 if (req.Width is > 0 && req.Height is > 0)
                 {
-                    var isMobileRel = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                     var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileRel);
                     var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileRel);
                     var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                     var orientationAngle = w > h ? 90 : 0;
+                    await SendAsync(ws, new { id = ++id, method = "Network.enable", @params = new { } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Network.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileRel) }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileRel) }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setTouchEmulationEnabled", @params = new { enabled = isMobileRel, maxTouchPoints = isMobileRel ? 5 : 0 } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setEmitTouchEventsForMouse", @params = new { enabled = isMobileRel, configuration = isMobileRel ? "mobile" : "desktop" } }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setDeviceMetricsOverride", @params = new { width = w, height = h, deviceScaleFactor = 1, scale = backingScale, mobile = isMobileRel, screenWidth = w, screenHeight = h, screenOrientation = new { type = orientationType, angle = orientationAngle } } }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
                 }
                 var relId = ++id;
-                await SendAsync(ws, new { id = relId, method = "Page.reload", @params = new { ignoreCache = false } }, cts.Token);
+                await SendAsync(ws, new { id = relId, method = "Page.reload", @params = new { ignoreCache = req.ReloadOnModeChange == true || isMobileRel } }, cts.Token);
                 await ReceiveByIdAsync(ws, relId, cts.Token);
             }
             else if (action == "back" || action == "forward")
@@ -1109,8 +1116,11 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileHist);
                     var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                     var orientationAngle = w > h ? 90 : 0;
+                    await SendAsync(ws, new { id = ++id, method = "Network.enable", @params = new { } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Network.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileHist) }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setUserAgentOverride", @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileHist) }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setTouchEmulationEnabled", @params = new { enabled = isMobileHist, maxTouchPoints = isMobileHist ? 5 : 0 } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Emulation.setEmitTouchEventsForMouse", @params = new { enabled = isMobileHist, configuration = isMobileHist ? "mobile" : "desktop" } }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.setDeviceMetricsOverride", @params = new { width = w, height = h, deviceScaleFactor = 1, scale = backingScale, mobile = isMobileHist, screenWidth = w, screenHeight = h, screenOrientation = new { type = orientationType, angle = orientationAngle } } }, cts.Token);
                     await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
                 }
@@ -1183,6 +1193,13 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 var isMobileResize = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
                 var (w, h) = ScreencastHub.NormalizeViewport(req.Width.Value, req.Height.Value, 1440, 813, isMobileResize);
                 var backingScale = ScreencastHub.ComputeBackingScale(w, h, 1440, 813, isMobileResize);
+                await SendAsync(ws, new { id = ++id, method = "Network.enable", @params = new { } }, cts.Token);
+                await SendAsync(ws, new
+                {
+                    id = ++id,
+                    method = "Network.setUserAgentOverride",
+                    @params = ScreencastHub.BuildUserAgentOverrideParams(isMobileResize)
+                }, cts.Token);
                 await SendAsync(ws, new
                 {
                     id = ++id,
@@ -1194,6 +1211,12 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     id = ++id,
                     method = "Emulation.setTouchEmulationEnabled",
                     @params = new { enabled = isMobileResize, maxTouchPoints = isMobileResize ? 5 : 0 }
+                }, cts.Token);
+                await SendAsync(ws, new
+                {
+                    id = ++id,
+                    method = "Emulation.setEmitTouchEventsForMouse",
+                    @params = new { enabled = isMobileResize, configuration = isMobileResize ? "mobile" : "desktop" }
                 }, cts.Token);
                 var orientationType = w > h ? "landscapePrimary" : "portraitPrimary";
                 var orientationAngle = w > h ? 90 : 0;
@@ -1217,7 +1240,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                 await SendAsync(ws, new { id = ++id, method = "Emulation.resetPageScaleFactor" }, cts.Token);
                 if (req.ReloadOnModeChange == true)
                 {
-                    await SendAsync(ws, new { id = ++id, method = "Page.reload", @params = new { ignoreCache = false } }, cts.Token);
+                    await SendAsync(ws, new { id = ++id, method = "Page.reload", @params = new { ignoreCache = true } }, cts.Token);
                 }
                 await ReceiveByIdAsync(ws, rId, cts.Token);
             }

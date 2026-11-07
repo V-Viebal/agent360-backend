@@ -869,9 +869,11 @@ public sealed class AgentBrowserDirectory(
                     if (action == "new_tab")
                     {
                         var newUrl = !string.IsNullOrWhiteSpace(req.Text) ? req.Text.Trim() : "https://www.google.com";
+                        var isMobNewTab = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                        var createUrl = isMobNewTab ? "about:blank" : newUrl;
                         object createParams = !string.IsNullOrEmpty(browserContextId)
-                            ? new { url = newUrl, browserContextId }
-                            : new { url = newUrl };
+                            ? new { url = createUrl, browserContextId }
+                            : new { url = createUrl };
                         var msg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9001, method = "Target.createTarget", @params = createParams });
                         await ws.SendAsync(msg, WebSocketMessageType.Text, true, cts.Token);
                         var buffer = new byte[64 * 1024];
@@ -930,7 +932,7 @@ public sealed class AgentBrowserDirectory(
                                         if (doc.RootElement.TryGetProperty("result", out var rProp) && rProp.TryGetProperty("sessionId", out var sidProp))
                                         {
                                             attachedSessionId = sidProp.GetString();
-                                            var escapedUrl = JsonSerializer.Serialize(newUrl);
+                                            var escapedUrl = JsonSerializer.Serialize(createUrl);
                                             var openExpr = $"window.open({escapedUrl}, '_blank') ? true : false";
                                             var evalMsg = JsonSerializer.SerializeToUtf8Bytes(new
                                             {

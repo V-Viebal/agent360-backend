@@ -241,5 +241,8 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         deskMeta.GetProperty("mobile").GetBoolean().Should().BeFalse();
         deskMeta.GetProperty("platform").GetString().Should().Be("Linux");
         deskMeta.GetProperty("model").GetString().Should().BeEmpty();
+
+        ScreencastHub.ProbeDocumentMobileMismatchExpression.Should().Contain("navigator.userAgentData.mobile");
+        ScreencastHub.ProbeDocumentMobileMismatchExpression.Should().Contain("width=device-width");
     }
 }
