@@ -724,12 +724,24 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
 
                     if (targetWids.Count > 0)
                     {
-                        otherWids.ExceptWith(targetWids);
-                        foreach (var wid in otherWids)
+                        foreach (var wid in targetWids)
                         {
-                            var hideId = ++reqId;
-                            await SendAsync(ws, new { id = hideId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "minimized" } } }, cts.Token);
-                            await ReceiveByIdAsync(ws, hideId, cts.Token);
+                            var getWinId = ++reqId;
+                            await SendAsync(ws, new { id = getWinId, method = "Browser.getWindowBounds", @params = new { windowId = wid } }, cts.Token);
+                            var getWinBytes = await ReceiveByIdAsync(ws, getWinId, cts.Token);
+                            if (getWinBytes is not null)
+                            {
+                                using var getWinDoc = JsonDocument.Parse(getWinBytes);
+                                if (getWinDoc.RootElement.TryGetProperty("result", out var gr) &&
+                                    gr.TryGetProperty("bounds", out var bProp) &&
+                                    bProp.TryGetProperty("windowState", out var wsProp) &&
+                                    string.Equals(wsProp.GetString(), "minimized", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var restoreId = ++reqId;
+                                    await SendAsync(ws, new { id = restoreId, method = "Browser.setWindowBounds", @params = new { windowId = wid, bounds = new { windowState = "normal" } } }, cts.Token);
+                                    await ReceiveByIdAsync(ws, restoreId, cts.Token);
+                                }
+                            }
                         }
 
                         // Auto-dismiss Lens overlay or hanging lens UI targets and profile-picker if present
@@ -780,6 +792,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
             // Ensure target page has active lifecycle and focus emulation so mouse/wheel/keyboard events take effect immediately
             await SendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, cts.Token);
             await SendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, cts.Token);
+            await SendAsync(ws, new { id = 12, method = "Page.bringToFront" }, cts.Token);
 
             int id = 200;
             string? createdTargetId = null;
@@ -1168,6 +1181,26 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         createdTargetId = tid.GetString();
                     }
                 }
+                if (string.IsNullOrEmpty(createdTargetId))
+                {
+                    // Non-Default disk profiles (--profile-directory=Profile N) reject browserContextId in Target.createTarget.
+                    // Open the new tab inside the same profile window via userGesture window.open on the active page socket!
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+                    var listUrl = $"{cdpUrl.TrimEnd('/')}/json/list";
+                    var beforeIds = (await http.GetFromJsonAsync<JsonArray>(listUrl, cts.Token))?.OfType<JsonObject>()
+                        .Select(t => (string?)t["id"]).ToHashSet() ?? [];
+                    var escapedUrl = JsonSerializer.Serialize(newUrl);
+                    var openId = ++id;
+                    await SendAsync(ws, new { id = openId, method = "Runtime.evaluate", @params = new { expression = $"!!window.open({escapedUrl}, '_blank')", userGesture = true, returnByValue = true } }, cts.Token);
+                    await ReceiveByIdAsync(ws, openId, cts.Token);
+                    for (int poll = 0; poll < 12 && string.IsNullOrEmpty(createdTargetId); poll++)
+                    {
+                        await Task.Delay(80, cts.Token);
+                        var openedObj = (await http.GetFromJsonAsync<JsonArray>(listUrl, cts.Token))?.OfType<JsonObject>()
+                            .FirstOrDefault(t => (string?)t["type"] == "page" && !beforeIds.Contains((string?)t["id"]));
+                        createdTargetId = (string?)openedObj?["id"];
+                    }
+                }
                 if (!string.IsNullOrEmpty(createdTargetId))
                 {
                     var actId = ++id;
@@ -1311,6 +1344,7 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
         // renderer produce a frame now; both are per-session and end when this socket closes.
         await SendAsync(ws, new { id = 10, method = "Emulation.setFocusEmulationEnabled", @params = new { enabled = true } }, cts.Token);
         await SendAsync(ws, new { id = 11, method = "Page.setWebLifecycleState", @params = new { state = "active" } }, cts.Token);
+        await SendAsync(ws, new { id = 12, method = "Page.bringToFront" }, cts.Token);
         // fromSurface + optimizeForSpeed: take the composited surface instead of waiting for a fresh frame.
         await SendAsync(ws, new { id = 1, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = 92, fromSurface = true, optimizeForSpeed = true } }, cts.Token);
         while (ws.State == WebSocketState.Open)

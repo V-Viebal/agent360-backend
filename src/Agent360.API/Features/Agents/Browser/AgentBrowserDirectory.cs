@@ -59,6 +59,7 @@ public sealed class AgentBrowserDirectory(
     private readonly QwenPawOptions _options = options?.Value ?? new QwenPawOptions();
     private readonly bool _persistenceEnabled = EnablePersistenceOnce();
     private static readonly ConcurrentDictionary<string, long> _reanchorAttempts = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, long> _defaultGoogleTabAttempts = new(StringComparer.Ordinal);
 
     private static bool EnablePersistenceOnce()
     {
@@ -71,6 +72,7 @@ public sealed class AgentBrowserDirectory(
     private readonly ConcurrentDictionary<string, long> _recentlyClosedTargets = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (AgentBrowserTab Tab, long Tick)> _recentlyCreatedTargets = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, (ClientWebSocket Socket, SemaphoreSlim Lock)> _browserSockets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _browserSocketDiscoverEnabled = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, AgentBrowserVpnStatus> _vpnStatusByProfile = new(StringComparer.OrdinalIgnoreCase);
     public const string DefaultVpnBypassList = "localhost,127.0.0.1,::1,100.64.0.0/10,*.internal,*.local";
 
@@ -573,6 +575,32 @@ public sealed class AgentBrowserDirectory(
                         tabs.Add(entry.Tab);
                     }
                 }
+
+                // Auto-open a default Google tab when the profile window is up but has zero non-anchor web tabs
+                if (!tabs.Any(t => !t.Anchor) && tabs.FirstOrDefault(t => t.Anchor) is { } anchorOpener)
+                {
+                    if (!_defaultGoogleTabAttempts.TryGetValue(key, out var lastGoogleTick) || nowTick - lastGoogleTick > 6000)
+                    {
+                        _defaultGoogleTabAttempts[key] = nowTick;
+                        try
+                        {
+                            var createdGoogleId = await OpenDefaultGoogleTabFromPageAsync(cdp, anchorOpener.TargetId, ct);
+                            if (!string.IsNullOrEmpty(createdGoogleId))
+                            {
+                                var googleTab = new AgentBrowserTab(createdGoogleId, "Google", "https://www.google.com/", false);
+                                RecordTabCreated(createdGoogleId, googleTab);
+                                if (tabs.All(t => t.TargetId != createdGoogleId))
+                                {
+                                    tabs.Add(googleTab);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogDebug("Auto-opening default Google tab for {Profile} failed: {Error}", profile, ex.Message);
+                        }
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -792,6 +820,57 @@ public sealed class AgentBrowserDirectory(
         await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
     }
 
+    private static async Task<string?> OpenDefaultGoogleTabFromPageAsync(string cdpUrl, string openerTargetId, CancellationToken ct)
+    {
+        const string googleUrl = "https://www.google.com/";
+        var cdp = new Uri(cdpUrl);
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://{cdp.Authority}/devtools/page/{Uri.EscapeDataString(openerTargetId)}"), ct);
+        async Task<JsonElement?> CallAsync(int id, string method, object prms)
+        {
+            await ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(new { id, method, @params = prms }), WebSocketMessageType.Text, true, ct);
+            var buf = new byte[16 * 1024];
+            using var ms = new MemoryStream();
+            while (ws.State == WebSocketState.Open)
+            {
+                ms.SetLength(0);
+                WebSocketReceiveResult r;
+                do
+                {
+                    r = await ws.ReceiveAsync(buf, ct);
+                    if (r.MessageType == WebSocketMessageType.Close) return null;
+                    ms.Write(buf, 0, r.Count);
+                } while (!r.EndOfMessage);
+                using var doc = JsonDocument.Parse(ms.ToArray());
+                if (doc.RootElement.TryGetProperty("id", out var idEl) && idEl.GetInt32() == id) return doc.RootElement.Clone();
+            }
+            return null;
+        }
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var listUrl = $"{cdpUrl.TrimEnd('/')}/json/list";
+        var before = (await http.GetFromJsonAsync<JsonArray>(listUrl, ct))?.OfType<JsonObject>()
+            .Select(t => (string?)t["id"]).ToHashSet() ?? [];
+        await CallAsync(1, "Runtime.evaluate", new { expression = $"!!window.open('{googleUrl}', '_blank')", userGesture = true, returnByValue = true });
+        JsonObject? opened = null;
+        for (var i = 0; i < 12 && opened is null; i++)
+        {
+            await Task.Delay(90, ct);
+            opened = (await http.GetFromJsonAsync<JsonArray>(listUrl, ct))?.OfType<JsonObject>().FirstOrDefault(t =>
+                (string?)t["type"] == "page" && !before.Contains((string?)t["id"]));
+        }
+        var newId = (string?)opened?["id"];
+        await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+        if (!string.IsNullOrEmpty(newId))
+        {
+            try
+            {
+                await http.GetAsync($"{cdpUrl.TrimEnd('/')}/json/activate/{Uri.EscapeDataString(newId)}", ct);
+            }
+            catch { }
+        }
+        return newId;
+    }
+
     private static async Task NavigateTargetAsync(string cdpUrl, string targetId, string url, CancellationToken ct)
     {
         var cdp = new Uri(cdpUrl);
@@ -840,6 +919,7 @@ public sealed class AgentBrowserDirectory(
             await ws.ConnectAsync(wsUri, ct);
             entry = (ws, entry.Lock);
             _browserSockets[cdpUrl] = entry;
+            _browserSocketDiscoverEnabled.TryRemove(cdpUrl, out _);
         }
         return entry;
     }
@@ -908,11 +988,26 @@ public sealed class AgentBrowserDirectory(
                         // Open the new tab inside the exact profile context via Target.attachToTarget + userGesture window.open on fallbackTargetId!
                         if (string.IsNullOrEmpty(createdId) && contextRejected && !string.IsNullOrEmpty(fallbackTargetId))
                         {
-                            var discMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9010, method = "Target.setDiscoverTargets", @params = new { discover = true } });
-                            await ws.SendAsync(discMsg, WebSocketMessageType.Text, true, cts.Token);
+                            using var http = httpClientFactory.CreateClient(HttpClientName);
+                            var listUrl = $"{cdpUrl.TrimEnd('/')}/json/list";
+                            HashSet<string?> existingTargetIds = [];
+                            try
+                            {
+                                existingTargetIds = (await http.GetFromJsonAsync<JsonArray>(listUrl, cts.Token))?.OfType<JsonObject>()
+                                    .Select(t => (string?)t["id"]).ToHashSet(StringComparer.Ordinal) ?? [];
+                            }
+                            catch { }
+                            existingTargetIds.Add(fallbackTargetId);
+
+                            if (_browserSocketDiscoverEnabled.TryAdd(cdpUrl, true))
+                            {
+                                var discMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9010, method = "Target.setDiscoverTargets", @params = new { discover = true } });
+                                await ws.SendAsync(discMsg, WebSocketMessageType.Text, true, cts.Token);
+                            }
                             var attMsg = JsonSerializer.SerializeToUtf8Bytes(new { id = 9011, method = "Target.attachToTarget", @params = new { targetId = fallbackTargetId, flatten = true } });
                             await ws.SendAsync(attMsg, WebSocketMessageType.Text, true, cts.Token);
                             string? attachedSessionId = null;
+                            bool evalSent = false;
                             while (string.IsNullOrEmpty(createdId))
                             {
                                 ms.SetLength(0);
@@ -941,6 +1036,7 @@ public sealed class AgentBrowserDirectory(
                                                 method = "Runtime.evaluate",
                                                 @params = new { expression = openExpr, userGesture = true, returnByValue = true }
                                             });
+                                            evalSent = true;
                                             await ws.SendAsync(evalMsg, WebSocketMessageType.Text, true, cts.Token);
                                         }
                                         else
@@ -949,7 +1045,8 @@ public sealed class AgentBrowserDirectory(
                                         }
                                     }
                                 }
-                                else if (doc.RootElement.TryGetProperty("method", out var mProp) &&
+                                else if (evalSent &&
+                                         doc.RootElement.TryGetProperty("method", out var mProp) &&
                                          mProp.GetString() == "Target.targetCreated" &&
                                          doc.RootElement.TryGetProperty("params", out var pProp) &&
                                          pProp.TryGetProperty("targetInfo", out var tiProp))
@@ -958,7 +1055,8 @@ public sealed class AgentBrowserDirectory(
                                     var tId = tiProp.TryGetProperty("targetId", out var tidp) ? tidp.GetString() : null;
                                     var tCtx = tiProp.TryGetProperty("browserContextId", out var ctxp) ? ctxp.GetString() : null;
                                     var tOpener = tiProp.TryGetProperty("openerId", out var opp) ? opp.GetString() : null;
-                                    if (tType == "page" && !string.IsNullOrEmpty(tId) && tId != fallbackTargetId &&
+                                    var tUrl = tiProp.TryGetProperty("url", out var urlp) ? urlp.GetString() ?? "" : "";
+                                    if (tType == "page" && !string.IsNullOrEmpty(tId) && !existingTargetIds.Contains(tId) && ProfileOf(tUrl) is null &&
                                         (tOpener == fallbackTargetId || (!string.IsNullOrEmpty(browserContextId) && tCtx == browserContextId)))
                                     {
                                         createdId = tId;
@@ -999,6 +1097,7 @@ public sealed class AgentBrowserDirectory(
                 {
                     try { ws.Dispose(); } catch { }
                     _browserSockets[cdpUrl] = (new ClientWebSocket(), heldLock);
+                    _browserSocketDiscoverEnabled.TryRemove(cdpUrl, out _);
                     heldLock.Release();
                     heldLock = null;
                 }

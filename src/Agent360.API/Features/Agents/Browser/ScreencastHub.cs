@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+using System.Net.Http.Json;
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text.Json;
@@ -96,6 +98,22 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
     /// <summary>Execute new_tab, close_tab, or activate_tab over any warm CDP session on the same browser host (~15ms, zero TCP handshake).</summary>
     public async Task<(bool Ok, string? CreatedTargetId)> TryManageTabOverWarmSessionAsync(string cdpUrl, string fallbackTargetId, string? browserContextId, BrowserInputRequest req, CancellationToken ct)
     {
+        var exactPrefix = $"{cdpUrl}|{fallbackTargetId}|";
+        foreach (var (k, s) in _sessions)
+        {
+            if (k.StartsWith(exactPrefix, StringComparison.Ordinal) && s.IsConnected)
+            {
+                var res = await s.TryManageTabAsync(fallbackTargetId, browserContextId, req, ct);
+                if (res.Ok) return res;
+            }
+        }
+        var action = (req.Action ?? "").Trim().ToLowerInvariant();
+        if (action == "new_tab")
+        {
+            // Never fall back to another agent's warm session on the same shared CDP host for new_tab,
+            // because window.open on a foreign page opens the tab inside the wrong Chromium profile window!
+            return (false, null);
+        }
         var hostPrefix = $"{cdpUrl}|";
         foreach (var (k, s) in _sessions)
         {
@@ -454,6 +472,29 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             double h = Math.Max(240, rawH);
             if (isMobileDevice)
             {
+                if (w > h)
+                {
+                    // Mobile landscape orientation (e.g. 844x390 or 750x411): preserve exact landscape aspect ratio
+                    if (h < 320)
+                    {
+                        var up = 320.0 / h;
+                        h = 320;
+                        w *= up;
+                    }
+                    else if (h > 480)
+                    {
+                        var down = 430.0 / h;
+                        h = 430;
+                        w *= down;
+                    }
+                    if (w > 1080)
+                    {
+                        var downW = 1080.0 / w;
+                        w = 1080;
+                        h *= downW;
+                    }
+                    return (Math.Clamp((int)Math.Round(w), 480, 1080), Math.Clamp((int)Math.Round(h), 240, 480));
+                }
                 if (w < 375)
                 {
                     var up = 375.0 / w;
@@ -552,9 +593,9 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             {
                 return true;
             }
-            // On mobile viewports taller than the host X11/Wayland window (e.g. 411x750 on a 1280x720 display),
-            // Page.startScreencast may downscale the encoded JPEG proportionally while keeping the exact mobile aspect ratio.
-            if (_isMobileViewport && jw <= expectedBackingW + 18 && jh <= expectedBackingH + 18 && Math.Abs(frameAspect - targetAspect) <= 0.045)
+            // When an emulated viewport is taller or wider than the host X11/Wayland window (e.g. 411x750 mobile or 1280x1011 desktop on a 1280x720 display),
+            // Page.startScreencast may downscale the encoded JPEG proportionally while keeping the exact target aspect ratio.
+            if (jw <= expectedBackingW + 18 && jh <= expectedBackingH + 18 && Math.Abs(frameAspect - targetAspect) <= 0.045)
             {
                 return true;
             }
@@ -643,6 +684,24 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(1500));
                         using var reg = timeoutCts.Token.Register(() => tcs.TrySetResult(null));
                         var createdId = await tcs.Task;
+                        if (string.IsNullOrEmpty(createdId))
+                        {
+                            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+                            var listUrl = $"{_cdpUrl.TrimEnd('/')}/json/list";
+                            var beforeIds = (await http.GetFromJsonAsync<JsonArray>(listUrl, ct))?.OfType<JsonObject>()
+                                .Select(t => (string?)t["id"]).ToHashSet() ?? [];
+                            var escapedUrl = JsonSerializer.Serialize(createUrl);
+                            await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Runtime.evaluate", @params = new { expression = $"!!window.open({escapedUrl}, '_blank')", userGesture = true, returnByValue = true } }, ct);
+                            for (int poll = 0; poll < 12 && string.IsNullOrEmpty(createdId); poll++)
+                            {
+                                await Task.Delay(80, ct);
+                                var openedObj = (await http.GetFromJsonAsync<JsonArray>(listUrl, ct))?.OfType<JsonObject>()
+                                    .FirstOrDefault(t => (string?)t["type"] == "page"
+                                        && !beforeIds.Contains((string?)t["id"])
+                                        && AgentBrowserDirectory.ProfileOf((string?)t["url"] ?? "") is null);
+                                createdId = (string?)openedObj?["id"];
+                            }
+                        }
                         if (!string.IsNullOrEmpty(createdId))
                         {
                             _ = SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Target.activateTarget", @params = new { targetId = createdId } }, CancellationToken.None);

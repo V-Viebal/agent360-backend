@@ -203,6 +203,16 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         mh2.Should().Be(844);
         var ms2 = ScreencastHub.ComputeBackingScale(mw2, mh2, 1125, 633, isMobileDevice: true);
         ms2.Should().Be(1.0);
+
+        // Mobile landscape viewport (844x390 and 750x411) preserves landscape width and exact aspect ratio without clamping width to 430
+        var (mlw1, mlh1) = ScreencastHub.NormalizeViewport(844, 390, 1440, 813, isMobileDevice: true);
+        mlw1.Should().Be(844);
+        mlh1.Should().Be(390);
+        ScreencastHub.ComputeBackingScale(mlw1, mlh1, 1440, 813, isMobileDevice: true).Should().Be(1.0);
+
+        var (mlw2, mlh2) = ScreencastHub.NormalizeViewport(750, 411, 1440, 813, isMobileDevice: true);
+        mlw2.Should().Be(750);
+        mlh2.Should().Be(411);
     }
 
     [Fact]
