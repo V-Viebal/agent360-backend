@@ -13,6 +13,8 @@ public interface IQwenPawClient
     Task<SetActiveModelResponseDto?> SetAgentActiveModelAsync(string agentId, string providerId, string model, CancellationToken cancellationToken = default);
     Task<ToggleAgentResponse?> ToggleAgentAsync(string agentId, bool enabled, CancellationToken cancellationToken = default);
     Task<PinAgentResponse?> PinAgentAsync(string agentId, bool pinned, CancellationToken cancellationToken = default) => Task.FromResult<PinAgentResponse?>(new PinAgentResponse(true, agentId, pinned));
+    Task<AgentLastSessionResponse?> SetAgentLastSessionAsync(string agentId, string chatId, string? sessionId = null, string? title = null, CancellationToken cancellationToken = default) => Task.FromResult<AgentLastSessionResponse?>(null);
+    Task<AgentLastSessionResponse?> GetAgentLastSessionAsync(string agentId, CancellationToken cancellationToken = default) => Task.FromResult<AgentLastSessionResponse?>(null);
     Task<string> GetModelsAsync(CancellationToken cancellationToken = default);
     Task<string> GetModelsCompactAsync(CancellationToken cancellationToken = default);
 

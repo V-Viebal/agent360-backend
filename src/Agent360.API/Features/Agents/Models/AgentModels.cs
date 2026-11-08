@@ -43,7 +43,10 @@ public sealed record AgentSummaryResponse(
     IReadOnlyList<AgentToolSummary> Tools,
     bool CanToggle = true,
     bool IsRootAgent = false,
-    [property: JsonPropertyName("avatar_config")] JsonNode? AvatarConfig = null);
+    [property: JsonPropertyName("avatar_config")] JsonNode? AvatarConfig = null,
+    [property: JsonPropertyName("active_session_id")] string? ActiveSessionId = null,
+    [property: JsonPropertyName("last_session_id")] string? LastSessionId = null,
+    [property: JsonPropertyName("last_session_title")] string? LastSessionTitle = null);
 
 public sealed record AgentToolSummary(
     string Name,
@@ -65,3 +68,15 @@ public sealed record PinAgentResponse(
     [property: JsonPropertyName("success")] bool Success,
     [property: JsonPropertyName("agent_id")] string AgentId,
     [property: JsonPropertyName("pinned")] bool Pinned);
+
+public sealed record SetAgentLastSessionRequest(
+    [property: JsonPropertyName("chat_id")] string ChatId,
+    [property: JsonPropertyName("session_id")] string? SessionId = null,
+    [property: JsonPropertyName("title")] string? Title = null);
+
+public sealed record AgentLastSessionResponse(
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("chat_id")] string ChatId,
+    [property: JsonPropertyName("session_id")] string? SessionId,
+    [property: JsonPropertyName("title")] string? Title,
+    [property: JsonPropertyName("updated_at")] string? UpdatedAt);

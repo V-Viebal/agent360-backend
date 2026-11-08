@@ -37,6 +37,11 @@ public sealed class QwenPawClient : IQwenPawClient
     private static volatile bool _enabledTableEnsured;
     private static volatile bool _enabledOverridesHydrated;
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>> _userLastSessions = LoadUserLastSessionsFromDisk();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _hydratedLastSessionScopes = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object _lastSessionsLock = new();
+    private static volatile bool _lastSessionTableEnsured;
+
     private readonly HttpClient _httpClient;
     private readonly IFleetInstanceRoutingService _routingService;
     private readonly IMemoryCache _cache;
@@ -101,6 +106,66 @@ public sealed class QwenPawClient : IQwenPawClient
                     v => v.Value.ToDictionary(ik => ik.Key, iv => iv.Value, StringComparer.OrdinalIgnoreCase),
                     StringComparer.OrdinalIgnoreCase);
                 File.WriteAllText(GetPinOverridesFilePath(), JsonSerializer.Serialize(snapshot));
+            }
+            catch { }
+        }
+    }
+
+    private static string GetLastSessionsFilePath()
+    {
+        var dir = Path.Combine(AppContext.BaseDirectory, "_storage");
+        try { Directory.CreateDirectory(dir); } catch { dir = Path.GetTempPath(); }
+        return Path.Combine(dir, "agent_last_sessions.json");
+    }
+
+    private static System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>> LoadUserLastSessionsFromDisk()
+    {
+        var outer = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var file = GetLastSessionsFilePath();
+            if (File.Exists(file))
+            {
+                var json = File.ReadAllText(file);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Object)
+                        {
+                            var inner = outer.GetOrAdd(prop.Name, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>(StringComparer.OrdinalIgnoreCase));
+                            foreach (var agentProp in prop.Value.EnumerateObject())
+                            {
+                                if (agentProp.Value.ValueKind == JsonValueKind.Object)
+                                {
+                                    var item = JsonSerializer.Deserialize<AgentLastSessionResponse>(agentProp.Value.GetRawText());
+                                    if (item is not null)
+                                    {
+                                        inner[agentProp.Name] = item;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return outer;
+    }
+
+    private static void PersistUserLastSessionsToDisk()
+    {
+        lock (_lastSessionsLock)
+        {
+            try
+            {
+                var snapshot = _userLastSessions.ToDictionary(
+                    k => k.Key,
+                    v => v.Value.ToDictionary(ik => ik.Key, iv => iv.Value, StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
+                File.WriteAllText(GetLastSessionsFilePath(), JsonSerializer.Serialize(snapshot));
             }
             catch { }
         }
@@ -258,6 +323,127 @@ public sealed class QwenPawClient : IQwenPawClient
         {
             _logger.LogDebug(ex, "PostgreSQL UserAgentPins upsert skipped for scope {UserScope} agent {AgentSlug}; persisted to local fallback.", userScope, norm);
         }
+    }
+
+    private async Task EnsureUserAgentLastSessionsTableAsync(NpgsqlConnection conn, CancellationToken ct)
+    {
+        if (_lastSessionTableEnsured) return;
+        await using var cmd = new NpgsqlCommand(@"
+            CREATE SCHEMA IF NOT EXISTS user_management;
+            CREATE TABLE IF NOT EXISTS user_management.""UserAgentLastSessions"" (
+                ""UserScope"" varchar(128) NOT NULL,
+                ""UserId"" bigint NULL,
+                ""ExternalUserId"" varchar(128) NULL,
+                ""AgentSlug"" varchar(128) NOT NULL,
+                ""ChatId"" varchar(128) NOT NULL,
+                ""SessionId"" varchar(128) NULL,
+                ""Title"" varchar(512) NULL,
+                ""UpdatedAt"" timestamptz NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (""UserScope"", ""AgentSlug"")
+            );
+            CREATE INDEX IF NOT EXISTS ""IX_UserAgentLastSessions_UserId"" ON user_management.""UserAgentLastSessions"" (""UserId"");
+        ", conn);
+        await cmd.ExecuteNonQueryAsync(ct);
+        _lastSessionTableEnsured = true;
+    }
+
+    private async Task HydrateUserLastSessionsFromPostgresAsync(string userScope, long? userId, CancellationToken ct)
+    {
+        if (_hydratedLastSessionScopes.ContainsKey(userScope)) return;
+        var connStr = GetPostgresConnectionString();
+        if (string.IsNullOrWhiteSpace(connStr))
+        {
+            _hydratedLastSessionScopes[userScope] = 1;
+            return;
+        }
+
+        try
+        {
+            await using var conn = new NpgsqlConnection(connStr);
+            await conn.OpenAsync(ct);
+            await EnsureUserAgentLastSessionsTableAsync(conn, ct);
+
+            await using var cmd = new NpgsqlCommand(@"
+                SELECT ""AgentSlug"", ""ChatId"", ""SessionId"", ""Title"", ""UpdatedAt""
+                FROM user_management.""UserAgentLastSessions""
+                WHERE ""UserScope"" = $1 OR ($2 IS NOT NULL AND ""UserId"" = $2)
+                ORDER BY ""UpdatedAt"" ASC;
+            ", conn);
+            cmd.Parameters.AddWithValue(userScope);
+            cmd.Parameters.AddWithValue(userId.HasValue ? userId.Value : DBNull.Value);
+
+            var inner = _userLastSessions.GetOrAdd(userScope, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>(StringComparer.OrdinalIgnoreCase));
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var slug = FleetInstanceRoutingService.NormalizeAgentId(reader.GetString(0)).ToLowerInvariant();
+                var chatId = reader.GetString(1);
+                var sid = !reader.IsDBNull(2) ? reader.GetString(2) : null;
+                var title = !reader.IsDBNull(3) ? reader.GetString(3) : null;
+                var updated = reader.GetFieldValue<DateTimeOffset>(4).ToString("O");
+                inner[slug] = new AgentLastSessionResponse(slug, chatId, sid, title, updated);
+            }
+            _hydratedLastSessionScopes[userScope] = 1;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "PostgreSQL UserAgentLastSessions hydration skipped for scope {UserScope}; using local fallback.", userScope);
+        }
+    }
+
+    private async Task<AgentLastSessionResponse> SaveUserAgentLastSessionAsync(string userScope, long? userId, string? externalSub, string slug, string chatId, string? sessionId, string? title, CancellationToken ct)
+    {
+        var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var record = new AgentLastSessionResponse(norm, chatId, sessionId, title, now);
+        var inner = _userLastSessions.GetOrAdd(userScope, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>(StringComparer.OrdinalIgnoreCase));
+        inner[norm] = record;
+
+        if (!string.Equals(userScope, "global", StringComparison.OrdinalIgnoreCase))
+        {
+            var globalInner = _userLastSessions.GetOrAdd("global", _ => new System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>(StringComparer.OrdinalIgnoreCase));
+            globalInner[norm] = record;
+        }
+
+        PersistUserLastSessionsToDisk();
+
+        var connStr = GetPostgresConnectionString();
+        if (!string.IsNullOrWhiteSpace(connStr))
+        {
+            try
+            {
+                await using var conn = new NpgsqlConnection(connStr);
+                await conn.OpenAsync(ct);
+                await EnsureUserAgentLastSessionsTableAsync(conn, ct);
+
+                await using var cmd = new NpgsqlCommand(@"
+                    INSERT INTO user_management.""UserAgentLastSessions"" (""UserScope"", ""UserId"", ""ExternalUserId"", ""AgentSlug"", ""ChatId"", ""SessionId"", ""Title"", ""UpdatedAt"")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                    ON CONFLICT (""UserScope"", ""AgentSlug"") DO UPDATE
+                    SET ""ChatId"" = EXCLUDED.""ChatId"",
+                        ""SessionId"" = COALESCE(EXCLUDED.""SessionId"", user_management.""UserAgentLastSessions"".""SessionId""),
+                        ""Title"" = COALESCE(EXCLUDED.""Title"", user_management.""UserAgentLastSessions"".""Title""),
+                        ""UserId"" = COALESCE(EXCLUDED.""UserId"", user_management.""UserAgentLastSessions"".""UserId""),
+                        ""ExternalUserId"" = COALESCE(EXCLUDED.""ExternalUserId"", user_management.""UserAgentLastSessions"".""ExternalUserId""),
+                        ""UpdatedAt"" = NOW();
+                ", conn);
+                cmd.Parameters.AddWithValue(userScope);
+                cmd.Parameters.AddWithValue(userId.HasValue ? userId.Value : DBNull.Value);
+                cmd.Parameters.AddWithValue(!string.IsNullOrWhiteSpace(externalSub) ? externalSub : DBNull.Value);
+                cmd.Parameters.AddWithValue(norm);
+                cmd.Parameters.AddWithValue(chatId);
+                cmd.Parameters.AddWithValue((object?)sessionId ?? DBNull.Value);
+                cmd.Parameters.AddWithValue((object?)title ?? DBNull.Value);
+                await cmd.ExecuteNonQueryAsync(ct);
+                _hydratedLastSessionScopes[userScope] = 1;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogDebug(ex, "PostgreSQL UserAgentLastSessions upsert skipped for scope {UserScope} agent {AgentSlug}; persisted to local fallback.", userScope, norm);
+            }
+        }
+
+        return record;
     }
 
     private static string GetEnabledOverridesFilePath()
@@ -422,12 +608,25 @@ public sealed class QwenPawClient : IQwenPawClient
         var userScope = ResolveCallerUserScopeKey(out var userId, out _);
         await HydrateUserPinOverridesFromPostgresAsync(userScope, userId, ct);
         await HydrateAgentEnabledOverridesFromPostgresAsync(ct);
+        await HydrateUserLastSessionsFromPostgresAsync(userScope, userId, ct);
 
         return baseAgents
             .Select(a =>
             {
                 var effEnabled = ResolveEffectiveEnabled(a.Slug, a.Enabled);
                 var effStatus = !effEnabled ? "disabled" : (a.Status == "disabled" ? "active" : a.Status);
+                var normSlug = FleetInstanceRoutingService.NormalizeAgentId(a.Slug).ToLowerInvariant();
+                AgentLastSessionResponse? lastSession = null;
+                if (_userLastSessions.TryGetValue(userScope, out var userDict) && userDict.TryGetValue(normSlug, out var us))
+                {
+                    lastSession = us;
+                }
+                else if (!string.Equals(userScope, "global", StringComparison.OrdinalIgnoreCase) &&
+                         _userLastSessions.TryGetValue("global", out var globalDict) &&
+                         globalDict.TryGetValue(normSlug, out var gs))
+                {
+                    lastSession = gs;
+                }
                 return a with
                 {
                     Enabled = effEnabled,
@@ -435,7 +634,10 @@ public sealed class QwenPawClient : IQwenPawClient
                     AvailableInChat = effEnabled && (a.AvailableInChat || effEnabled),
                     CanToggle = true,
                     IsRootAgent = false,
-                    Pinned = ResolveEffectivePinned(a.Slug, a.Pinned, userScope)
+                    Pinned = ResolveEffectivePinned(a.Slug, a.Pinned, userScope),
+                    ActiveSessionId = lastSession?.ChatId ?? a.ActiveSessionId,
+                    LastSessionId = lastSession?.ChatId,
+                    LastSessionTitle = lastSession?.Title
                 };
             })
             .OrderByDescending(a => a.Enabled)
@@ -1184,6 +1386,34 @@ public sealed class QwenPawClient : IQwenPawClient
         _cache.Remove($"agent360:runtime-agents:{target.Instance.Key}:last-good");
 
         return new PinAgentResponse(true, normalizedSlug, pinned);
+    }
+
+    public async Task<AgentLastSessionResponse?> SetAgentLastSessionAsync(string agentId, string chatId, string? sessionId = null, string? title = null, CancellationToken cancellationToken = default)
+    {
+        var normalizedSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId);
+        var userScope = ResolveCallerUserScopeKey(out var userId, out var externalSub);
+        var record = await SaveUserAgentLastSessionAsync(userScope, userId, externalSub, normalizedSlug, chatId, sessionId, title, cancellationToken);
+        _cache.Remove(AgentsCacheKey);
+        return record;
+    }
+
+    public async Task<AgentLastSessionResponse?> GetAgentLastSessionAsync(string agentId, CancellationToken cancellationToken = default)
+    {
+        var normalizedSlug = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+        var userScope = ResolveCallerUserScopeKey(out var userId, out _);
+        await HydrateUserLastSessionsFromPostgresAsync(userScope, userId, cancellationToken);
+
+        if (_userLastSessions.TryGetValue(userScope, out var userDict) && userDict.TryGetValue(normalizedSlug, out var us))
+        {
+            return us;
+        }
+        if (!string.Equals(userScope, "global", StringComparison.OrdinalIgnoreCase) &&
+            _userLastSessions.TryGetValue("global", out var globalDict) &&
+            globalDict.TryGetValue(normalizedSlug, out var gs))
+        {
+            return gs;
+        }
+        return null;
     }
 
     private void InvalidateAgent(string agentId)

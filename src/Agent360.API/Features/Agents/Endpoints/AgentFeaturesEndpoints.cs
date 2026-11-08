@@ -1997,6 +1997,83 @@ public sealed class AgentFeaturesEndpoints : IEndpoint
         .WithSummary("Pin or unpin an agent profile on QwenPaw runtime")
         .AllowAnonymous();
 
+        // 2d-2. Last accessed session on agent (syncs across browser tabs, devices and reloads)
+        group.MapMethods("{agentId}/last-session", ["GET"], async (
+            string agentId,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var res = await client.GetAgentLastSessionAsync(agentId, ct);
+            if (res is null)
+            {
+                return Results.NotFound(new { message = $"No last accessed session recorded for agent {agentId}" });
+            }
+            return TypedResults.Ok(res);
+        })
+        .WithName("GetAgentLastSession")
+        .WithSummary("Get last accessed session ID and title for an agent")
+        .AllowAnonymous();
+
+        group.MapMethods("{agentId}/last-session", ["PUT", "POST", "PATCH"], async (
+            string agentId,
+            [FromBody] SetAgentLastSessionRequest request,
+            HttpContext httpContext,
+            IQwenPawClient client,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            if (string.IsNullOrWhiteSpace(request.ChatId))
+            {
+                return Results.Problem("chat_id is required", statusCode: 400);
+            }
+
+            var res = await client.SetAgentLastSessionAsync(agentId, request.ChatId.Trim(), request.SessionId?.Trim(), request.Title?.Trim(), ct);
+            if (res is null)
+            {
+                return Results.Problem("Failed to record last accessed session", statusCode: 500);
+            }
+
+            var multiplexerHub = httpContext.RequestServices.GetService<SessionMultiplexerHub>();
+            if (multiplexerHub is not null)
+            {
+                var normAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+                var currentUser = httpContext.RequestServices.GetService<Agent360.API.Identity.CurrentUser>();
+                var externalSub = currentUser?.ExternalUserId;
+                if (string.IsNullOrWhiteSpace(externalSub))
+                {
+                    externalSub = httpContext.User?.FindFirst("sub")?.Value;
+                }
+                _ = multiplexerHub.BroadcastAsync(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "agent_last_session_updated",
+                    agent_id = normAgent,
+                    chat_id = res.ChatId,
+                    session_id = res.SessionId,
+                    title = res.Title,
+                    user_id = currentUser?.UserId,
+                    user_sub = externalSub,
+                    timestamp = DateTimeOffset.UtcNow.ToString("O")
+                }));
+            }
+
+            return TypedResults.Ok(res);
+        })
+        .WithName("SetAgentLastSession")
+        .WithSummary("Save last accessed session on an agent")
+        .AllowAnonymous();
+
         // 2e. Native Context Management & Compaction (/workspace/checkpoints/gc and /compact trigger)
         group.MapPost("compact-context", async (
             [FromBody] CompactContextRequestDto request,
