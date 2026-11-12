@@ -290,7 +290,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 var info = await browserDir.GetAsync(agentId, cts.Token, forceRefresh: true);
                 if (info is not null && info.CdpReachable && !string.IsNullOrWhiteSpace(info.CdpUrl))
                 {
-                    var zaloTab = info.Tabs.FirstOrDefault(t => !t.Anchor && (t.Url.Contains("zalo.me", StringComparison.OrdinalIgnoreCase)));
+                    var zaloTab = info.Tabs.FirstOrDefault(t => !t.Anchor && IsZaloWebOwnedUrl(t.Url));
                     var blankTab = info.Tabs.FirstOrDefault(t => !t.Anchor && (t.Url.StartsWith("chrome://newtab", StringComparison.OrdinalIgnoreCase) || t.Url == "about:blank" || t.Url.Contains("google.com", StringComparison.OrdinalIgnoreCase)));
                     var cdpUri = new Uri(info.CdpUrl);
                     if (zaloTab is not null)
@@ -333,6 +333,19 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
         }
     }
 
+    /// <summary>
+    /// True only for tabs owned by the Zalo Web channel: chat.zalo.me and its QR login page (id.zalo.me continuing to chat.zalo.me).
+    /// Other Zalo surfaces (developers.zalo.me, oa.zalo.me and their id.zalo.me login popups) are user browsing and must never be closed or hijacked.
+    /// </summary>
+    internal static bool IsZaloWebOwnedUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return false;
+        if (uri.Host.Equals("chat.zalo.me", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!uri.Host.Equals("id.zalo.me", StringComparison.OrdinalIgnoreCase)) return false;
+        var cont = System.Web.HttpUtility.ParseQueryString(uri.Query)["continue"];
+        return Uri.TryCreate(cont, UriKind.Absolute, out var c) && c.Host.Equals("chat.zalo.me", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static async Task EnsureZaloWebBrowserClosedAsync(
         IFleetInstanceRoutingService routing,
         ResolvedInstanceTarget target,
@@ -363,7 +376,7 @@ public sealed class AgentRuntimeProxyEndpoint : IEndpoint
                 var info = await browserDir.GetAsync(agentId, cts.Token, forceRefresh: true);
                 if (info is not null && info.CdpReachable && !string.IsNullOrWhiteSpace(info.CdpUrl))
                 {
-                    var zaloTabs = info.Tabs.Where(t => !t.Anchor && t.Url.Contains("zalo.me", StringComparison.OrdinalIgnoreCase)).ToList();
+                    var zaloTabs = info.Tabs.Where(t => !t.Anchor && IsZaloWebOwnedUrl(t.Url)).ToList();
                     if (zaloTabs.Count > 0)
                     {
                         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };

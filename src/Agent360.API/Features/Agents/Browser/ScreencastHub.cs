@@ -1447,8 +1447,34 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                         _ = SafeSendAsync(ws, new { id = 782, method = "Runtime.evaluate", @params = new { expression = PageInfoExpression, returnByValue = true } }, ct);
                     }
                     return true;
+                case "Page.windowOpen":
+                    if (hasParams)
+                    {
+                        BroadcastPopupOpened(
+                            p.TryGetProperty("url", out var wu) ? wu.GetString() ?? "" : "",
+                            p.TryGetProperty("windowName", out var wn) ? wn.GetString() ?? "" : "",
+                            p.TryGetProperty("userGesture", out var ug) && ug.ValueKind == JsonValueKind.True);
+                    }
+                    return true;
                 default:
                     return true;
+            }
+        }
+
+        /// <summary>Tells viewers that the watched page opened a popup/new window (window.open, target=_blank) so they can follow it.</summary>
+        private void BroadcastPopupOpened(string url, string windowName, bool userGesture)
+        {
+            var msgBytes = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                method = "Page.popupOpened",
+                @params = new { openerId = _targetId, url, windowName, userGesture }
+            });
+            lock (_viewers)
+            {
+                foreach (var (_, ctrlCh, _) in _viewers)
+                {
+                    ctrlCh.Writer.TryWrite(new StreamPacket(msgBytes, WebSocketMessageType.Text));
+                }
             }
         }
 
