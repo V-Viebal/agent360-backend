@@ -63,10 +63,13 @@ jobs:
           if [ "$TARGET" = "staging" ]; then
             echo "app_root=/opt/agent360-staging/backend" >> $GITHUB_OUTPUT
             echo "public_url=https://staging-agent360.antares.vn/api" >> $GITHUB_OUTPUT
+            echo "health_url=https://staging-agent360.antares.vn/api" >> $GITHUB_OUTPUT
             echo "restart=backend-staging" >> $GITHUB_OUTPUT
           else
             echo "app_root=/opt/agent360/backend" >> $GITHUB_OUTPUT
             echo "public_url=https://api-agent360.antares.vn/api/v1" >> $GITHUB_OUTPUT
+            # api-agent360.antares.vn has no DNS record; probe the host Traefik actually routes for production.
+            echo "health_url=https://api.skyer.vn/api/v1" >> $GITHUB_OUTPUT
             echo "restart=backend" >> $GITHUB_OUTPUT
           fi
           echo "target_env=$TARGET" >> $GITHUB_OUTPUT
@@ -98,7 +101,7 @@ jobs:
 
       - name: Verify live API (rollback on failure)
         run: |
-          PUBLIC_URL="${{ steps.env-target.outputs.public_url }}"
+          PUBLIC_URL="${{ steps.env-target.outputs.health_url }}"
           APP_ROOT="${{ steps.env-target.outputs.app_root }}"
           for i in $(seq 1 20); do
             code=$(curl -s -m 20 -A "Mozilla/5.0 agent360-ci" -o /dev/null -w '%{http_code}' "$PUBLIC_URL/agents/models" || true)
