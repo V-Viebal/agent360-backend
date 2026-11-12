@@ -302,6 +302,38 @@ public sealed class AgentWebhookStore
         return q.Take(Math.Clamp(limit, 1, 200)).ToList();
     }
 
+    public async Task<int> ClearDeliveriesAsync(string? agentId = null)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var arr = _deliveries.ToArray();
+            var remaining = string.IsNullOrWhiteSpace(agentId)
+                ? Array.Empty<AgentWebhookDeliveryRecordDto>()
+                : arr.Where(d => !string.Equals(d.AgentId, NormalizeKey(agentId), StringComparison.OrdinalIgnoreCase)).ToArray();
+
+            var clearedCount = arr.Length - remaining.Length;
+            _deliveries.Clear();
+            foreach (var item in remaining)
+            {
+                _deliveries.Enqueue(item);
+            }
+
+            var tmp = _deliveriesPath + ".tmp";
+            await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(remaining));
+            File.Move(tmp, _deliveriesPath, true);
+            return clearedCount;
+        }
+        catch
+        {
+            return 0;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public AgentWebhookDeliveryRecordDto? GetDeliveryById(string deliveryId)
     {
         return _deliveries.FirstOrDefault(d => string.Equals(d.Id, deliveryId, StringComparison.OrdinalIgnoreCase));

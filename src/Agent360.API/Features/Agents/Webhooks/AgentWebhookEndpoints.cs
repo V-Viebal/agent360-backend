@@ -201,6 +201,29 @@ public sealed class AgentWebhookEndpoints : IEndpoint
         .WithSummary("List recent inbound/outbound webhook deliveries and QwenPaw dispatch logs for an agent")
         .AllowAnonymous();
 
+                // 4c. DELETE /api/v1/agents/{agentId}/webhooks/deliveries
+        routeBuilder.MapDelete("agents/{agentId}/webhooks/deliveries", async (
+            string agentId,
+            HttpContext httpContext,
+            AgentWebhookStore store,
+            CancellationToken ct) =>
+        {
+            if (httpContext.User.Identity?.IsAuthenticated == true &&
+                await AgentOwnershipGuard.EnforceOrForbidAsync(agentId, httpContext, ct) is { } denied)
+            {
+                return denied;
+            }
+
+            var cleanAgent = FleetInstanceRoutingService.NormalizeAgentId(agentId).ToLowerInvariant();
+            var cleared = await store.ClearDeliveriesAsync(cleanAgent);
+            return Results.Ok(new { success = true, agent_id = cleanAgent, cleared_count = cleared, message = "Đã xóa sạch lịch sử nhận webhook." });
+        })
+        .MapToApiVersion(ApiVersion.Default)
+        .WithName("ClearAgentWebhookDeliveries")
+        .WithTags(EndpointTags.Agents)
+        .WithSummary("Clear webhook delivery history records for an agent")
+        .AllowAnonymous();
+
         // 4b. POST /api/v1/agents/{agentId}/webhooks/deliveries/{deliveryId}/replay
         // Re-triggers delivery for a previous webhook event
         routeBuilder.MapPost("agents/{agentId}/webhooks/deliveries/{deliveryId}/replay", async (

@@ -623,6 +623,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 LastFrameBase64 = null;
                 _ = TryDispatchInputAsync(new BrowserInputRequest("resize", Width: reqW, Height: reqH, IsMobile: isMobileDevice, DeviceType: isMobileDevice ? "phone" : "desktop"), _cts.Token);
             }
+            else if (LastBinaryFrame is null && LastFrame is null && _ws is { State: WebSocketState.Open } warmWs)
+            {
+                _ = SafeSendAsync(warmWs, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, _cts.Token);
+            }
         }
 
         public void Remove(Channel<StreamPacket> v, Channel<StreamPacket> ctrl)
@@ -1023,6 +1027,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                 {
                     await SafeSendAsync(ws, new { id = Interlocked.Increment(ref _cmdId), method = "Target.activateTarget", @params = new { targetId = req.PageId } }, ct);
                     await EnsureActiveViewportAndDeviceEmulationAsync(ws, req, ct);
+                    _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
                 }
                 else if (action == "stop")
                 {
@@ -1069,6 +1074,10 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                     var nextScale = ComputeBackingScale(w, h, _nativeSurfaceMaxW, _nativeSurfaceMaxH, wantMobile);
                     if (!modeChanged && !shouldReload && Math.Abs(_viewportW - w) <= 4 && Math.Abs(_viewportH - h) <= 4 && Math.Abs(_backingScale - nextScale) <= 0.005)
                     {
+                        if (LastBinaryFrame is null && LastFrame is null && Math.Abs(nextScale - 1.0) <= 0.01)
+                        {
+                            _ = SafeSendAsync(ws, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, ct);
+                        }
                         return true;
                     }
                     _viewportW = w;
