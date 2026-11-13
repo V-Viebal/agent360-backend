@@ -220,6 +220,14 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                         var initNavUrl = isMobNew ? (safeReq.Text ?? "https://www.google.com") : null;
                         hub.PrewarmSession(cdp!, createdTargetId, 1920, 88, initW, initH, isMobNew, initNavUrl);
                     }
+                    if (ok && act == "activate_tab" && hub is not null)
+                    {
+                        var actTarget = !string.IsNullOrWhiteSpace(safeReq.PageId) ? safeReq.PageId : page.TargetId;
+                        var isMob = safeReq.IsMobile == true || string.Equals(safeReq.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                        var initW = safeReq.Width is >= 320 ? safeReq.Width.Value : (isMob ? 390 : 1920);
+                        var initH = safeReq.Height is >= 240 ? safeReq.Height.Value : (isMob ? 720 : 1080);
+                        hub.PrewarmSession(cdp!, actTarget, 1920, 88, initW, initH, isMob);
+                    }
                 }
                 else if (hub is not null)
                 {

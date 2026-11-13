@@ -582,6 +582,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
         private bool MatchesTargetFrameDimensions(ReadOnlySpan<byte> jpegBytes)
         {
             if (!_hasTargetViewport) return true;
+            if (LastBinaryFrame is null && LastFrame is null) return true;
             var (jw, jh) = ReadJpegDimensions(jpegBytes);
             if (jw <= 0 || jh <= 0) return true;
             var expectedBackingW = _viewportW * _backingScale;
