@@ -342,9 +342,24 @@ public sealed class QwenPawClient : IQwenPawClient
         var skyerMarkerIdx = title.IndexOf("[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]", StringComparison.OrdinalIgnoreCase);
         if (skyerMarkerIdx >= 0 && (ctxMarkerIdx < 0 || skyerMarkerIdx < ctxMarkerIdx)) ctxMarkerIdx = skyerMarkerIdx;
         if (ctxMarkerIdx >= 0) title = title[..ctxMarkerIdx].TrimEnd();
-        title = System.Text.RegularExpressions.Regex.Replace(title, @"^[Replying to [^:]]+:s*""[^""]*""]s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
-        title = System.Text.RegularExpressions.Regex.Replace(title, @"^[Trọng tâm ngữ cảnh[^]]*][sS]*?*([^
-]*)*s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+
+        if (title.StartsWith("[Replying to ", StringComparison.OrdinalIgnoreCase))
+        {
+            var endQuote = title.IndexOf("\"]", StringComparison.Ordinal);
+            if (endQuote > 0 && endQuote + 2 <= title.Length)
+            {
+                title = title[(endQuote + 2)..].Trim();
+            }
+        }
+        if (title.StartsWith("[Trọng tâm ngữ cảnh", StringComparison.OrdinalIgnoreCase) || title.StartsWith("[Trong tam ngu canh", StringComparison.OrdinalIgnoreCase))
+        {
+            var endMarker = title.IndexOf(")*", StringComparison.Ordinal);
+            if (endMarker > 0 && endMarker + 2 <= title.Length)
+            {
+                title = title[(endMarker + 2)..].Trim();
+            }
+        }
+
         if (System.Text.RegularExpressions.Regex.IsMatch(title, @"^[0-9a-f]{8}-[0-9a-f]{4}", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
             System.Text.RegularExpressions.Regex.IsMatch(title, @"^[0-9a-f]{16,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
             title.StartsWith("chat ", StringComparison.OrdinalIgnoreCase) ||
@@ -358,7 +373,7 @@ public sealed class QwenPawClient : IQwenPawClient
             }
             return "Cuộc hội thoại";
         }
-        return title;
+        return string.IsNullOrWhiteSpace(title) ? "Cuộc hội thoại" : title;
     }
 
     private async Task EnsureUserAgentLastSessionsTableAsync(NpgsqlConnection conn, CancellationToken ct)
