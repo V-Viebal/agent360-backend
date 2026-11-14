@@ -325,6 +325,42 @@ public sealed class QwenPawClient : IQwenPawClient
         }
     }
 
+    internal static string CleanSessionTitle(string? rawTitle, string? fallbackSessionId = null)
+    {
+        if (string.IsNullOrWhiteSpace(rawTitle))
+        {
+            if (!string.IsNullOrWhiteSpace(fallbackSessionId) &&
+                !System.Text.RegularExpressions.Regex.IsMatch(fallbackSessionId, @"^[0-9a-f-]{16,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+                fallbackSessionId.Length <= 14)
+            {
+                return $"Hội thoại #{fallbackSessionId}";
+            }
+            return "Cuộc hội thoại";
+        }
+        var title = rawTitle.Trim();
+        var ctxMarkerIdx = title.IndexOf("[SHARED SESSION ROOM CONTEXT]", StringComparison.OrdinalIgnoreCase);
+        var skyerMarkerIdx = title.IndexOf("[SKYER PLATFORM CHANNEL & APP CONNECTION AWARENESS]", StringComparison.OrdinalIgnoreCase);
+        if (skyerMarkerIdx >= 0 && (ctxMarkerIdx < 0 || skyerMarkerIdx < ctxMarkerIdx)) ctxMarkerIdx = skyerMarkerIdx;
+        if (ctxMarkerIdx >= 0) title = title[..ctxMarkerIdx].TrimEnd();
+        title = System.Text.RegularExpressions.Regex.Replace(title, @"^[Replying to [^:]]+:s*""[^""]*""]s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+        title = System.Text.RegularExpressions.Regex.Replace(title, @"^[Trọng tâm ngữ cảnh[^]]*][sS]*?*([^
+]*)*s*", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+        if (System.Text.RegularExpressions.Regex.IsMatch(title, @"^[0-9a-f]{8}-[0-9a-f]{4}", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
+            System.Text.RegularExpressions.Regex.IsMatch(title, @"^[0-9a-f]{16,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
+            title.StartsWith("chat ", StringComparison.OrdinalIgnoreCase) ||
+            title.StartsWith("session ", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(fallbackSessionId) &&
+                !System.Text.RegularExpressions.Regex.IsMatch(fallbackSessionId, @"^[0-9a-f-]{16,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+                fallbackSessionId.Length <= 14)
+            {
+                return $"Hội thoại #{fallbackSessionId}";
+            }
+            return "Cuộc hội thoại";
+        }
+        return title;
+    }
+
     private async Task EnsureUserAgentLastSessionsTableAsync(NpgsqlConnection conn, CancellationToken ct)
     {
         if (_lastSessionTableEnsured) return;
@@ -395,6 +431,55 @@ public sealed class QwenPawClient : IQwenPawClient
     {
         var norm = FleetInstanceRoutingService.NormalizeAgentId(slug).ToLowerInvariant();
         var now = DateTimeOffset.UtcNow.ToString("O");
+
+        if (string.IsNullOrWhiteSpace(title) || title == "New Chat" || title == "Cuộc hội thoại")
+        {
+            if (_userLastSessions.TryGetValue(userScope, out var uDict) && uDict.TryGetValue(norm, out var prevRec) && !string.IsNullOrWhiteSpace(prevRec.Title) && (string.Equals(prevRec.ChatId, chatId, StringComparison.OrdinalIgnoreCase) || string.Equals(prevRec.SessionId, sessionId, StringComparison.OrdinalIgnoreCase)))
+            {
+                title = prevRec.Title;
+            }
+            else if (_userLastSessions.TryGetValue("global", out var gDict) && gDict.TryGetValue(norm, out var gRec) && !string.IsNullOrWhiteSpace(gRec.Title) && (string.Equals(gRec.ChatId, chatId, StringComparison.OrdinalIgnoreCase) || string.Equals(gRec.SessionId, sessionId, StringComparison.OrdinalIgnoreCase)))
+            {
+                title = gRec.Title;
+            }
+            else
+            {
+                try
+                {
+                    var chatsRaw = await GetAgentChatsRawAsync(norm, ct);
+                    if (!string.IsNullOrWhiteSpace(chatsRaw))
+                    {
+                        using var doc = JsonDocument.Parse(chatsRaw);
+                        if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var el in doc.RootElement.EnumerateArray())
+                            {
+                                var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                                var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                                if (string.Equals(id, chatId, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(sid, chatId, StringComparison.OrdinalIgnoreCase) ||
+                                    (!string.IsNullOrWhiteSpace(sessionId) && (string.Equals(id, sessionId, StringComparison.OrdinalIgnoreCase) || string.Equals(sid, sessionId, StringComparison.OrdinalIgnoreCase))))
+                                {
+                                    var name = el.TryGetProperty("name", out var nProp) ? nProp.GetString() : null;
+                                    if (string.IsNullOrWhiteSpace(name) && el.TryGetProperty("title", out var tProp)) name = tProp.GetString();
+                                    if (!string.IsNullOrWhiteSpace(name))
+                                    {
+                                        title = CleanSessionTitle(name, sid);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        else
+        {
+            title = CleanSessionTitle(title, sessionId);
+        }
+
         var record = new AgentLastSessionResponse(norm, chatId, sessionId, title, now);
         var inner = _userLastSessions.GetOrAdd(userScope, _ => new System.Collections.Concurrent.ConcurrentDictionary<string, AgentLastSessionResponse>(StringComparer.OrdinalIgnoreCase));
         inner[norm] = record;
@@ -610,6 +695,48 @@ public sealed class QwenPawClient : IQwenPawClient
         await HydrateAgentEnabledOverridesFromPostgresAsync(ct);
         await HydrateUserLastSessionsFromPostgresAsync(userScope, userId, ct);
 
+        var agentsNeedingTitle = baseAgents
+            .Where(a =>
+            {
+                var normSlug = FleetInstanceRoutingService.NormalizeAgentId(a.Slug).ToLowerInvariant();
+                AgentLastSessionResponse? lastSession = null;
+                if (_userLastSessions.TryGetValue(userScope, out var userDict) && userDict.TryGetValue(normSlug, out var us))
+                {
+                    lastSession = us;
+                }
+                else if (!string.Equals(userScope, "global", StringComparison.OrdinalIgnoreCase) &&
+                         _userLastSessions.TryGetValue("global", out var globalDict) &&
+                         globalDict.TryGetValue(normSlug, out var gs))
+                {
+                    lastSession = gs;
+                }
+                return string.IsNullOrWhiteSpace(lastSession?.Title) || lastSession.Title == "New Chat" || lastSession.Title == "Cuộc hội thoại";
+            })
+            .ToList();
+
+        if (agentsNeedingTitle.Count > 0)
+        {
+            try
+            {
+                await Parallel.ForEachAsync(agentsNeedingTitle, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (agent, token) =>
+                {
+                    var norm = FleetInstanceRoutingService.NormalizeAgentId(agent.Slug).ToLowerInvariant();
+                    var chatKey = ChatListKey(norm);
+                    if (!_cache.TryGetValue(chatKey, out string? raw) && !_cache.TryGetValue(chatKey + ":last-good", out raw))
+                    {
+                        try
+                        {
+                            using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                            cts.CancelAfter(TimeSpan.FromSeconds(2));
+                            await GetAgentChatsRawAsync(norm, cts.Token);
+                        }
+                        catch { }
+                    }
+                });
+            }
+            catch { }
+        }
+
         return baseAgents
             .Select(a =>
             {
@@ -627,6 +754,58 @@ public sealed class QwenPawClient : IQwenPawClient
                 {
                     lastSession = gs;
                 }
+                var effChatId = lastSession?.ChatId ?? a.ActiveSessionId;
+                var effTitle = lastSession?.Title;
+
+                if (string.IsNullOrWhiteSpace(effTitle) || effTitle == "New Chat" || effTitle == "Cuộc hội thoại")
+                {
+                    var chatKey = ChatListKey(normSlug);
+                    if (_cache.TryGetValue(chatKey, out string? rawChats) || _cache.TryGetValue(chatKey + ":last-good", out rawChats))
+                    {
+                        if (!string.IsNullOrWhiteSpace(rawChats))
+                        {
+                            try
+                            {
+                                using var doc = JsonDocument.Parse(rawChats);
+                                if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
+                                {
+                                    JsonElement? matched = null;
+                                    JsonElement? firstChat = null;
+                                    foreach (var el in doc.RootElement.EnumerateArray())
+                                    {
+                                        if (firstChat is null) firstChat = el;
+                                        var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                                        var sid = el.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                                        if (!string.IsNullOrWhiteSpace(effChatId) &&
+                                            (string.Equals(id, effChatId, StringComparison.OrdinalIgnoreCase) ||
+                                             string.Equals(sid, effChatId, StringComparison.OrdinalIgnoreCase)))
+                                        {
+                                            matched = el;
+                                            break;
+                                        }
+                                    }
+                                    var targetEl = matched ?? firstChat;
+                                    if (targetEl.HasValue)
+                                    {
+                                        if (string.IsNullOrWhiteSpace(effChatId))
+                                        {
+                                            effChatId = targetEl.Value.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+                                        }
+                                        var name = targetEl.Value.TryGetProperty("name", out var nProp) ? nProp.GetString() : null;
+                                        if (string.IsNullOrWhiteSpace(name) && targetEl.Value.TryGetProperty("title", out var tProp)) name = tProp.GetString();
+                                        var sid = targetEl.Value.TryGetProperty("session_id", out var sidProp) ? sidProp.GetString() : null;
+                                        if (!string.IsNullOrWhiteSpace(name))
+                                        {
+                                            effTitle = CleanSessionTitle(name, sid);
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+
                 return a with
                 {
                     Enabled = effEnabled,
@@ -635,9 +814,9 @@ public sealed class QwenPawClient : IQwenPawClient
                     CanToggle = true,
                     IsRootAgent = false,
                     Pinned = ResolveEffectivePinned(a.Slug, a.Pinned, userScope),
-                    ActiveSessionId = lastSession?.ChatId ?? a.ActiveSessionId,
-                    LastSessionId = lastSession?.ChatId,
-                    LastSessionTitle = lastSession?.Title
+                    ActiveSessionId = effChatId,
+                    LastSessionId = effChatId,
+                    LastSessionTitle = effTitle
                 };
             })
             .OrderByDescending(a => a.Enabled)
