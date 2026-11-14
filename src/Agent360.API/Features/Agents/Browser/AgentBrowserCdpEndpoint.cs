@@ -514,7 +514,21 @@ public sealed class AgentBrowserCdpEndpoint : IEndpoint
                     }
                     // Do not call WarmTabsInBackground on inactive tabs: background Session startup calls Page.bringToFront + Browser.setWindowBounds across the same window and resets Emulation.setDeviceMetricsOverride on the active tab!
                     var useBinary = context.Request.Query["bin"] == "1";
-                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct, initVw, initVh, useBinary, isMobileDevice);
+                    // switch_tab over this socket only accepts a tab of the same agent profile on the same browser.
+                    async Task<string?> ResolveSwitchTarget(string requestedPageId, CancellationToken switchCt)
+                    {
+                        var (next, nextCdp, _, _) = await PickPageAsync(directory, agentId, requestedPageId, switchCt);
+                        if (next?.TargetId != requestedPageId)
+                        {
+                            // A tab opened moments ago (popup, new tab) may not be in the cached tab list yet.
+                            await directory.GetAsync(agentId, switchCt, forceRefresh: true);
+                            (next, nextCdp, _, _) = await PickPageAsync(directory, agentId, requestedPageId, switchCt);
+                        }
+                        return next is not null && next.TargetId == requestedPageId && string.Equals(nextCdp, cdp, StringComparison.OrdinalIgnoreCase)
+                            ? next.TargetId
+                            : null;
+                    }
+                    await hub.WatchAsync(cdp!, page.TargetId, maxWidth, quality, clientWs, seed, ct, initVw, initVh, useBinary, isMobileDevice, ResolveSwitchTarget);
                 }
                 finally
                 {

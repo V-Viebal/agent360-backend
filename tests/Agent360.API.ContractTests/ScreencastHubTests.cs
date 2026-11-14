@@ -57,7 +57,9 @@ public sealed class ScreencastHubTests : IAsyncLifetime
             }
             for (var i = 0; ws.State == WebSocketState.Open && !ctx.RequestAborted.IsCancellationRequested; i++)
             {
-                var frame = JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = Convert.ToBase64String([(byte)i]), sessionId = i } });
+                // Frames of the switch target S2 carry a 0xAB marker byte so a test can tell which tab painted them.
+                byte[] payload = targetId == "S2" ? [0xAB, (byte)i] : [(byte)i];
+                var frame = JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.screencastFrame", @params = new { data = Convert.ToBase64String(payload), sessionId = i } });
                 try
                 {
                     await ws.SendAsync(frame, WebSocketMessageType.Text, true, ctx.RequestAborted);
@@ -84,6 +86,12 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         {
             using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
             await hub.WatchAsync(_cdpBase.ToString().TrimEnd('/'), "L1", 640, 55, ws, null, ctx.RequestAborted);
+        });
+        _api.Map("/watch-switch", async (HttpContext ctx, ScreencastHub hub) =>
+        {
+            using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+            await hub.WatchAsync(_cdpBase.ToString().TrimEnd('/'), "S1", 640, 55, ws, null, ctx.RequestAborted,
+                resolveSwitchTarget: (id, _) => Task.FromResult<string?>(id is "S1" or "S2" ? id : null));
         });
         await _api.StartAsync(Ct);
         _apiBase = new Uri(_api.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());
@@ -124,6 +132,44 @@ public sealed class ScreencastHubTests : IAsyncLifetime
         var hub = _api.Services.GetRequiredService<ScreencastHub>();
         hub.ViewerCount(_cdpBase.ToString().TrimEnd('/'), "T1", 640, 55).Should().Be(8);
         foreach (var v in viewers) v.Dispose();
+    }
+
+    [Fact]
+    public async Task SwitchTabMovesTheViewerOverTheOpenSocket()
+    {
+        var cdpUrl = _cdpBase.ToString().TrimEnd('/');
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri($"ws://{_apiBase.Authority}/watch-switch"), Ct);
+        (await NextFrameAsync(ws)).Should().Contain("Page.screencastFrame");
+
+        async Task Send(object msg) => await ws.SendAsync(JsonSerializer.SerializeToUtf8Bytes(msg), WebSocketMessageType.Text, true, Ct);
+        // A tab the resolver rejects (another agent's tab) is refused with ok=false and the viewer stays on S1.
+        await Send(new { action = "switch_tab", pageId = "FOREIGN" });
+        await Send(new { action = "switch_tab", pageId = "S2" });
+
+        var acks = new List<(string? Page, bool Ok)>();
+        for (var i = 0; i < 60 && !acks.Any(a => a.Ok); i++)
+        {
+            using var doc = JsonDocument.Parse(await NextFrameAsync(ws));
+            if (doc.RootElement.GetProperty("method").GetString() == "Page.tabSwitched")
+            {
+                var p = doc.RootElement.GetProperty("params");
+                acks.Add((p.GetProperty("pageId").GetString(), p.GetProperty("ok").GetBoolean()));
+            }
+        }
+        acks.Should().Equal(("FOREIGN", false), ("S2", true));
+
+        // Every frame after the ack belongs to the new tab.
+        for (var n = 0; n < 4; n++)
+        {
+            using var doc = JsonDocument.Parse(await NextFrameAsync(ws));
+            if (doc.RootElement.GetProperty("method").GetString() != "Page.screencastFrame") continue;
+            Convert.FromBase64String(doc.RootElement.GetProperty("params").GetProperty("data").GetString()!)[0].Should().Be(0xAB);
+        }
+        _hub.ViewerCount(cdpUrl, "S1", 640, 55).Should().Be(0);
+        _hub.ViewerCount(cdpUrl, "S2", 640, 55).Should().Be(1);
+        _hub.RetireTarget(cdpUrl, "S1");
+        _hub.RetireTarget(cdpUrl, "S2");
     }
 
     [Fact]

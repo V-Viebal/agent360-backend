@@ -148,29 +148,25 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
 
     public readonly record struct StreamPacket(byte[] Payload, WebSocketMessageType MessageType);
 
-    /// <summary>Streams frames to <paramref name="client"/> and processes bidirectional input commands until disconnect.</summary>
+    internal static byte[] TabSwitchedMessage(string pageId, bool ok = true) =>
+        JsonSerializer.SerializeToUtf8Bytes(new { method = "Page.tabSwitched", @params = new { pageId, ok } });
 
-    public async Task WatchAsync(string cdpUrl, string targetId, int maxWidth, int quality, WebSocket client, string? seedFrame, CancellationToken ct, int initialWidth = 0, int initialHeight = 0, bool binaryFrames = false, bool isMobileDevice = false)
+    /// <summary>Streams frames to <paramref name="client"/> and processes bidirectional input commands until disconnect.
+    /// A <c>switch_tab</c> message moves this viewer onto another tab of the same browser over the open socket (no new
+    /// handshake); <paramref name="resolveSwitchTarget"/> must return the validated target id or null to reject it.</summary>
+    public async Task WatchAsync(string cdpUrl, string targetId, int maxWidth, int quality, WebSocket client, string? seedFrame, CancellationToken ct, int initialWidth = 0, int initialHeight = 0, bool binaryFrames = false, bool isMobileDevice = false, Func<string, CancellationToken, Task<string?>>? resolveSwitchTarget = null)
     {
         var viewer = Channel.CreateBounded<StreamPacket>(new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
         var controlViewer = Channel.CreateBounded<StreamPacket>(new BoundedChannelOptions(8) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
-        Session session;
+        Session current;
         lock (_gate)
         {
-            session = _sessions.GetOrAdd(Key(cdpUrl, targetId, maxWidth), k => new Session(k, cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, this, logger, isMobileDevice));
-            session.Add(viewer, controlViewer, binaryFrames, initialWidth, initialHeight, isMobileDevice);
+            current = _sessions.GetOrAdd(Key(cdpUrl, targetId, maxWidth), k => new Session(k, cdpUrl, targetId, maxWidth, quality, initialWidth, initialHeight, this, logger, isMobileDevice));
+            current.Add(viewer, controlViewer, binaryFrames, initialWidth, initialHeight, isMobileDevice);
         }
-        if (initialWidth < 320 || initialHeight < 240 || session.MatchesViewport(initialWidth, initialHeight, isMobileDevice))
+        if (initialWidth < 320 || initialHeight < 240 || current.MatchesViewport(initialWidth, initialHeight, isMobileDevice))
         {
-            if (binaryFrames && session.LastBinaryFrame is { } lastBin)
-            {
-                viewer.Writer.TryWrite(new StreamPacket(lastBin, WebSocketMessageType.Binary));
-            }
-            else if (!binaryFrames && session.LastFrame is { } lastTxt)
-            {
-                viewer.Writer.TryWrite(new StreamPacket(lastTxt, WebSocketMessageType.Text));
-            }
-            else if (seedFrame is not null)
+            if (!TryWriteLastFrame(current, viewer, binaryFrames) && seedFrame is not null)
             {
                 viewer.Writer.TryWrite(binaryFrames
                     ? new StreamPacket(Convert.FromBase64String(seedFrame), WebSocketMessageType.Binary)
@@ -182,6 +178,51 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             viewer.Writer.TryWrite(binaryFrames
                 ? new StreamPacket(Convert.FromBase64String(seedFrame), WebSocketMessageType.Binary)
                 : new StreamPacket(Frame(seedFrame), WebSocketMessageType.Text));
+        }
+        var switchLock = new SemaphoreSlim(1, 1);
+
+        async Task SwitchViewerTabAsync(BrowserInputRequest req)
+        {
+            if (resolveSwitchTarget is null || string.IsNullOrWhiteSpace(req.PageId)) return;
+            await switchLock.WaitAsync(ct);
+            try
+            {
+                var from = Volatile.Read(ref current);
+                var nextTarget = await resolveSwitchTarget(req.PageId!, ct);
+                if (nextTarget is null)
+                {
+                    // Not a tab of this agent (or already gone): tell the client so it reconnects instead of waiting.
+                    controlViewer.Writer.TryWrite(new StreamPacket(TabSwitchedMessage(req.PageId!, ok: false), WebSocketMessageType.Text));
+                    return;
+                }
+                var w = req.Width ?? 0;
+                var h = req.Height ?? 0;
+                var mobile = req.IsMobile == true || string.Equals(req.DeviceType, "phone", StringComparison.OrdinalIgnoreCase);
+                Session to;
+                lock (_gate)
+                {
+                    to = _sessions.GetOrAdd(Key(cdpUrl, nextTarget, maxWidth), k => new Session(k, cdpUrl, nextTarget, maxWidth, quality, w, h, this, logger, mobile));
+                    if (!ReferenceEquals(to, from))
+                    {
+                        // Detach first: once it returns the old tab can no longer write into this viewer's channels.
+                        from.Detach(viewer);
+                        while (viewer.Reader.TryRead(out _)) { }
+                        to.Add(viewer, controlViewer, binaryFrames, w, h, mobile);
+                        Volatile.Write(ref current, to);
+                    }
+                }
+                // Ack then seed travel on the ordered control channel: the client drops frames between its switch_tab
+                // and the ack (the previous tab's in-flight frame), and paints the new tab's warm frame right after it.
+                controlViewer.Writer.TryWrite(new StreamPacket(TabSwitchedMessage(nextTarget), WebSocketMessageType.Text));
+                if (w < 320 || h < 240 || to.MatchesViewport(w, h, mobile))
+                {
+                    TryWriteLastFrame(to, controlViewer, binaryFrames);
+                }
+            }
+            finally
+            {
+                switchLock.Release();
+            }
         }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -211,6 +252,12 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
                             if (inputReq is not null && !string.IsNullOrEmpty(inputReq.Action))
                             {
                                 var actLower = inputReq.Action.Trim().ToLowerInvariant();
+                                if (actLower == "switch_tab")
+                                {
+                                    await SwitchViewerTabAsync(inputReq);
+                                    continue;
+                                }
+                                var session = Volatile.Read(ref current);
                                 if (actLower is "type" or "ime_commit" or "key" or "clipboard_paste" or "clipboard_copy" or "click" or "dblclick" or "rightclick" or "mousedown" or "mouseup")
                                 {
                                     await session.TryDispatchInputAsync(inputReq, cts.Token);
@@ -274,7 +321,7 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             cts.Cancel();
             lock (_gate)
             {
-                session.Remove(viewer, controlViewer);
+                Volatile.Read(ref current).Remove(viewer, controlViewer);
             }
             if (client.State == WebSocketState.Open)
             {
@@ -283,6 +330,19 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             }
             try { await drain.WaitAsync(TimeSpan.FromMilliseconds(250)); } catch { }
         }
+    }
+
+    private static bool TryWriteLastFrame(Session session, Channel<StreamPacket> viewer, bool binaryFrames)
+    {
+        if (binaryFrames && session.LastBinaryFrame is { } lastBin)
+        {
+            return viewer.Writer.TryWrite(new StreamPacket(lastBin, WebSocketMessageType.Binary));
+        }
+        if (!binaryFrames && session.LastFrame is { } lastTxt)
+        {
+            return viewer.Writer.TryWrite(new StreamPacket(lastTxt, WebSocketMessageType.Text));
+        }
+        return false;
     }
 
     public const string MobileUserAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36";
@@ -627,6 +687,20 @@ public sealed class ScreencastHub(ILogger<ScreencastHub> logger)
             else if (LastBinaryFrame is null && LastFrame is null && _ws is { State: WebSocketState.Open } warmWs)
             {
                 _ = SafeSendAsync(warmWs, new { id = 888, method = "Page.captureScreenshot", @params = new { format = "jpeg", quality = _currentQuality, fromSurface = true, optimizeForSpeed = true } }, _cts.Token);
+            }
+        }
+
+        /// <summary>Stops delivering to a viewer that moves to another tab, without completing its channels.</summary>
+        public void Detach(Channel<StreamPacket> v)
+        {
+            lock (_viewers)
+            {
+                _viewers.RemoveAll(x => ReferenceEquals(x.FrameChannel, v));
+                if (_viewers.Count > 0) return;
+                _linger?.Cancel();
+                _linger = new CancellationTokenSource();
+                var token = _linger.Token;
+                _ = Task.Delay(IdleLinger, token).ContinueWith(t => { if (!t.IsCanceled) _hub.Retire(this); }, TaskScheduler.Default);
             }
         }
 
